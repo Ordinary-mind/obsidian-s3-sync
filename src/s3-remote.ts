@@ -95,6 +95,15 @@ export class S3Remote {
     return ops.sort((a, b) => a.opId.localeCompare(b.opId));
   }
 
+  async testConnection(): Promise<void> {
+    this.validate();
+    await this.client.send(new ListObjectsV2Command({
+      Bucket: this.bucket,
+      Prefix: this.prefix,
+      MaxKeys: 1,
+    }));
+  }
+
   async readSnapshot(): Promise<RemoteSnapshot | null> {
     const key = `${this.prefix}snapshots/latest.json`;
     try {

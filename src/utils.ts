@@ -42,6 +42,17 @@ export function normalizePrefix(prefix: string): string {
   return trimmed.length > 0 ? `${trimmed}/` : "";
 }
 
+export function resolveEffectivePrefix(prefix: string, vaultName: string): string {
+  const trimmed = prefix.trim();
+  if (trimmed.length > 0) {
+    return trimmed;
+  }
+
+  // Prefix 留空时用 Vault 名称隔离远端数据，减少用户必须填写的配置项。
+  const safeVaultName = encodeURIComponent(vaultName.trim() || "vault");
+  return `obsidian-s3-sync/${safeVaultName}`;
+}
+
 export function getTFile(vault: Vault, path: string): TFile | null {
   const file: TAbstractFile | null = vault.getAbstractFileByPath(normalizePath(path));
   return file instanceof TFile ? file : null;

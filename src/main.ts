@@ -4,7 +4,7 @@ import { createDefaultData, DEFAULT_SETTINGS } from "./defaults";
 import { S3SyncSettingTab } from "./settings-tab";
 import { SyncEngine } from "./sync-engine";
 import type { S3SyncData, S3SyncSettings, SyncSummary } from "./types";
-import { getTFile } from "./utils";
+import { getTFile, resolveEffectivePrefix } from "./utils";
 
 interface PersistedPluginData {
   settings?: Partial<S3SyncSettings>;
@@ -85,6 +85,20 @@ export default class S3SyncPlugin extends Plugin {
       return;
     }
     await this.app.workspace.getLeaf(false).openFile(file);
+  }
+
+  getEffectivePrefix(): string {
+    return resolveEffectivePrefix(this.settings.prefix, this.app.vault.getName());
+  }
+
+  async testS3Connection(): Promise<void> {
+    try {
+      await this.engineOrThrow().testConnection();
+      new Notice(`S3 Sync 连接成功，当前 Prefix：${this.getEffectivePrefix()}`);
+    } catch (error) {
+      new Notice(`S3 Sync 连接失败：${this.errorMessage(error)}`);
+      console.error(error);
+    }
   }
 
   private registerVaultEvents(): void {

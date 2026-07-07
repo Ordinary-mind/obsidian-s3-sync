@@ -48,14 +48,15 @@ export class S3SyncSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName("Prefix")
-      .setDesc("建议每个 Vault 使用独立前缀。")
+      .setName("Prefix（可选）")
+      .setDesc(`留空会自动使用当前 Vault 名称。当前实际 Prefix：${this.plugin.getEffectivePrefix()}`)
       .addText((text) => text
-        .setPlaceholder("obsidian-s3-sync")
+        .setPlaceholder("留空自动生成")
         .setValue(this.plugin.settings.prefix)
         .onChange(async (value) => {
           this.plugin.settings.prefix = value.trim();
           await this.plugin.saveSettings();
+          this.display();
         }));
 
     new Setting(containerEl)
@@ -78,6 +79,16 @@ export class S3SyncSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
       });
+
+    new Setting(containerEl)
+      .setName("检测 S3 连接")
+      .setDesc("验证 endpoint、bucket、凭据和当前 Prefix 是否可访问。")
+      .addButton((button) => button
+        .setButtonText("检测连接")
+        .setCta()
+        .onClick(async () => {
+          await this.plugin.testS3Connection();
+        }));
 
     new Setting(containerEl)
       .setName("Path-style")

@@ -7,7 +7,7 @@ export const DEFAULT_SETTINGS: S3SyncSettings = {
   bucket: "",
   accessKeyId: "",
   secretAccessKey: "",
-  prefix: "obsidian-s3-sync",
+  prefix: "",
   forcePathStyle: true,
   syncOnStartup: false,
   debounceSeconds: 10,

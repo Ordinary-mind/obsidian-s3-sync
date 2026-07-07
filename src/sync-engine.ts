@@ -19,6 +19,7 @@ import {
   nowIso,
   parseIgnorePatterns,
   randomId,
+  resolveEffectivePrefix,
   sha256Hex,
 } from "./utils";
 
@@ -44,10 +45,13 @@ export class SyncEngine {
 
   constructor(options: SyncEngineOptions) {
     this.vault = options.vault;
-    this.settings = options.settings;
+    this.settings = {
+      ...options.settings,
+      prefix: resolveEffectivePrefix(options.settings.prefix, options.vault.getName()),
+    };
     this.data = options.data;
     this.saveData = options.saveData;
-    this.remote = new S3Remote(options.settings);
+    this.remote = new S3Remote(this.settings);
     this.ignoredPatterns = parseIgnorePatterns(options.settings.ignoredPatterns);
   }
 
@@ -85,6 +89,10 @@ export class SyncEngine {
 
   isMuted(path: string): boolean {
     return this.mutedPaths.has(normalizePath(path));
+  }
+
+  async testConnection(): Promise<void> {
+    await this.remote.testConnection();
   }
 
   async syncQueued(): Promise<SyncSummary> {
