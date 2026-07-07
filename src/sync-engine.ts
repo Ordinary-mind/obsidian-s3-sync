@@ -102,11 +102,29 @@ export class SyncEngine {
   }
 
   async syncAllKnownFiles(): Promise<SyncSummary> {
-    const paths = this.vault
+    const paths = new Set(this.vault
       .getFiles()
       .map((file) => normalizePath(file.path))
-      .filter((path) => !this.shouldSkip(path));
-    return this.sync(paths);
+      .filter((path) => !this.shouldSkip(path)));
+
+    for (const [path, state] of Object.entries(this.data.files)) {
+      const normalized = normalizePath(path);
+      if (this.shouldSkip(normalized) || state.deleted || paths.has(normalized)) {
+        continue;
+      }
+
+      // 完整扫描必须反查同步基线，否则 Obsidian 关闭期间的删除无法被发现。
+      if (state.lastSyncedHash) {
+        this.data.pendingDeletes[normalized] = {
+          path: normalized,
+          baseHash: state.lastSyncedHash,
+          deletedAt: nowIso(),
+        };
+        paths.add(normalized);
+      }
+    }
+
+    return this.sync(Array.from(paths));
   }
 
   async resolveConflict(conflictId: string, mode: "current" | "conflict" | "both"): Promise<void> {
