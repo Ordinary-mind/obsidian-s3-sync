@@ -266,7 +266,7 @@ export class SyncEngine {
       return;
     }
 
-    if (remoteFile?.updatedByDevice === this.data.deviceId) {
+    if (this.shouldPreferLocalForDivergedRemote(remoteFile, manifest)) {
       if (localHash === null) {
         remoteChanges.push({ type: "delete", path });
       } else if (local.data) {
@@ -283,8 +283,20 @@ export class SyncEngine {
       return;
     }
 
-    this.recordConflict(path, baseHash, localHash, remoteHash, manifest.version, remoteFile?.updatedByDevice);
-    summary.conflicts += 1;
+    if (this.recordConflict(path, baseHash, localHash, remoteHash, manifest.version, remoteFile?.updatedByDevice)) {
+      summary.conflicts += 1;
+    }
+  }
+
+  private shouldPreferLocalForDivergedRemote(
+    remoteFile: RemoteManifest["files"][string] | undefined,
+    manifest: RemoteManifest,
+  ): boolean {
+    if (remoteFile?.updatedByDevice === this.data.deviceId) {
+      return true;
+    }
+
+    return !remoteFile?.updatedByDevice && this.data.lastSyncedVersion >= manifest.version;
   }
 
   private async applyRemote(
@@ -415,15 +427,26 @@ export class SyncEngine {
     remoteHash: HashValue,
     remoteVersion: number,
     remoteUpdatedByDevice: string | undefined,
-  ): void {
-    const existing = Object.values(this.data.conflicts).find((conflict) => (
+  ): boolean {
+    const existing = Object.entries(this.data.conflicts).find(([, conflict]) => (
       !conflict.resolved &&
-      conflict.path === path &&
-      conflict.localHash === localHash &&
-      conflict.remoteHash === remoteHash
+      normalizePath(conflict.path) === normalizePath(path)
     ));
     if (existing) {
-      return;
+      const [id] = existing;
+      this.data.conflicts[id] = {
+        id,
+        path,
+        baseHash,
+        localHash,
+        remoteHash,
+        remoteVersion,
+        localDeviceId: this.data.deviceId,
+        remoteUpdatedByDevice,
+        detectedAt: nowIso(),
+        resolved: false,
+      };
+      return false;
     }
 
     const id = randomId("conflict");
@@ -440,6 +463,7 @@ export class SyncEngine {
       resolved: false,
     };
     new Notice(`S3 Sync 发现冲突：${path}`);
+    return true;
   }
 
   private async buildLocalSnapshot(paths: string[]): Promise<Record<string, LocalSnapshotEntry>> {
