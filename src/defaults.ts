@@ -14,6 +14,7 @@ export const DEFAULT_SETTINGS: S3SyncSettings = {
   debounceSeconds: 10,
   ignoredPatterns: [
     ".trash/**",
+    ".s3-sync/**",
     ".obsidian/plugins/obsidian-s3-sync/**",
     ".obsidian/workspace.json",
     ".obsidian/workspace-mobile.json",
@@ -23,9 +24,8 @@ export const DEFAULT_SETTINGS: S3SyncSettings = {
 export function createDefaultData(): S3SyncData {
   return {
     deviceId: randomId("device"),
+    lastSyncedVersion: 0,
     files: {},
-    pendingDeletes: {},
-    forceUploads: {},
     conflicts: {},
   };
 }

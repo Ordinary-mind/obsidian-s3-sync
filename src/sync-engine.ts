@@ -3,16 +3,13 @@ import type {
   ConflictRecord,
   FileContent,
   LocalFileState,
-  RemoteFileRecord,
-  RemoteOp,
-  RemoteSnapshot,
+  RemoteManifest,
   S3SyncData,
   S3SyncSettings,
   SyncSummary,
 } from "./types";
 import { S3Remote } from "./s3-remote";
 import {
-  createConflictPath,
   ensureParentFolder,
   isIgnored,
   nowIso,
@@ -23,6 +20,7 @@ import {
 } from "./utils";
 
 type QueueAction = "upsert" | "delete";
+type HashValue = string | null;
 
 export interface SyncEngineOptions {
   vault: Vault;
@@ -31,9 +29,20 @@ export interface SyncEngineOptions {
   saveData: () => Promise<void>;
 }
 
+interface LocalSnapshotEntry {
+  hash: HashValue;
+  size: number;
+  data: ArrayBuffer | null;
+}
+
+interface RemoteChange {
+  type: "upload" | "delete";
+  path: string;
+  content?: FileContent;
+}
+
 export class SyncEngine {
   private readonly vault: Vault;
-  private readonly settings: S3SyncSettings;
   private readonly data: S3SyncData;
   private readonly saveData: () => Promise<void>;
   private readonly remote: S3Remote;
@@ -44,13 +53,12 @@ export class SyncEngine {
 
   constructor(options: SyncEngineOptions) {
     this.vault = options.vault;
-    this.settings = {
-      ...options.settings,
-      prefix: resolveEffectivePrefix(options.settings.prefix, options.vault.getName()),
-    };
     this.data = options.data;
     this.saveData = options.saveData;
-    this.remote = new S3Remote(this.settings);
+    this.remote = new S3Remote({
+      ...options.settings,
+      prefix: resolveEffectivePrefix(options.settings.prefix, options.vault.getName()),
+    });
     this.ignoredPatterns = parseIgnorePatterns(options.settings.ignoredPatterns);
   }
 
@@ -67,23 +75,12 @@ export class SyncEngine {
     if (this.shouldSkip(normalized)) {
       return false;
     }
-
-    const known = this.data.files[normalized];
-    // 没有同步基线的缺失文件不能当成删除，否则新设备第一次同步会误删远端文件。
-    if (known?.lastSyncedHash) {
-      this.data.pendingDeletes[normalized] = {
-        path: normalized,
-        baseHash: known.lastSyncedHash,
-        deletedAt: nowIso(),
-      };
-      this.queue.set(normalized, "delete");
-      void this.saveData();
-    }
+    this.queue.set(normalized, "delete");
     return true;
   }
 
   hasQueuedWork(): boolean {
-    return this.queue.size > 0 || Object.keys(this.data.pendingDeletes).length > 0;
+    return this.queue.size > 0;
   }
 
   isMuted(path: string): boolean {
@@ -104,19 +101,9 @@ export class SyncEngine {
     const paths = new Set((await this.listAllFiles(""))
       .filter((path) => !this.shouldSkip(path)));
 
-    for (const [path, state] of Object.entries(this.data.files)) {
+    for (const path of Object.keys(this.data.files)) {
       const normalized = normalizePath(path);
-      if (this.shouldSkip(normalized) || state.deleted || paths.has(normalized)) {
-        continue;
-      }
-
-      // 完整扫描必须反查同步基线，否则 Obsidian 关闭期间的删除无法被发现。
-      if (state.lastSyncedHash) {
-        this.data.pendingDeletes[normalized] = {
-          path: normalized,
-          baseHash: state.lastSyncedHash,
-          deletedAt: nowIso(),
-        };
+      if (!this.shouldSkip(normalized)) {
         paths.add(normalized);
       }
     }
@@ -128,44 +115,26 @@ export class SyncEngine {
     await this.remote.deletePrefix();
     this.queue.clear();
     this.data.files = {};
-    this.data.pendingDeletes = {};
-    this.data.forceUploads = {};
     this.data.conflicts = {};
+    this.data.lastSyncedVersion = 0;
     await this.saveData();
     return this.syncAllKnownFiles();
   }
 
-  async resolveConflict(conflictId: string, mode: "current" | "conflict" | "both"): Promise<void> {
+  async resolveConflict(conflictId: string, mode: "local" | "remote"): Promise<void> {
     const conflict = this.data.conflicts[conflictId];
     if (!conflict || conflict.resolved) {
       return;
     }
 
-    if (mode === "conflict") {
-      if (!(await this.vault.adapter.exists(conflict.conflictPath))) {
-        throw new Error("冲突文件不存在，无法使用该版本");
-      }
-      const data = await this.vault.adapter.readBinary(conflict.conflictPath);
-      await this.writeBinary(conflict.path, data);
-      await this.vault.adapter.remove(conflict.conflictPath);
-      this.queue.set(conflict.path, "upsert");
-      this.data.forceUploads[conflict.path] = nowIso();
-    }
-
-    if (mode === "current") {
-      if (await this.vault.adapter.exists(conflict.conflictPath)) {
-        await this.vault.adapter.remove(conflict.conflictPath);
-      }
-      this.queue.set(conflict.path, "upsert");
-      this.data.forceUploads[conflict.path] = nowIso();
-    }
-
-    if (mode === "both") {
-      this.queue.set(conflict.path, "upsert");
-      this.data.forceUploads[conflict.path] = nowIso();
+    if (mode === "remote") {
+      await this.acceptRemote(conflict);
+    } else {
+      await this.acceptLocal(conflict);
     }
 
     conflict.resolved = true;
+    delete this.data.conflicts[conflictId];
     await this.saveData();
   }
 
@@ -186,34 +155,24 @@ export class SyncEngine {
     };
 
     try {
-      const snapshot = await this.loadRemoteState();
-      await this.applyRemoteChanges(snapshot, new Set(paths), summary);
+      const manifest = await this.remote.readManifest();
+      const local = await this.buildLocalSnapshot(paths);
+      const remoteChanges: RemoteChange[] = [];
 
-      const uniquePaths = new Set(paths.map((path) => normalizePath(path)));
-      for (const path of Object.keys(this.data.pendingDeletes)) {
-        uniquePaths.add(path);
-      }
-
-      for (const path of uniquePaths) {
+      for (const path of Object.keys(local)) {
         if (this.shouldSkip(path)) {
           summary.skipped += 1;
           continue;
         }
 
-        const pendingDelete = this.data.pendingDeletes[path];
-        if (pendingDelete) {
-          await this.pushDelete(path, snapshot, summary);
-          continue;
-        }
-
-        if (!(await this.vault.adapter.exists(path))) {
-          summary.skipped += 1;
-          continue;
-        }
-        await this.pushUpsert(path, snapshot, summary);
+        await this.planPath(path, local[path], manifest, remoteChanges, summary);
       }
 
-      await this.writeSnapshot(snapshot);
+      if (remoteChanges.length > 0) {
+        await this.commitRemoteChanges(manifest, remoteChanges, summary);
+      }
+
+      this.data.lastSyncedVersion = manifest.version;
       await this.saveData();
       return summary;
     } finally {
@@ -221,278 +180,214 @@ export class SyncEngine {
     }
   }
 
-  private async loadRemoteState(): Promise<RemoteSnapshot> {
-    // op log 是唯一可信来源，snapshot 只作为远端可读缓存，避免并发写 snapshot 导致状态回退。
-    const snapshot: RemoteSnapshot = {
-      version: 1 as const,
-      createdAt: nowIso(),
-      lastOpId: null,
-      files: {},
-    };
-
-    const ops = await this.remote.listOpsAfter(null);
-    for (const op of ops) {
-      this.applyOpToSnapshot(snapshot, op);
-    }
-    return snapshot;
-  }
-
-  private async applyRemoteChanges(
-    snapshot: RemoteSnapshot,
-    localQueuedPaths: Set<string>,
+  private async planPath(
+    path: string,
+    local: LocalSnapshotEntry,
+    manifest: RemoteManifest,
+    remoteChanges: RemoteChange[],
     summary: SyncSummary,
   ): Promise<void> {
-    for (const remoteFile of Object.values(snapshot.files)) {
-      if (this.shouldSkip(remoteFile.path)) {
-        continue;
-      }
+    const baseHash = this.data.files[path]?.hash ?? null;
+    const localHash = local.hash;
+    const remoteHash = manifest.files[path]?.hash ?? null;
 
-      const localState = this.data.files[remoteFile.path];
-      if (localState?.lastRemoteOpId === remoteFile.opId || localQueuedPaths.has(remoteFile.path)) {
-        continue;
-      }
-
-      if (remoteFile.deleted) {
-        await this.applyRemoteDelete(remoteFile, summary);
-      } else {
-        await this.applyRemoteUpsert(remoteFile, summary);
-      }
-    }
-  }
-
-  private async applyRemoteUpsert(remoteFile: RemoteFileRecord, summary: SyncSummary): Promise<void> {
-    if (!remoteFile.objectKey || !remoteFile.hash) {
+    if (localHash === remoteHash) {
+      this.markBase(path, localHash, local.size);
+      summary.skipped += 1;
       return;
     }
 
-    const localState = this.data.files[remoteFile.path];
-
-    if (await this.vault.adapter.exists(remoteFile.path)) {
-      const localContent = await this.readPathContent(remoteFile.path);
-      if (localContent.hash === remoteFile.hash) {
-        this.markSynced(remoteFile.path, remoteFile.hash, remoteFile.opId, false);
-        return;
-      }
-
-      if (!localState?.lastSyncedHash || localContent.hash !== localState.lastSyncedHash) {
-        await this.createConflictFromRemote(remoteFile, localContent.hash, summary);
-        return;
-      }
+    if (localHash === baseHash && remoteHash !== baseHash) {
+      await this.applyRemote(path, remoteHash, manifest, summary);
+      return;
     }
 
-    const data = await this.remote.downloadObject(remoteFile.objectKey);
-    await this.writeBinary(remoteFile.path, data);
-    this.markSynced(remoteFile.path, remoteFile.hash, remoteFile.opId, false);
+    if (remoteHash === baseHash && localHash !== baseHash) {
+      if (localHash === null) {
+        remoteChanges.push({ type: "delete", path });
+      } else if (local.data) {
+        remoteChanges.push({
+          type: "upload",
+          path,
+          content: {
+            hash: localHash,
+            size: local.size,
+            data: local.data,
+          },
+        });
+      }
+      return;
+    }
+
+    this.recordConflict(path, baseHash, localHash, remoteHash, manifest.version);
+    summary.conflicts += 1;
+  }
+
+  private async applyRemote(
+    path: string,
+    remoteHash: HashValue,
+    manifest: RemoteManifest,
+    summary: SyncSummary,
+  ): Promise<void> {
+    if (remoteHash === null) {
+      if (await this.vault.adapter.exists(path)) {
+        this.mute(path);
+        await this.vault.adapter.remove(path);
+        summary.deleted += 1;
+      }
+      delete this.data.files[path];
+      return;
+    }
+
+    const remoteData = await this.remote.downloadFile(path);
+    await this.writeBinary(path, remoteData);
+    this.markBase(path, remoteHash, manifest.files[path]?.size ?? remoteData.byteLength);
     summary.downloaded += 1;
   }
 
-  private async applyRemoteDelete(remoteFile: RemoteFileRecord, summary: SyncSummary): Promise<void> {
-    const localState = this.data.files[remoteFile.path];
-
-    if (!(await this.vault.adapter.exists(remoteFile.path))) {
-      this.markSynced(remoteFile.path, null, remoteFile.opId, true);
-      return;
+  private async commitRemoteChanges(
+    manifest: RemoteManifest,
+    changes: RemoteChange[],
+    summary: SyncSummary,
+  ): Promise<void> {
+    const latest = await this.remote.readManifest();
+    if (latest.version !== manifest.version) {
+      throw new Error("远端版本已变化，请重新同步");
     }
 
-    const localContent = await this.readPathContent(remoteFile.path);
-    if (!localState?.lastSyncedHash || localContent.hash !== localState.lastSyncedHash) {
-      await this.createDeleteConflict(remoteFile, localContent.hash, summary);
-      return;
-    }
-
-    this.mute(remoteFile.path);
-    await this.vault.adapter.remove(remoteFile.path);
-    this.markSynced(remoteFile.path, null, remoteFile.opId, true);
-    summary.deleted += 1;
-  }
-
-  private async pushUpsert(filePath: string, snapshot: RemoteSnapshot, summary: SyncSummary): Promise<void> {
-    const path = normalizePath(filePath);
-    const content = await this.readPathContent(path);
-    const localState = this.data.files[path];
-    const remoteFile = snapshot.files[path];
-    const forceUpload = this.data.forceUploads[path] !== undefined;
-
-    if (localState?.lastSyncedHash === content.hash && !localState.deleted && !forceUpload) {
-      if (remoteFile && remoteFile.opId !== localState.lastRemoteOpId) {
-        if (remoteFile.deleted) {
-          await this.applyRemoteDelete(remoteFile, summary);
-          return;
-        }
-        if (remoteFile.hash !== content.hash) {
-          await this.applyRemoteUpsert(remoteFile, summary);
-          return;
-        }
-        this.markSynced(path, content.hash, remoteFile.opId, false);
+    for (const change of changes) {
+      if (change.type === "delete") {
+        await this.remote.deleteFile(change.path);
+        delete manifest.files[change.path];
+        delete this.data.files[change.path];
+        summary.deleted += 1;
+      } else if (change.content) {
+        await this.remote.uploadFile(change.path, change.content.data);
+        manifest.files[change.path] = {
+          hash: change.content.hash,
+          size: change.content.size,
+          updatedAt: nowIso(),
+        };
+        this.markBase(change.path, change.content.hash, change.content.size);
+        summary.uploaded += 1;
       }
-      summary.skipped += 1;
-      return;
     }
 
-    if (remoteFile && !remoteFile.deleted && remoteFile.hash === content.hash) {
-      this.markSynced(path, content.hash, remoteFile.opId, false);
-      delete this.data.forceUploads[path];
-      summary.skipped += 1;
-      return;
-    }
-
-    if (
-      remoteFile &&
-      !remoteFile.deleted &&
-      !forceUpload &&
-      (!localState?.lastSyncedHash || remoteFile.hash !== localState.lastSyncedHash)
-    ) {
-      await this.createConflictFromRemote(remoteFile, content.hash, summary);
-      return;
-    }
-
-    const objectKey = await this.remote.uploadObject(path, content.hash, content.data);
-    const baseHash = forceUpload ? remoteFile?.hash ?? localState?.lastSyncedHash ?? null : localState?.lastSyncedHash ?? null;
-    const op = this.createOp("upsert", path, baseHash, content.hash, objectKey, content.size);
-    await this.remote.appendOp(op);
-    this.applyOpToSnapshot(snapshot, op);
-    await this.remote.writePathIndex(snapshot.files[path]);
-    this.markSynced(path, content.hash, op.opId, false);
-    delete this.data.forceUploads[path];
-    summary.uploaded += 1;
+    manifest.version += 1;
+    manifest.updatedAt = nowIso();
+    await this.remote.writeManifest(manifest);
   }
 
-  private async pushDelete(path: string, snapshot: RemoteSnapshot, summary: SyncSummary): Promise<void> {
-    const pendingDelete = this.data.pendingDeletes[path];
-    const remoteFile = snapshot.files[path];
-    const baseHash = pendingDelete?.baseHash ?? this.data.files[path]?.lastSyncedHash ?? null;
+  private async acceptRemote(conflict: ConflictRecord): Promise<void> {
+    const manifest = await this.remote.readManifest();
+    const remoteHash = manifest.files[conflict.path]?.hash ?? null;
+    if (remoteHash !== conflict.remoteHash) {
+      throw new Error("远端版本已变化，请重新同步后再解决冲突");
+    }
 
-    if (remoteFile?.deleted) {
-      this.markSynced(path, null, remoteFile.opId, true);
-      delete this.data.pendingDeletes[path];
-      summary.skipped += 1;
+    if (remoteHash === null) {
+      if (await this.vault.adapter.exists(conflict.path)) {
+        this.mute(conflict.path);
+        await this.vault.adapter.remove(conflict.path);
+      }
+      delete this.data.files[conflict.path];
+      this.data.lastSyncedVersion = manifest.version;
       return;
     }
 
-    if (remoteFile && !remoteFile.deleted && baseHash && remoteFile.hash !== baseHash) {
-      await this.createConflictFromRemote(remoteFile, baseHash, summary);
-      delete this.data.pendingDeletes[path];
-      return;
-    }
-
-    const op = this.createOp("delete", path, baseHash, null, null, 0);
-    await this.remote.appendOp(op);
-    this.applyOpToSnapshot(snapshot, op);
-    await this.remote.writePathIndex(snapshot.files[path]);
-    this.markSynced(path, null, op.opId, true);
-    delete this.data.pendingDeletes[path];
-    summary.deleted += 1;
+    const remoteData = await this.remote.downloadFile(conflict.path);
+    await this.writeBinary(conflict.path, remoteData);
+    this.markBase(conflict.path, remoteHash, manifest.files[conflict.path]?.size ?? remoteData.byteLength);
+    this.data.lastSyncedVersion = manifest.version;
   }
 
-  private async createConflictFromRemote(
-    remoteFile: RemoteFileRecord,
-    localHash: string | null,
-    summary: SyncSummary,
-  ): Promise<void> {
-    if (this.hasOpenConflict(remoteFile.path, remoteFile.opId)) {
-      return;
+  private async acceptLocal(conflict: ConflictRecord): Promise<void> {
+    const manifest = await this.remote.readManifest();
+    const remoteHash = manifest.files[conflict.path]?.hash ?? null;
+    if (remoteHash !== conflict.remoteHash) {
+      throw new Error("远端版本已变化，请重新同步后再解决冲突");
     }
 
-    if (!remoteFile.objectKey || !remoteFile.hash) {
-      return;
+    const local = await this.readOptionalPathContent(conflict.path);
+    if (local.hash !== conflict.localHash) {
+      throw new Error("本地文件已变化，请重新同步后再解决冲突");
     }
 
-    const remoteData = await this.remote.downloadObject(remoteFile.objectKey);
-    const conflictPath = createConflictPath(remoteFile.path, remoteFile.updatedByDevice);
-    await this.writeBinary(conflictPath, remoteData);
-    this.recordConflict(remoteFile.path, conflictPath, localHash, remoteFile.hash, remoteFile.opId);
-    summary.conflicts += 1;
-  }
-
-  private async createDeleteConflict(
-    remoteFile: RemoteFileRecord,
-    localHash: string | null,
-    summary: SyncSummary,
-  ): Promise<void> {
-    if (this.hasOpenConflict(remoteFile.path, remoteFile.opId)) {
-      return;
+    if (local.hash === null) {
+      await this.remote.deleteFile(conflict.path);
+      delete manifest.files[conflict.path];
+      delete this.data.files[conflict.path];
+    } else if (local.data) {
+      await this.remote.uploadFile(conflict.path, local.data);
+      manifest.files[conflict.path] = {
+        hash: local.hash,
+        size: local.size,
+        updatedAt: nowIso(),
+      };
+      this.markBase(conflict.path, local.hash, local.size);
     }
 
-    if (!(await this.vault.adapter.exists(remoteFile.path))) {
-      return;
-    }
-
-    const localData = await this.vault.adapter.readBinary(remoteFile.path);
-    const conflictPath = createConflictPath(remoteFile.path, this.data.deviceId);
-    await this.writeBinary(conflictPath, localData);
-    this.recordConflict(remoteFile.path, conflictPath, localHash, remoteFile.hash, remoteFile.opId);
-    summary.conflicts += 1;
+    manifest.version += 1;
+    manifest.updatedAt = nowIso();
+    await this.remote.writeManifest(manifest);
+    this.data.lastSyncedVersion = manifest.version;
   }
 
   private recordConflict(
     path: string,
-    conflictPath: string,
-    localHash: string | null,
-    remoteHash: string | null,
-    remoteOpId: string | null,
+    baseHash: HashValue,
+    localHash: HashValue,
+    remoteHash: HashValue,
+    remoteVersion: number,
   ): void {
+    const existing = Object.values(this.data.conflicts).find((conflict) => (
+      !conflict.resolved &&
+      conflict.path === path &&
+      conflict.localHash === localHash &&
+      conflict.remoteHash === remoteHash
+    ));
+    if (existing) {
+      return;
+    }
+
     const id = randomId("conflict");
-    const record: ConflictRecord = {
+    this.data.conflicts[id] = {
       id,
       path,
-      conflictPath,
+      baseHash,
       localHash,
       remoteHash,
-      remoteOpId,
+      remoteVersion,
       detectedAt: nowIso(),
       resolved: false,
     };
-    this.data.conflicts[id] = record;
     new Notice(`S3 Sync 发现冲突：${path}`);
   }
 
-  private hasOpenConflict(path: string, remoteOpId: string | null): boolean {
-    return Object.values(this.data.conflicts).some((conflict) => (
-      !conflict.resolved &&
-      conflict.path === path &&
-      conflict.remoteOpId === remoteOpId
-    ));
+  private async buildLocalSnapshot(paths: string[]): Promise<Record<string, LocalSnapshotEntry>> {
+    const snapshot: Record<string, LocalSnapshotEntry> = {};
+    for (const path of paths) {
+      snapshot[normalizePath(path)] = await this.readOptionalPathContent(path);
+    }
+    return snapshot;
   }
 
-  private createOp(
-    type: "upsert" | "delete",
-    path: string,
-    baseHash: string | null,
-    newHash: string | null,
-    objectKey: string | null,
-    size: number,
-  ): RemoteOp {
-    const createdAt = nowIso();
+  private async readOptionalPathContent(path: string): Promise<LocalSnapshotEntry> {
+    const normalized = normalizePath(path);
+    if (!(await this.vault.adapter.exists(normalized))) {
+      return {
+        hash: null,
+        size: 0,
+        data: null,
+      };
+    }
+
+    const content = await this.readPathContent(normalized);
     return {
-      opId: `${createdAt.replace(/[-:.]/g, "")}-${this.data.deviceId}-${randomId("op")}`,
-      type,
-      path,
-      deviceId: this.data.deviceId,
-      baseHash,
-      newHash,
-      objectKey,
-      size,
-      createdAt,
+      hash: content.hash,
+      size: content.size,
+      data: content.data,
     };
-  }
-
-  private applyOpToSnapshot(snapshot: RemoteSnapshot, op: RemoteOp): void {
-    snapshot.files[op.path] = {
-      path: op.path,
-      hash: op.newHash,
-      objectKey: op.objectKey,
-      size: op.size,
-      deleted: op.type === "delete",
-      updatedAt: op.createdAt,
-      updatedByDevice: op.deviceId,
-      opId: op.opId,
-    };
-    snapshot.lastOpId = op.opId;
-  }
-
-  private async writeSnapshot(snapshot: RemoteSnapshot): Promise<void> {
-    snapshot.createdAt = nowIso();
-    await this.remote.writeSnapshot(snapshot);
   }
 
   private async readPathContent(path: string): Promise<FileContent> {
@@ -512,6 +407,21 @@ export class SyncEngine {
     await this.vault.adapter.writeBinary(normalized, data);
   }
 
+  private markBase(path: string, hash: HashValue, size: number): void {
+    const normalized = normalizePath(path);
+    if (hash === null) {
+      delete this.data.files[normalized];
+      return;
+    }
+
+    const state: LocalFileState = {
+      hash,
+      size,
+      updatedAt: nowIso(),
+    };
+    this.data.files[normalized] = state;
+  }
+
   private async listAllFiles(folder: string): Promise<string[]> {
     const normalizedFolder = normalizePath(folder);
     const listed = await this.vault.adapter.list(normalizedFolder);
@@ -524,16 +434,6 @@ export class SyncEngine {
     return files;
   }
 
-  private markSynced(path: string, hash: string | null, remoteOpId: string | null, deleted: boolean): void {
-    const state: LocalFileState = {
-      lastSyncedHash: hash,
-      lastRemoteOpId: remoteOpId,
-      deleted,
-      updatedAt: nowIso(),
-    };
-    this.data.files[normalizePath(path)] = state;
-  }
-
   private mute(path: string): void {
     const normalized = normalizePath(path);
     this.mutedPaths.add(normalized);
@@ -541,14 +441,6 @@ export class SyncEngine {
   }
 
   private shouldSkip(path: string): boolean {
-    const normalized = normalizePath(path);
-    if (isIgnored(normalized, this.ignoredPatterns)) {
-      return true;
-    }
-
-    return Object.values(this.data.conflicts).some((conflict) => (
-      !conflict.resolved &&
-      normalizePath(conflict.conflictPath) === normalized
-    ));
+    return isIgnored(normalizePath(path), this.ignoredPatterns);
   }
 }

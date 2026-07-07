@@ -1,4 +1,5 @@
 import {
+  DeleteObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
   ListObjectsV2Command,
@@ -6,14 +7,14 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
-import type { RemoteFileRecord, RemoteOp, RemoteSnapshot, S3SyncSettings } from "./types";
+import { normalizePath } from "obsidian";
+import type { RemoteManifest, S3SyncSettings } from "./types";
 import {
   arrayBufferToText,
   bodyToArrayBuffer,
   normalizePrefix,
   textToArrayBuffer,
 } from "./utils";
-import { normalizePath } from "obsidian";
 
 export class S3Remote {
   private readonly client: S3Client;
@@ -40,65 +41,12 @@ export class S3Remote {
     }
   }
 
-  objectKeyForPathVersion(path: string, hash: string): string {
-    return `${this.prefix}files/${normalizePath(path)}.versions/${hash}`;
+  manifestKey(): string {
+    return `${this.prefix}.s3-sync/manifest.json`;
   }
 
-  async uploadObject(path: string, hash: string, data: ArrayBuffer): Promise<string> {
-    const key = this.objectKeyForPathVersion(path, hash);
-    await this.putBytes(key, data, "application/octet-stream");
-    return key;
-  }
-
-  async downloadObject(objectKey: string): Promise<ArrayBuffer> {
-    const response = await this.client.send(new GetObjectCommand({
-      Bucket: this.bucket,
-      Key: objectKey,
-    }));
-    return bodyToArrayBuffer(response.Body);
-  }
-
-  async appendOp(op: RemoteOp): Promise<void> {
-    // 每个操作写入唯一对象，避免多个设备同时覆盖同一个 manifest。
-    const key = `${this.prefix}ops/${op.opId}.json`;
-    await this.putJson(key, op);
-  }
-
-  async writePathIndex(record: RemoteFileRecord): Promise<void> {
-    await this.putJson(`${this.prefix}paths/${record.path}.sync.json`, record);
-  }
-
-  async listOpsAfter(_cursor: string | null): Promise<RemoteOp[]> {
-    const prefix = `${this.prefix}ops/`;
-    const keys: string[] = [];
-    let continuationToken: string | undefined;
-
-    do {
-      const response = await this.client.send(new ListObjectsV2Command({
-        Bucket: this.bucket,
-        Prefix: prefix,
-        ContinuationToken: continuationToken,
-      }));
-
-      for (const item of response.Contents ?? []) {
-        if (item.Key) {
-          keys.push(item.Key);
-        }
-      }
-      continuationToken = response.NextContinuationToken;
-    } while (continuationToken);
-
-    // snapshot 只是加速缓存，不能作为强一致游标。
-    // 多设备并发写 snapshot 时，如果按 lastOpId 跳过旧 op，可能永久漏掉另一个设备的操作。
-    const sorted = keys.sort();
-    const ops: RemoteOp[] = [];
-
-    for (const key of sorted) {
-      const op = await this.getJson<RemoteOp>(key);
-      ops.push(op);
-    }
-
-    return ops.sort((a, b) => a.opId.localeCompare(b.opId));
+  fileKey(path: string): string {
+    return `${this.prefix}${normalizePath(path)}`;
   }
 
   async testConnection(): Promise<void> {
@@ -110,20 +58,42 @@ export class S3Remote {
     }));
   }
 
-  async readSnapshot(): Promise<RemoteSnapshot | null> {
-    const key = `${this.prefix}snapshots/latest.json`;
+  async readManifest(): Promise<RemoteManifest> {
     try {
-      return await this.getJson<RemoteSnapshot>(key);
+      return await this.getJson<RemoteManifest>(this.manifestKey());
     } catch (error) {
       if (this.isNotFound(error)) {
-        return null;
+        return {
+          version: 0,
+          updatedAt: new Date().toISOString(),
+          files: {},
+        };
       }
       throw error;
     }
   }
 
-  async writeSnapshot(snapshot: RemoteSnapshot): Promise<void> {
-    await this.putJson(`${this.prefix}snapshots/latest.json`, snapshot);
+  async writeManifest(manifest: RemoteManifest): Promise<void> {
+    await this.putJson(this.manifestKey(), manifest);
+  }
+
+  async uploadFile(path: string, data: ArrayBuffer): Promise<void> {
+    await this.putBytes(this.fileKey(path), data, "application/octet-stream");
+  }
+
+  async downloadFile(path: string): Promise<ArrayBuffer> {
+    const response = await this.client.send(new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: this.fileKey(path),
+    }));
+    return bodyToArrayBuffer(response.Body);
+  }
+
+  async deleteFile(path: string): Promise<void> {
+    await this.client.send(new DeleteObjectCommand({
+      Bucket: this.bucket,
+      Key: this.fileKey(path),
+    }));
   }
 
   async deletePrefix(): Promise<number> {
@@ -181,10 +151,6 @@ export class S3Remote {
       Body: new Uint8Array(body),
       ContentType: contentType,
     }));
-  }
-
-  private opIdFromKey(key: string): string {
-    return key.slice(`${this.prefix}ops/`.length).replace(/\.json$/, "");
   }
 
   private isNotFound(error: unknown): boolean {

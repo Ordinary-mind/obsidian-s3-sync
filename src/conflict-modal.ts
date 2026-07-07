@@ -28,40 +28,31 @@ export class ConflictModal extends Modal {
     for (const conflict of conflicts) {
       const item = list.createDiv({ cls: "s3-sync-conflict-item" });
       item.createEl("strong", { text: conflict.path });
-      item.createEl("div", { text: `冲突文件：${conflict.conflictPath}` });
+      item.createEl("div", { text: `基础 Hash：${conflict.baseHash ?? "无"}` });
+      item.createEl("div", { text: `本地 Hash：${conflict.localHash ?? "已删除"}` });
+      item.createEl("div", { text: `远端 Hash：${conflict.remoteHash ?? "已删除"}` });
+      item.createEl("div", { text: `远端版本：${conflict.remoteVersion}` });
       item.createEl("div", { text: `发现时间：${conflict.detectedAt}` });
 
       new Setting(item)
         .addButton((button) => button
-          .setButtonText("打开当前版本")
+          .setButtonText("打开本地文件")
           .onClick(async () => {
             await this.plugin.openFile(conflict.path);
           }))
         .addButton((button) => button
-          .setButtonText("打开冲突版本")
-          .onClick(async () => {
-            await this.plugin.openFile(conflict.conflictPath);
-          }))
-        .addButton((button) => button
-          .setButtonText("保留当前")
-          .onClick(async () => {
-            await this.plugin.resolveConflict(conflict.id, "current");
-            new Notice("已保留当前版本");
-            this.render();
-          }))
-        .addButton((button) => button
-          .setButtonText("使用冲突版本")
+          .setButtonText("使用本地")
           .setCta()
           .onClick(async () => {
-            await this.plugin.resolveConflict(conflict.id, "conflict");
-            new Notice("已使用冲突版本");
+            await this.plugin.resolveConflict(conflict.id, "local");
+            new Notice("已使用本地版本");
             this.render();
           }))
         .addButton((button) => button
-          .setButtonText("两者都保留")
+          .setButtonText("使用远端")
           .onClick(async () => {
-            await this.plugin.resolveConflict(conflict.id, "both");
-            new Notice("已标记为两者都保留");
+            await this.plugin.resolveConflict(conflict.id, "remote");
+            new Notice("已使用远端版本");
             this.render();
           }));
     }

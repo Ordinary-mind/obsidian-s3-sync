@@ -23,9 +23,7 @@
 
 远端默认使用当前 Vault 名称作为 Prefix。Prefix 下包含：
 
-- `files/`：按源文件路径组织内容版本，例如 `files/notes/a.md.versions/<hash>`。
-- `ops/`：每次上传或删除产生一条操作日志，是同步的可信来源。
-- `paths/`：按原始文件路径写入可读索引，便于在 S3 控制台排查。
-- `snapshots/latest.json`：当前状态快照，仅作可读缓存。
+- 源文件路径：远端文件结构与本地 Vault 保持一致，例如 `notes/a.md`、`.obsidian/community-plugins.json`。
+- `.s3-sync/manifest.json`：记录全局版本号和每个文件的 Hash，是同步判断依据。
 
 如果测试时远端状态混乱，可以在高级设置里使用“用本地重建远端”。这个操作会删除当前 Prefix 下的远端同步数据，再以本地 Vault 为准重新上传。

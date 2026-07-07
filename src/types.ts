@@ -1,5 +1,3 @@
-export type RemoteOpType = "upsert" | "delete";
-
 export interface S3SyncSettings {
   endpoint: string;
   region: string;
@@ -15,65 +13,39 @@ export interface S3SyncSettings {
 }
 
 export interface LocalFileState {
-  lastSyncedHash: string | null;
-  lastRemoteOpId: string | null;
-  deleted: boolean;
+  hash: string;
+  size: number;
   updatedAt: string;
 }
 
 export interface ConflictRecord {
   id: string;
   path: string;
-  conflictPath: string;
+  baseHash: string | null;
   localHash: string | null;
   remoteHash: string | null;
-  remoteOpId: string | null;
+  remoteVersion: number;
   detectedAt: string;
   resolved: boolean;
 }
 
 export interface S3SyncData {
   deviceId: string;
+  lastSyncedVersion: number;
   files: Record<string, LocalFileState>;
-  pendingDeletes: Record<string, PendingDelete>;
-  forceUploads: Record<string, string>;
   conflicts: Record<string, ConflictRecord>;
 }
 
-export interface PendingDelete {
-  path: string;
-  baseHash: string | null;
-  deletedAt: string;
-}
-
-export interface RemoteOp {
-  opId: string;
-  type: RemoteOpType;
-  path: string;
-  deviceId: string;
-  baseHash: string | null;
-  newHash: string | null;
-  objectKey: string | null;
-  size: number;
-  createdAt: string;
-}
-
-export interface RemoteSnapshot {
-  version: 1;
-  createdAt: string;
-  lastOpId: string | null;
-  files: Record<string, RemoteFileRecord>;
-}
-
-export interface RemoteFileRecord {
-  path: string;
-  hash: string | null;
-  objectKey: string | null;
-  size: number;
-  deleted: boolean;
+export interface RemoteManifest {
+  version: number;
   updatedAt: string;
-  updatedByDevice: string;
-  opId: string;
+  files: Record<string, RemoteManifestFile>;
+}
+
+export interface RemoteManifestFile {
+  hash: string;
+  size: number;
+  updatedAt: string;
 }
 
 export interface FileContent {

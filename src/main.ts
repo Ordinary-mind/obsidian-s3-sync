@@ -85,7 +85,7 @@ export default class S3SyncPlugin extends Plugin {
     this.updateStatus();
   }
 
-  async resolveConflict(conflictId: string, mode: "current" | "conflict" | "both"): Promise<void> {
+  async resolveConflict(conflictId: string, mode: "local" | "remote"): Promise<void> {
     await this.engineOrThrow().resolveConflict(conflictId, mode);
     this.updateStatus();
   }
@@ -284,25 +284,49 @@ export default class S3SyncPlugin extends Plugin {
     };
 
     const defaultData = createDefaultData();
+    const files: S3SyncData["files"] = {};
+    const persistedFiles = persisted?.syncData?.files ?? {};
+    for (const [path, value] of Object.entries(persistedFiles)) {
+      const record = value as { hash?: string; lastSyncedHash?: string; size?: number; updatedAt?: string };
+      const hash = record.hash ?? record.lastSyncedHash;
+      if (hash) {
+        files[path] = {
+          hash,
+          size: record.size ?? 0,
+          updatedAt: record.updatedAt ?? new Date().toISOString(),
+        };
+      }
+    }
+
+    const conflicts: S3SyncData["conflicts"] = {};
+    for (const [id, value] of Object.entries(persisted?.syncData?.conflicts ?? {})) {
+      const conflict = value as Partial<S3SyncData["conflicts"][string]>;
+      if (
+        typeof conflict.path === "string" &&
+        "baseHash" in conflict &&
+        "localHash" in conflict &&
+        "remoteHash" in conflict &&
+        typeof conflict.remoteVersion === "number"
+      ) {
+        conflicts[id] = {
+          id,
+          path: conflict.path,
+          baseHash: conflict.baseHash ?? null,
+          localHash: conflict.localHash ?? null,
+          remoteHash: conflict.remoteHash ?? null,
+          remoteVersion: conflict.remoteVersion,
+          detectedAt: conflict.detectedAt ?? new Date().toISOString(),
+          resolved: conflict.resolved ?? false,
+        };
+      }
+    }
+
     this.data = {
       ...defaultData,
       ...(persisted?.syncData ?? {}),
-      files: {
-        ...defaultData.files,
-        ...(persisted?.syncData?.files ?? {}),
-      },
-      pendingDeletes: {
-        ...defaultData.pendingDeletes,
-        ...(persisted?.syncData?.pendingDeletes ?? {}),
-      },
-      forceUploads: {
-        ...defaultData.forceUploads,
-        ...(persisted?.syncData?.forceUploads ?? {}),
-      },
-      conflicts: {
-        ...defaultData.conflicts,
-        ...(persisted?.syncData?.conflicts ?? {}),
-      },
+      lastSyncedVersion: persisted?.syncData?.lastSyncedVersion ?? 0,
+      files,
+      conflicts,
     };
   }
 
