@@ -308,10 +308,11 @@ export class SyncEngine {
 
     for (const change of changes) {
       if (change.type === "delete") {
-        await this.remote.deleteFile(change.path);
-        delete manifest.files[change.path];
-        delete this.data.files[change.path];
-        summary.deleted += 1;
+      await this.remote.deleteFile(change.path);
+      delete manifest.files[change.path];
+      delete this.data.files[change.path];
+      this.clearConflictsForPath(change.path);
+      summary.deleted += 1;
       } else if (change.content) {
         await this.remote.uploadFile(change.path, change.content.data);
         manifest.files[change.path] = {
@@ -369,6 +370,7 @@ export class SyncEngine {
       await this.remote.deleteFile(conflict.path);
       delete manifest.files[conflict.path];
       delete this.data.files[conflict.path];
+      this.clearConflictsForPath(conflict.path);
     } else if (local.data) {
       await this.remote.uploadFile(conflict.path, local.data);
       manifest.files[conflict.path] = {
@@ -464,6 +466,7 @@ export class SyncEngine {
     const normalized = normalizePath(path);
     if (hash === null) {
       delete this.data.files[normalized];
+      this.clearConflictsForPath(normalized);
       return;
     }
 
@@ -473,6 +476,16 @@ export class SyncEngine {
       updatedAt: nowIso(),
     };
     this.data.files[normalized] = state;
+    this.clearConflictsForPath(normalized);
+  }
+
+  private clearConflictsForPath(path: string): void {
+    const normalized = normalizePath(path);
+    for (const [id, conflict] of Object.entries(this.data.conflicts)) {
+      if (normalizePath(conflict.path) === normalized) {
+        delete this.data.conflicts[id];
+      }
+    }
   }
 
   private async listAllFiles(folder: string): Promise<string[]> {
