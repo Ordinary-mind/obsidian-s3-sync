@@ -114,7 +114,6 @@ export class S3SyncSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.settings.prefix = value.trim();
           await this.plugin.saveSettings();
-          this.display();
         }));
 
     new Setting(containerEl)
