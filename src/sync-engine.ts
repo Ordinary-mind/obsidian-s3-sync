@@ -41,6 +41,12 @@ interface RemoteChange {
   content?: FileContent;
 }
 
+interface BaseChange {
+  path: string;
+  hash: HashValue;
+  size: number;
+}
+
 export class SyncEngine {
   private readonly vault: Vault;
   private readonly data: S3SyncData;
@@ -135,6 +141,7 @@ export class SyncEngine {
     const paths = (await this.listAllFiles(""))
       .filter((path) => !this.shouldSkip(path));
 
+    const rebuiltFiles: Record<string, LocalFileState> = {};
     for (const path of paths) {
       const content = await this.readPathContent(path);
       await this.remote.uploadFile(path, content.data);
@@ -144,11 +151,17 @@ export class SyncEngine {
         updatedAt: nowIso(),
         updatedByDevice: this.data.deviceId,
       };
-      this.markBase(path, content.hash, content.size);
+      rebuiltFiles[path] = {
+        hash: content.hash,
+        size: content.size,
+        updatedAt: nowIso(),
+      };
       summary.uploaded += 1;
     }
 
     await this.remote.writeManifest(manifest);
+    this.data.files = rebuiltFiles;
+    this.data.conflicts = {};
     this.data.lastSyncedVersion = manifest.version;
     await this.saveData();
     return summary;
@@ -306,13 +319,13 @@ export class SyncEngine {
       throw new Error("远端版本已变化，请重新同步");
     }
 
+    const baseChanges: BaseChange[] = [];
     for (const change of changes) {
       if (change.type === "delete") {
-      await this.remote.deleteFile(change.path);
-      delete manifest.files[change.path];
-      delete this.data.files[change.path];
-      this.clearConflictsForPath(change.path);
-      summary.deleted += 1;
+        await this.remote.deleteFile(change.path);
+        delete manifest.files[change.path];
+        baseChanges.push({ path: change.path, hash: null, size: 0 });
+        summary.deleted += 1;
       } else if (change.content) {
         await this.remote.uploadFile(change.path, change.content.data);
         manifest.files[change.path] = {
@@ -321,7 +334,7 @@ export class SyncEngine {
           updatedAt: nowIso(),
           updatedByDevice: this.data.deviceId,
         };
-        this.markBase(change.path, change.content.hash, change.content.size);
+        baseChanges.push({ path: change.path, hash: change.content.hash, size: change.content.size });
         summary.uploaded += 1;
       }
     }
@@ -329,6 +342,9 @@ export class SyncEngine {
     manifest.version += 1;
     manifest.updatedAt = nowIso();
     await this.remote.writeManifest(manifest);
+    for (const change of baseChanges) {
+      this.markBase(change.path, change.hash, change.size);
+    }
   }
 
   private async acceptRemote(conflict: ConflictRecord): Promise<void> {
@@ -366,11 +382,15 @@ export class SyncEngine {
       throw new Error("本地文件已变化，请重新同步后再解决冲突");
     }
 
+    const baseChange: BaseChange = {
+      path: conflict.path,
+      hash: local.hash,
+      size: local.size,
+    };
+
     if (local.hash === null) {
       await this.remote.deleteFile(conflict.path);
       delete manifest.files[conflict.path];
-      delete this.data.files[conflict.path];
-      this.clearConflictsForPath(conflict.path);
     } else if (local.data) {
       await this.remote.uploadFile(conflict.path, local.data);
       manifest.files[conflict.path] = {
@@ -379,12 +399,12 @@ export class SyncEngine {
         updatedAt: nowIso(),
         updatedByDevice: this.data.deviceId,
       };
-      this.markBase(conflict.path, local.hash, local.size);
     }
 
     manifest.version += 1;
     manifest.updatedAt = nowIso();
     await this.remote.writeManifest(manifest);
+    this.markBase(baseChange.path, baseChange.hash, baseChange.size);
     this.data.lastSyncedVersion = manifest.version;
   }
 
