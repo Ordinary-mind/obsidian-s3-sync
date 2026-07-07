@@ -28,13 +28,28 @@ export class ConflictModal extends Modal {
     for (const conflict of conflicts) {
       const item = list.createDiv({ cls: "s3-sync-conflict-item" });
       item.createEl("strong", { text: conflict.path });
-      item.createEl("div", { text: `基础 Hash：${conflict.baseHash ?? "无"}` });
-      item.createEl("div", { text: `本地 Hash：${conflict.localHash ?? "已删除"}` });
-      item.createEl("div", { text: `远端 Hash：${conflict.remoteHash ?? "已删除"}` });
-      item.createEl("div", { text: `远端版本：${conflict.remoteVersion}` });
-      item.createEl("div", { text: `发现时间：${conflict.detectedAt}` });
+
+      const meta = item.createDiv({ cls: "s3-sync-conflict-meta" });
+      this.addMeta(meta, "基础 Hash", conflict.baseHash ?? "无");
+      this.addMeta(meta, "本地 Hash", conflict.localHash ?? "已删除");
+      this.addMeta(meta, "远端 Hash", conflict.remoteHash ?? "已删除");
+      this.addMeta(meta, "远端版本", String(conflict.remoteVersion));
+      this.addMeta(meta, "发现时间", conflict.detectedAt);
 
       new Setting(item)
+        .addButton((button) => button
+          .setButtonText("复制诊断信息")
+          .onClick(async () => {
+            await navigator.clipboard.writeText([
+              `path=${conflict.path}`,
+              `baseHash=${conflict.baseHash ?? "null"}`,
+              `localHash=${conflict.localHash ?? "null"}`,
+              `remoteHash=${conflict.remoteHash ?? "null"}`,
+              `remoteVersion=${conflict.remoteVersion}`,
+              `detectedAt=${conflict.detectedAt}`,
+            ].join("\n"));
+            new Notice("已复制冲突诊断信息");
+          }))
         .addButton((button) => button
           .setButtonText("打开本地文件")
           .onClick(async () => {
@@ -66,6 +81,11 @@ export class ConflictModal extends Modal {
             }
           }));
     }
+  }
+
+  private addMeta(container: HTMLElement, label: string, value: string): void {
+    container.createDiv({ cls: "s3-sync-conflict-label", text: label });
+    container.createDiv({ cls: "s3-sync-conflict-value", text: value });
   }
 
   private errorMessage(error: unknown): string {

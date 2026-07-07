@@ -8,6 +8,7 @@
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;
   padding: 8px;
+  overflow-wrap: anywhere;
 }
 
 .s3-sync-conflict-actions {
@@ -15,4 +16,23 @@
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 8px;
+}
+
+.s3-sync-conflict-meta {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px;
+  margin-top: 8px;
+}
+
+.s3-sync-conflict-label {
+  color: var(--text-muted);
+}
+
+.s3-sync-conflict-value {
+  font-family: var(--font-monospace);
+  user-select: text;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-all;
 }
