@@ -152,6 +152,10 @@ export default class S3SyncPlugin extends Plugin {
 
   private scheduleSync(): void {
     this.updateStatus();
+    if (!this.settings.autoSync) {
+      return;
+    }
+
     if (this.syncTimer !== null) {
       window.clearTimeout(this.syncTimer);
     }

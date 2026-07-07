@@ -8,6 +8,7 @@ export interface S3SyncSettings {
   secretAccessKey: string;
   prefix: string;
   forcePathStyle: boolean;
+  autoSync: boolean;
   syncOnStartup: boolean;
   debounceSeconds: number;
   ignoredPatterns: string;

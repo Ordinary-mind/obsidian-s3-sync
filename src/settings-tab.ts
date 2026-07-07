@@ -80,6 +80,16 @@ export class S3SyncSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
+      .setName("自动同步")
+      .setDesc("关闭时只记录待同步文件，不会自动联网；可通过命令手动同步。")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.autoSync)
+        .onChange(async (value) => {
+          this.plugin.settings.autoSync = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
       .setName("高级设置")
       .setDesc(`当前实际 Prefix：${this.plugin.getEffectivePrefix()}`)
       .addButton((button) => button
@@ -119,7 +129,7 @@ export class S3SyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("启动时同步")
-      .setDesc("启动后拉取远端变化，并同步事件队列。")
+      .setDesc("Obsidian 启动后主动执行一次同步。")
       .addToggle((toggle) => toggle
         .setValue(this.plugin.settings.syncOnStartup)
         .onChange(async (value) => {

@@ -9,6 +9,7 @@ export const DEFAULT_SETTINGS: S3SyncSettings = {
   secretAccessKey: "",
   prefix: "",
   forcePathStyle: true,
+  autoSync: false,
   syncOnStartup: false,
   debounceSeconds: 10,
   ignoredPatterns: [
