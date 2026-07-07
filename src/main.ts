@@ -26,13 +26,19 @@ export default class S3SyncPlugin extends Plugin {
     this.statusEl = this.addStatusBarItem();
     this.updateStatus();
 
-    this.addRibbonIcon("refresh-cw", "S3 Sync：立即同步", () => {
-      void this.syncNow();
+    this.addRibbonIcon("refresh-cw", "S3 Sync：同步", () => {
+      void this.smartSync();
     });
 
     this.addCommand({
-      id: "s3-sync-now",
-      name: "S3 Sync：立即同步事件队列",
+      id: "s3-sync-smart",
+      name: "S3 Sync：同步",
+      callback: () => void this.smartSync(),
+    });
+
+    this.addCommand({
+      id: "s3-sync-queued",
+      name: "S3 Sync：仅同步事件队列",
       callback: () => void this.syncNow(),
     });
 
@@ -177,6 +183,16 @@ export default class S3SyncPlugin extends Plugin {
     } finally {
       this.updateStatus();
     }
+  }
+
+  private async smartSync(): Promise<void> {
+    const engine = this.engineOrThrow();
+    const hasLocalBaseline = Object.keys(this.data.files).length > 0;
+    if (!hasLocalBaseline && !engine.hasQueuedWork()) {
+      await this.syncAllKnownFiles();
+      return;
+    }
+    await this.syncNow();
   }
 
   private async syncAllKnownFiles(): Promise<void> {
