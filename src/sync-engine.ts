@@ -124,6 +124,17 @@ export class SyncEngine {
     return this.sync(Array.from(paths));
   }
 
+  async rebuildRemoteFromLocal(): Promise<SyncSummary> {
+    await this.remote.deletePrefix();
+    this.queue.clear();
+    this.data.files = {};
+    this.data.pendingDeletes = {};
+    this.data.forceUploads = {};
+    this.data.conflicts = {};
+    await this.saveData();
+    return this.syncAllKnownFiles();
+  }
+
   async resolveConflict(conflictId: string, mode: "current" | "conflict" | "both"): Promise<void> {
     const conflict = this.data.conflicts[conflictId];
     if (!conflict || conflict.resolved) {
@@ -340,6 +351,7 @@ export class SyncEngine {
     const op = this.createOp("upsert", path, baseHash, content.hash, objectKey, content.size);
     await this.remote.appendOp(op);
     this.applyOpToSnapshot(snapshot, op);
+    await this.remote.writePathIndex(snapshot.files[path]);
     this.markSynced(path, content.hash, op.opId, false);
     delete this.data.forceUploads[path];
     summary.uploaded += 1;
@@ -366,6 +378,7 @@ export class SyncEngine {
     const op = this.createOp("delete", path, baseHash, null, null, 0);
     await this.remote.appendOp(op);
     this.applyOpToSnapshot(snapshot, op);
+    await this.remote.writePathIndex(snapshot.files[path]);
     this.markSynced(path, null, op.opId, true);
     delete this.data.pendingDeletes[path];
     summary.deleted += 1;

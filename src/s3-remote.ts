@@ -1,11 +1,12 @@
 import {
+  DeleteObjectsCommand,
   GetObjectCommand,
   ListObjectsV2Command,
   NoSuchKey,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
-import type { RemoteOp, RemoteSnapshot, S3SyncSettings } from "./types";
+import type { RemoteFileRecord, RemoteOp, RemoteSnapshot, S3SyncSettings } from "./types";
 import {
   arrayBufferToText,
   bodyToArrayBuffer,
@@ -60,6 +61,10 @@ export class S3Remote {
     // 每个操作写入唯一对象，避免多个设备同时覆盖同一个 manifest。
     const key = `${this.prefix}ops/${op.opId}.json`;
     await this.putJson(key, op);
+  }
+
+  async writePathIndex(record: RemoteFileRecord): Promise<void> {
+    await this.putJson(`${this.prefix}paths/${record.path}.sync.json`, record);
   }
 
   async listOpsAfter(_cursor: string | null): Promise<RemoteOp[]> {
@@ -118,6 +123,40 @@ export class S3Remote {
 
   async writeSnapshot(snapshot: RemoteSnapshot): Promise<void> {
     await this.putJson(`${this.prefix}snapshots/latest.json`, snapshot);
+  }
+
+  async deletePrefix(): Promise<number> {
+    this.validate();
+    let deleted = 0;
+    let continuationToken: string | undefined;
+
+    do {
+      const response = await this.client.send(new ListObjectsV2Command({
+        Bucket: this.bucket,
+        Prefix: this.prefix,
+        ContinuationToken: continuationToken,
+      }));
+
+      const objects = (response.Contents ?? [])
+        .map((item) => item.Key)
+        .filter((key): key is string => Boolean(key))
+        .map((Key) => ({ Key }));
+
+      if (objects.length > 0) {
+        await this.client.send(new DeleteObjectsCommand({
+          Bucket: this.bucket,
+          Delete: {
+            Objects: objects,
+            Quiet: true,
+          },
+        }));
+        deleted += objects.length;
+      }
+
+      continuationToken = response.NextContinuationToken;
+    } while (continuationToken);
+
+    return deleted;
   }
 
   private async putJson(key: string, value: unknown): Promise<void> {
