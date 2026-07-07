@@ -142,6 +142,7 @@ export class SyncEngine {
         hash: content.hash,
         size: content.size,
         updatedAt: nowIso(),
+        updatedByDevice: this.data.deviceId,
       };
       this.markBase(path, content.hash, content.size);
       summary.uploaded += 1;
@@ -221,7 +222,8 @@ export class SyncEngine {
   ): Promise<void> {
     const baseHash = this.data.files[path]?.hash ?? null;
     const localHash = local.hash;
-    const remoteHash = manifest.files[path]?.hash ?? null;
+    const remoteFile = manifest.files[path];
+    const remoteHash = remoteFile?.hash ?? null;
 
     if (localHash === remoteHash) {
       this.markBase(path, localHash, local.size);
@@ -235,6 +237,23 @@ export class SyncEngine {
     }
 
     if (remoteHash === baseHash && localHash !== baseHash) {
+      if (localHash === null) {
+        remoteChanges.push({ type: "delete", path });
+      } else if (local.data) {
+        remoteChanges.push({
+          type: "upload",
+          path,
+          content: {
+            hash: localHash,
+            size: local.size,
+            data: local.data,
+          },
+        });
+      }
+      return;
+    }
+
+    if (remoteFile?.updatedByDevice === this.data.deviceId) {
       if (localHash === null) {
         remoteChanges.push({ type: "delete", path });
       } else if (local.data) {
@@ -299,6 +318,7 @@ export class SyncEngine {
           hash: change.content.hash,
           size: change.content.size,
           updatedAt: nowIso(),
+          updatedByDevice: this.data.deviceId,
         };
         this.markBase(change.path, change.content.hash, change.content.size);
         summary.uploaded += 1;
@@ -355,6 +375,7 @@ export class SyncEngine {
         hash: local.hash,
         size: local.size,
         updatedAt: nowIso(),
+        updatedByDevice: this.data.deviceId,
       };
       this.markBase(conflict.path, local.hash, local.size);
     }

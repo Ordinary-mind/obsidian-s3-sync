@@ -46,6 +46,7 @@ export interface RemoteManifestFile {
   hash: string;
   size: number;
   updatedAt: string;
+  updatedByDevice?: string;
 }
 
 export interface FileContent {
