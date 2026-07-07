@@ -142,6 +142,7 @@ export class SyncEngine {
       await this.writeBinary(conflict.path, data);
       await this.vault.delete(conflictFile);
       this.queue.set(conflict.path, "upsert");
+      this.data.forceUploads[conflict.path] = nowIso();
     }
 
     if (mode === "current") {
@@ -150,10 +151,12 @@ export class SyncEngine {
         await this.vault.delete(conflictFile);
       }
       this.queue.set(conflict.path, "upsert");
+      this.data.forceUploads[conflict.path] = nowIso();
     }
 
     if (mode === "both") {
       this.queue.set(conflict.path, "upsert");
+      this.data.forceUploads[conflict.path] = nowIso();
     }
 
     conflict.resolved = true;
@@ -214,14 +217,15 @@ export class SyncEngine {
   }
 
   private async loadRemoteState(): Promise<RemoteSnapshot> {
-    const snapshot = await this.remote.readSnapshot() ?? {
+    // op log 是唯一可信来源，snapshot 只作为远端可读缓存，避免并发写 snapshot 导致状态回退。
+    const snapshot: RemoteSnapshot = {
       version: 1 as const,
       createdAt: nowIso(),
       lastOpId: null,
       files: {},
     };
 
-    const ops = await this.remote.listOpsAfter(snapshot.lastOpId);
+    const ops = await this.remote.listOpsAfter(null);
     for (const op of ops) {
       this.applyOpToSnapshot(snapshot, op);
     }
@@ -304,14 +308,27 @@ export class SyncEngine {
     const content = await this.readFileContent(file);
     const localState = this.data.files[path];
     const remoteFile = snapshot.files[path];
+    const forceUpload = this.data.forceUploads[path] !== undefined;
 
-    if (localState?.lastSyncedHash === content.hash && !localState.deleted) {
+    if (localState?.lastSyncedHash === content.hash && !localState.deleted && !forceUpload) {
+      if (remoteFile && remoteFile.opId !== localState.lastRemoteOpId) {
+        if (remoteFile.deleted) {
+          await this.applyRemoteDelete(remoteFile, summary);
+          return;
+        }
+        if (remoteFile.hash !== content.hash) {
+          await this.applyRemoteUpsert(remoteFile, summary);
+          return;
+        }
+        this.markSynced(path, content.hash, remoteFile.opId, false);
+      }
       summary.skipped += 1;
       return;
     }
 
     if (remoteFile && !remoteFile.deleted && remoteFile.hash === content.hash) {
       this.markSynced(path, content.hash, remoteFile.opId, false);
+      delete this.data.forceUploads[path];
       summary.skipped += 1;
       return;
     }
@@ -319,6 +336,7 @@ export class SyncEngine {
     if (
       remoteFile &&
       !remoteFile.deleted &&
+      !forceUpload &&
       (!localState?.lastSyncedHash || remoteFile.hash !== localState.lastSyncedHash)
     ) {
       await this.createConflictFromRemote(remoteFile, content.hash, summary);
@@ -326,10 +344,12 @@ export class SyncEngine {
     }
 
     const objectKey = await this.remote.uploadObject(content.hash, content.data);
-    const op = this.createOp("upsert", path, localState?.lastSyncedHash ?? null, content.hash, objectKey, content.size);
+    const baseHash = forceUpload ? remoteFile?.hash ?? localState?.lastSyncedHash ?? null : localState?.lastSyncedHash ?? null;
+    const op = this.createOp("upsert", path, baseHash, content.hash, objectKey, content.size);
     await this.remote.appendOp(op);
     this.applyOpToSnapshot(snapshot, op);
     this.markSynced(path, content.hash, op.opId, false);
+    delete this.data.forceUploads[path];
     summary.uploaded += 1;
   }
 
@@ -337,6 +357,13 @@ export class SyncEngine {
     const pendingDelete = this.data.pendingDeletes[path];
     const remoteFile = snapshot.files[path];
     const baseHash = pendingDelete?.baseHash ?? this.data.files[path]?.lastSyncedHash ?? null;
+
+    if (remoteFile?.deleted) {
+      this.markSynced(path, null, remoteFile.opId, true);
+      delete this.data.pendingDeletes[path];
+      summary.skipped += 1;
+      return;
+    }
 
     if (remoteFile && !remoteFile.deleted && baseHash && remoteFile.hash !== baseHash) {
       await this.createConflictFromRemote(remoteFile, baseHash, summary);
@@ -503,6 +530,14 @@ export class SyncEngine {
   }
 
   private shouldSkip(path: string): boolean {
-    return isIgnored(normalizePath(path), this.ignoredPatterns);
+    const normalized = normalizePath(path);
+    if (isIgnored(normalized, this.ignoredPatterns)) {
+      return true;
+    }
+
+    return Object.values(this.data.conflicts).some((conflict) => (
+      !conflict.resolved &&
+      normalizePath(conflict.conflictPath) === normalized
+    ));
   }
 }

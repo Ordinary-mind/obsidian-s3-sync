@@ -173,15 +173,20 @@ export default class S3SyncPlugin extends Plugin {
 
   private async syncNow(): Promise<void> {
     const engine = this.engineOrThrow();
+    let succeeded = false;
     try {
       const summary = await engine.syncQueued();
       await this.saveSyncData();
       this.showSummary(summary);
+      succeeded = true;
     } catch (error) {
       new Notice(`S3 Sync 同步失败：${this.errorMessage(error)}`);
       console.error(error);
     } finally {
       this.updateStatus();
+      if (succeeded && this.settings.autoSync && engine.hasQueuedWork()) {
+        this.scheduleSync();
+      }
     }
   }
 
@@ -196,15 +201,20 @@ export default class S3SyncPlugin extends Plugin {
 
   private async syncAllKnownFiles(): Promise<void> {
     const engine = this.engineOrThrow();
+    let succeeded = false;
     try {
       const summary = await engine.syncAllKnownFiles();
       await this.saveSyncData();
       this.showSummary(summary);
+      succeeded = true;
     } catch (error) {
       new Notice(`S3 Sync 完整同步失败：${this.errorMessage(error)}`);
       console.error(error);
     } finally {
       this.updateStatus();
+      if (succeeded && this.settings.autoSync && engine.hasQueuedWork()) {
+        this.scheduleSync();
+      }
     }
   }
 
@@ -257,6 +267,10 @@ export default class S3SyncPlugin extends Plugin {
       pendingDeletes: {
         ...defaultData.pendingDeletes,
         ...(persisted?.syncData?.pendingDeletes ?? {}),
+      },
+      forceUploads: {
+        ...defaultData.forceUploads,
+        ...(persisted?.syncData?.forceUploads ?? {}),
       },
       conflicts: {
         ...defaultData.conflicts,

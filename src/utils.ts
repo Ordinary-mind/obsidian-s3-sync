@@ -30,13 +30,6 @@ export function arrayBufferToText(value: ArrayBuffer): string {
   return new TextDecoder("utf-8").decode(value);
 }
 
-export function encodePathForKey(path: string): string {
-  return normalizePath(path)
-    .split("/")
-    .map((part) => encodeURIComponent(part))
-    .join("/");
-}
-
 export function normalizePrefix(prefix: string): string {
   const trimmed = prefix.trim().replace(/^\/+|\/+$/g, "");
   return trimmed.length > 0 ? `${trimmed}/` : "";

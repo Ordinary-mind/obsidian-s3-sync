@@ -34,9 +34,9 @@ export interface ConflictRecord {
 
 export interface S3SyncData {
   deviceId: string;
-  remoteCursor: string | null;
   files: Record<string, LocalFileState>;
   pendingDeletes: Record<string, PendingDelete>;
+  forceUploads: Record<string, string>;
   conflicts: Record<string, ConflictRecord>;
 }
 

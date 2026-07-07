@@ -9,7 +9,6 @@ import type { RemoteOp, RemoteSnapshot, S3SyncSettings } from "./types";
 import {
   arrayBufferToText,
   bodyToArrayBuffer,
-  encodePathForKey,
   normalizePrefix,
   textToArrayBuffer,
 } from "./utils";
@@ -63,7 +62,7 @@ export class S3Remote {
     await this.putJson(key, op);
   }
 
-  async listOpsAfter(cursor: string | null): Promise<RemoteOp[]> {
+  async listOpsAfter(_cursor: string | null): Promise<RemoteOp[]> {
     const prefix = `${this.prefix}ops/`;
     const keys: string[] = [];
     let continuationToken: string | undefined;
@@ -83,11 +82,12 @@ export class S3Remote {
       continuationToken = response.NextContinuationToken;
     } while (continuationToken);
 
+    // snapshot 只是加速缓存，不能作为强一致游标。
+    // 多设备并发写 snapshot 时，如果按 lastOpId 跳过旧 op，可能永久漏掉另一个设备的操作。
     const sorted = keys.sort();
-    const filtered = cursor ? sorted.filter((key) => this.opIdFromKey(key) > cursor) : sorted;
     const ops: RemoteOp[] = [];
 
-    for (const key of filtered) {
+    for (const key of sorted) {
       const op = await this.getJson<RemoteOp>(key);
       ops.push(op);
     }
@@ -150,8 +150,4 @@ export class S3Remote {
   private isNotFound(error: unknown): boolean {
     return error instanceof NoSuchKey || (error as { name?: string }).name === "NoSuchKey";
   }
-}
-
-export function remotePathKey(path: string): string {
-  return encodePathForKey(path);
 }

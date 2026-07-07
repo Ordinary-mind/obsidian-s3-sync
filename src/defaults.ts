@@ -23,9 +23,9 @@ export const DEFAULT_SETTINGS: S3SyncSettings = {
 export function createDefaultData(): S3SyncData {
   return {
     deviceId: randomId("device"),
-    remoteCursor: null,
     files: {},
     pendingDeletes: {},
+    forceUploads: {},
     conflicts: {},
   };
 }
