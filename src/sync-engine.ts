@@ -346,7 +346,7 @@ export class SyncEngine {
       return;
     }
 
-    const objectKey = await this.remote.uploadObject(content.hash, content.data);
+    const objectKey = await this.remote.uploadObject(path, content.hash, content.data);
     const baseHash = forceUpload ? remoteFile?.hash ?? localState?.lastSyncedHash ?? null : localState?.lastSyncedHash ?? null;
     const op = this.createOp("upsert", path, baseHash, content.hash, objectKey, content.size);
     await this.remote.appendOp(op);

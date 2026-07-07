@@ -23,7 +23,7 @@
 
 远端默认使用当前 Vault 名称作为 Prefix。Prefix 下包含：
 
-- `objects/sha256/`：按内容 Hash 保存文件版本，用于冲突和历史 op 引用。
+- `files/`：按源文件路径组织内容版本，例如 `files/notes/a.md.versions/<hash>`。
 - `ops/`：每次上传或删除产生一条操作日志，是同步的可信来源。
 - `paths/`：按原始文件路径写入可读索引，便于在 S3 控制台排查。
 - `snapshots/latest.json`：当前状态快照，仅作可读缓存。

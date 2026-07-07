@@ -13,6 +13,7 @@ import {
   normalizePrefix,
   textToArrayBuffer,
 } from "./utils";
+import { normalizePath } from "obsidian";
 
 export class S3Remote {
   private readonly client: S3Client;
@@ -39,12 +40,12 @@ export class S3Remote {
     }
   }
 
-  objectKeyForHash(hash: string): string {
-    return `${this.prefix}objects/sha256/${hash.slice(0, 2)}/${hash.slice(2, 4)}/${hash}`;
+  objectKeyForPathVersion(path: string, hash: string): string {
+    return `${this.prefix}files/${normalizePath(path)}.versions/${hash}`;
   }
 
-  async uploadObject(hash: string, data: ArrayBuffer): Promise<string> {
-    const key = this.objectKeyForHash(hash);
+  async uploadObject(path: string, hash: string, data: ArrayBuffer): Promise<string> {
+    const key = this.objectKeyForPathVersion(path, hash);
     await this.putBytes(key, data, "application/octet-stream");
     return key;
   }
