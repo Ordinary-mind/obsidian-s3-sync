@@ -117,8 +117,40 @@ export class SyncEngine {
     this.data.files = {};
     this.data.conflicts = {};
     this.data.lastSyncedVersion = 0;
+
+    const summary: SyncSummary = {
+      uploaded: 0,
+      downloaded: 0,
+      deleted: 0,
+      conflicts: 0,
+      skipped: 0,
+    };
+
+    const manifest: RemoteManifest = {
+      version: 1,
+      updatedAt: nowIso(),
+      files: {},
+    };
+
+    const paths = (await this.listAllFiles(""))
+      .filter((path) => !this.shouldSkip(path));
+
+    for (const path of paths) {
+      const content = await this.readPathContent(path);
+      await this.remote.uploadFile(path, content.data);
+      manifest.files[path] = {
+        hash: content.hash,
+        size: content.size,
+        updatedAt: nowIso(),
+      };
+      this.markBase(path, content.hash, content.size);
+      summary.uploaded += 1;
+    }
+
+    await this.remote.writeManifest(manifest);
+    this.data.lastSyncedVersion = manifest.version;
     await this.saveData();
-    return this.syncAllKnownFiles();
+    return summary;
   }
 
   async resolveConflict(conflictId: string, mode: "local" | "remote"): Promise<void> {
