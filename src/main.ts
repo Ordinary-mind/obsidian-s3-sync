@@ -58,7 +58,7 @@ export default class S3SyncPlugin extends Plugin {
     this.addSettingTab(new S3SyncSettingTab(this.app, this));
 
     if (this.settings.syncOnStartup) {
-      window.setTimeout(() => void this.syncNow(), 5000);
+      window.setTimeout(() => void this.syncAllKnownFiles(), 5000);
     }
   }
 
@@ -187,12 +187,11 @@ export default class S3SyncPlugin extends Plugin {
 
   private async smartSync(): Promise<void> {
     const engine = this.engineOrThrow();
-    const hasLocalBaseline = Object.keys(this.data.files).length > 0;
-    if (!hasLocalBaseline && !engine.hasQueuedWork()) {
+    if (engine.hasQueuedWork()) {
+      await this.syncNow();
+    } else {
       await this.syncAllKnownFiles();
-      return;
     }
-    await this.syncNow();
   }
 
   private async syncAllKnownFiles(): Promise<void> {
