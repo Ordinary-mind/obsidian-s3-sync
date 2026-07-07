@@ -249,6 +249,9 @@ export default class S3SyncPlugin extends Plugin {
     new Notice(
       `S3 Sync 完成：上传 ${summary.uploaded}，下载 ${summary.downloaded}，删除 ${summary.deleted}，冲突 ${summary.conflicts}，跳过 ${summary.skipped}`,
     );
+    if (summary.conflicts > 0) {
+      new ConflictModal(this).open();
+    }
   }
 
   private updateStatus(): void {

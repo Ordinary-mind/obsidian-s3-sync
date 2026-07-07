@@ -44,17 +44,31 @@ export class ConflictModal extends Modal {
           .setButtonText("使用本地")
           .setCta()
           .onClick(async () => {
-            await this.plugin.resolveConflict(conflict.id, "local");
-            new Notice("已使用本地版本");
-            this.render();
+            try {
+              await this.plugin.resolveConflict(conflict.id, "local");
+              new Notice("已使用本地版本");
+              this.render();
+            } catch (error) {
+              new Notice(`解决冲突失败：${this.errorMessage(error)}`);
+              console.error(error);
+            }
           }))
         .addButton((button) => button
           .setButtonText("使用远端")
           .onClick(async () => {
-            await this.plugin.resolveConflict(conflict.id, "remote");
-            new Notice("已使用远端版本");
-            this.render();
+            try {
+              await this.plugin.resolveConflict(conflict.id, "remote");
+              new Notice("已使用远端版本");
+              this.render();
+            } catch (error) {
+              new Notice(`解决冲突失败：${this.errorMessage(error)}`);
+              console.error(error);
+            }
           }));
     }
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 }
