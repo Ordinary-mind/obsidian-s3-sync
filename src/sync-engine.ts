@@ -13,7 +13,6 @@ import type {
 import { S3Remote } from "./s3-remote";
 import {
   createConflictPath,
-  getTFile,
   ensureParentFolder,
   isIgnored,
   nowIso,
@@ -102,9 +101,7 @@ export class SyncEngine {
   }
 
   async syncAllKnownFiles(): Promise<SyncSummary> {
-    const paths = new Set(this.vault
-      .getFiles()
-      .map((file) => normalizePath(file.path))
+    const paths = new Set((await this.listAllFiles(""))
       .filter((path) => !this.shouldSkip(path)));
 
     for (const [path, state] of Object.entries(this.data.files)) {
@@ -134,21 +131,19 @@ export class SyncEngine {
     }
 
     if (mode === "conflict") {
-      const conflictFile = getTFile(this.vault, conflict.conflictPath);
-      if (!conflictFile) {
+      if (!(await this.vault.adapter.exists(conflict.conflictPath))) {
         throw new Error("冲突文件不存在，无法使用该版本");
       }
-      const data = await this.vault.readBinary(conflictFile);
+      const data = await this.vault.adapter.readBinary(conflict.conflictPath);
       await this.writeBinary(conflict.path, data);
-      await this.vault.delete(conflictFile);
+      await this.vault.adapter.remove(conflict.conflictPath);
       this.queue.set(conflict.path, "upsert");
       this.data.forceUploads[conflict.path] = nowIso();
     }
 
     if (mode === "current") {
-      const conflictFile = getTFile(this.vault, conflict.conflictPath);
-      if (conflictFile) {
-        await this.vault.delete(conflictFile);
+      if (await this.vault.adapter.exists(conflict.conflictPath)) {
+        await this.vault.adapter.remove(conflict.conflictPath);
       }
       this.queue.set(conflict.path, "upsert");
       this.data.forceUploads[conflict.path] = nowIso();
@@ -200,12 +195,11 @@ export class SyncEngine {
           continue;
         }
 
-        const file = getTFile(this.vault, path);
-        if (!file) {
+        if (!(await this.vault.adapter.exists(path))) {
           summary.skipped += 1;
           continue;
         }
-        await this.pushUpsert(file, snapshot, summary);
+        await this.pushUpsert(path, snapshot, summary);
       }
 
       await this.writeSnapshot(snapshot);
@@ -260,11 +254,10 @@ export class SyncEngine {
       return;
     }
 
-    const localFile = getTFile(this.vault, remoteFile.path);
     const localState = this.data.files[remoteFile.path];
 
-    if (localFile) {
-      const localContent = await this.readFileContent(localFile);
+    if (await this.vault.adapter.exists(remoteFile.path)) {
+      const localContent = await this.readPathContent(remoteFile.path);
       if (localContent.hash === remoteFile.hash) {
         this.markSynced(remoteFile.path, remoteFile.hash, remoteFile.opId, false);
         return;
@@ -283,29 +276,28 @@ export class SyncEngine {
   }
 
   private async applyRemoteDelete(remoteFile: RemoteFileRecord, summary: SyncSummary): Promise<void> {
-    const localFile = getTFile(this.vault, remoteFile.path);
     const localState = this.data.files[remoteFile.path];
 
-    if (!localFile) {
+    if (!(await this.vault.adapter.exists(remoteFile.path))) {
       this.markSynced(remoteFile.path, null, remoteFile.opId, true);
       return;
     }
 
-    const localContent = await this.readFileContent(localFile);
+    const localContent = await this.readPathContent(remoteFile.path);
     if (!localState?.lastSyncedHash || localContent.hash !== localState.lastSyncedHash) {
       await this.createDeleteConflict(remoteFile, localContent.hash, summary);
       return;
     }
 
     this.mute(remoteFile.path);
-    await this.vault.delete(localFile);
+    await this.vault.adapter.remove(remoteFile.path);
     this.markSynced(remoteFile.path, null, remoteFile.opId, true);
     summary.deleted += 1;
   }
 
-  private async pushUpsert(file: TFile, snapshot: RemoteSnapshot, summary: SyncSummary): Promise<void> {
-    const path = normalizePath(file.path);
-    const content = await this.readFileContent(file);
+  private async pushUpsert(filePath: string, snapshot: RemoteSnapshot, summary: SyncSummary): Promise<void> {
+    const path = normalizePath(filePath);
+    const content = await this.readPathContent(path);
     const localState = this.data.files[path];
     const remoteFile = snapshot.files[path];
     const forceUpload = this.data.forceUploads[path] !== undefined;
@@ -408,12 +400,11 @@ export class SyncEngine {
       return;
     }
 
-    const localFile = getTFile(this.vault, remoteFile.path);
-    if (!localFile) {
+    if (!(await this.vault.adapter.exists(remoteFile.path))) {
       return;
     }
 
-    const localData = await this.vault.readBinary(localFile);
+    const localData = await this.vault.adapter.readBinary(remoteFile.path);
     const conflictPath = createConflictPath(remoteFile.path, this.data.deviceId);
     await this.writeBinary(conflictPath, localData);
     this.recordConflict(remoteFile.path, conflictPath, localHash, remoteFile.hash, remoteFile.opId);
@@ -491,8 +482,8 @@ export class SyncEngine {
     await this.remote.writeSnapshot(snapshot);
   }
 
-  private async readFileContent(file: TFile): Promise<FileContent> {
-    const data = await this.vault.readBinary(file);
+  private async readPathContent(path: string): Promise<FileContent> {
+    const data = await this.vault.adapter.readBinary(normalizePath(path));
     const hash = await sha256Hex(data);
     return {
       hash,
@@ -505,12 +496,19 @@ export class SyncEngine {
     const normalized = normalizePath(path);
     await ensureParentFolder(this.vault, normalized);
     this.mute(normalized);
-    const file = getTFile(this.vault, normalized);
-    if (file) {
-      await this.vault.modifyBinary(file, data);
-    } else {
-      await this.vault.createBinary(normalized, data);
+    await this.vault.adapter.writeBinary(normalized, data);
+  }
+
+  private async listAllFiles(folder: string): Promise<string[]> {
+    const normalizedFolder = normalizePath(folder);
+    const listed = await this.vault.adapter.list(normalizedFolder);
+    const files = listed.files.map((file) => normalizePath(file));
+
+    for (const childFolder of listed.folders) {
+      files.push(...await this.listAllFiles(childFolder));
     }
+
+    return files;
   }
 
   private markSynced(path: string, hash: string | null, remoteOpId: string | null, deleted: boolean): void {
