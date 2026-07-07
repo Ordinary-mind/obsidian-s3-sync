@@ -318,6 +318,8 @@ export default class S3SyncPlugin extends Plugin {
           localHash: conflict.localHash ?? null,
           remoteHash: conflict.remoteHash ?? null,
           remoteVersion: conflict.remoteVersion,
+          localDeviceId: conflict.localDeviceId,
+          remoteUpdatedByDevice: conflict.remoteUpdatedByDevice,
           detectedAt: conflict.detectedAt ?? new Date().toISOString(),
           resolved: conflict.resolved ?? false,
         };

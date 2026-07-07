@@ -34,6 +34,8 @@ export class ConflictModal extends Modal {
       this.addMeta(meta, "本地 Hash", conflict.localHash ?? "已删除");
       this.addMeta(meta, "远端 Hash", conflict.remoteHash ?? "已删除");
       this.addMeta(meta, "远端版本", String(conflict.remoteVersion));
+      this.addMeta(meta, "本机设备", conflict.localDeviceId ?? "未知");
+      this.addMeta(meta, "远端设备", conflict.remoteUpdatedByDevice ?? "未知");
       this.addMeta(meta, "发现时间", conflict.detectedAt);
 
       new Setting(item)
@@ -46,6 +48,8 @@ export class ConflictModal extends Modal {
               `localHash=${conflict.localHash ?? "null"}`,
               `remoteHash=${conflict.remoteHash ?? "null"}`,
               `remoteVersion=${conflict.remoteVersion}`,
+              `localDeviceId=${conflict.localDeviceId ?? "unknown"}`,
+              `remoteUpdatedByDevice=${conflict.remoteUpdatedByDevice ?? "unknown"}`,
               `detectedAt=${conflict.detectedAt}`,
             ].join("\n"));
             new Notice("已复制冲突诊断信息");

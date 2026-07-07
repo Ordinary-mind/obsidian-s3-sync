@@ -270,7 +270,7 @@ export class SyncEngine {
       return;
     }
 
-    this.recordConflict(path, baseHash, localHash, remoteHash, manifest.version);
+    this.recordConflict(path, baseHash, localHash, remoteHash, manifest.version, remoteFile?.updatedByDevice);
     summary.conflicts += 1;
   }
 
@@ -394,6 +394,7 @@ export class SyncEngine {
     localHash: HashValue,
     remoteHash: HashValue,
     remoteVersion: number,
+    remoteUpdatedByDevice: string | undefined,
   ): void {
     const existing = Object.values(this.data.conflicts).find((conflict) => (
       !conflict.resolved &&
@@ -413,6 +414,8 @@ export class SyncEngine {
       localHash,
       remoteHash,
       remoteVersion,
+      localDeviceId: this.data.deviceId,
+      remoteUpdatedByDevice,
       detectedAt: nowIso(),
       resolved: false,
     };
