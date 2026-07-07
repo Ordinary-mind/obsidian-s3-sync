@@ -3,6 +3,7 @@ import type S3SyncPlugin from "./main";
 
 export class S3SyncSettingTab extends PluginSettingTab {
   private readonly plugin: S3SyncPlugin;
+  private showAdvanced = false;
 
   constructor(app: App, plugin: S3SyncPlugin) {
     super(app, plugin);
@@ -48,18 +49,6 @@ export class S3SyncSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName("Prefix（可选）")
-      .setDesc(`留空会自动使用当前 Vault 名称。当前实际 Prefix：${this.plugin.getEffectivePrefix()}`)
-      .addText((text) => text
-        .setPlaceholder("留空自动生成")
-        .setValue(this.plugin.settings.prefix)
-        .onChange(async (value) => {
-          this.plugin.settings.prefix = value.trim();
-          await this.plugin.saveSettings();
-          this.display();
-        }));
-
-    new Setting(containerEl)
       .setName("Access Key ID")
       .addText((text) => text
         .setValue(this.plugin.settings.accessKeyId)
@@ -88,6 +77,34 @@ export class S3SyncSettingTab extends PluginSettingTab {
         .setCta()
         .onClick(async () => {
           await this.plugin.testS3Connection();
+        }));
+
+    new Setting(containerEl)
+      .setName("高级设置")
+      .setDesc(`当前实际 Prefix：${this.plugin.getEffectivePrefix()}`)
+      .addButton((button) => button
+        .setButtonText(this.showAdvanced ? "隐藏高级设置" : "显示高级设置")
+        .onClick(() => {
+          this.showAdvanced = !this.showAdvanced;
+          this.display();
+        }));
+
+    if (!this.showAdvanced) {
+      return;
+    }
+
+    containerEl.createEl("h3", { text: "高级设置" });
+
+    new Setting(containerEl)
+      .setName("Prefix")
+      .setDesc("默认留空即可。只有多个 Vault 同名且共用同一个 Bucket 时，才需要手动指定。")
+      .addText((text) => text
+        .setPlaceholder("留空自动生成")
+        .setValue(this.plugin.settings.prefix)
+        .onChange(async (value) => {
+          this.plugin.settings.prefix = value.trim();
+          await this.plugin.saveSettings();
+          this.display();
         }));
 
     new Setting(containerEl)
