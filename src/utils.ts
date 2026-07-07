@@ -48,8 +48,8 @@ export function resolveEffectivePrefix(prefix: string, vaultName: string): strin
     return trimmed;
   }
 
-  // Prefix 留空时用 Vault 名称隔离远端数据，减少用户必须填写的配置项。
-  const safeVaultName = encodeURIComponent(vaultName.trim() || "vault");
+  // Prefix 留空时用 Vault 名称隔离远端数据。S3 Key 支持空格，保留原名更容易在控制台识别。
+  const safeVaultName = (vaultName.trim() || "vault").replace(/^\/+|\/+$/g, "");
   return `obsidian-s3-sync/${safeVaultName}`;
 }
 
