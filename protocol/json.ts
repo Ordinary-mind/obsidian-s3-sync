@@ -1,6 +1,8 @@
 import { validateParsedJsonLimits } from "./limits";
 import { protocolLimits } from "./limits";
 
+const utf8Encoder = new TextEncoder();
+
 export type ProtocolJsonErrorCode =
   | "body-too-large"
   | "utf8-bom"
@@ -214,7 +216,7 @@ class StrictJsonParser {
   }
 
   private finishString(value: string): string {
-    if (new TextEncoder().encode(value).byteLength > 4 * 1024) {
+    if (utf8Encoder.encode(value).byteLength > 4 * 1024) {
       this.fail("json-string-bytes-exceeded", "JSON string exceeds 4 KiB UTF-8 bytes");
     }
     return value;
