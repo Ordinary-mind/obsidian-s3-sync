@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 
 import {
   ProtocolKeyError,
@@ -77,5 +78,31 @@ describe("v1 object keys", () => {
     expect(() => assertCommitKey(commit, writerId, "00000000000000000002", hash)).toThrow(
       expect.objectContaining({ code: "commit-key-mismatch" }),
     );
+  });
+
+  it("rebuilds every fixed object-vector key from its declared identity fields", () => {
+    const descriptor = JSON.parse(
+      readFileSync(new URL("../../protocol/vectors/repository-descriptor-basic.json", import.meta.url), "utf8"),
+    );
+    const tree = JSON.parse(
+      readFileSync(new URL("../../protocol/vectors/config-tree-basic.json", import.meta.url), "utf8"),
+    );
+    const change = JSON.parse(
+      readFileSync(new URL("../../protocol/vectors/vault-change-chunk-put-delete.json", import.meta.url), "utf8"),
+    );
+    const commit = JSON.parse(
+      readFileSync(new URL("../../protocol/vectors/vault-bootstrap-commit.json", import.meta.url), "utf8"),
+    );
+    const blob = JSON.parse(
+      readFileSync(new URL("../../protocol/vectors/blob-basic.json", import.meta.url), "utf8"),
+    );
+
+    expect(descriptorKey("", descriptor.object.repositoryId)).toBe(descriptor.key);
+    expect(configTreeKey("", tree.object.repositoryId, tree.sha256)).toBe(tree.key);
+    expect(changeChunkKey("", change.object.repositoryId, change.sha256)).toBe(change.key);
+    expect(
+      commitKey("", commit.object.repositoryId, commit.object.writerId, commit.object.sequence, commit.sha256),
+    ).toBe(commit.key);
+    expect(blobKey("", descriptor.object.repositoryId, blob.sha256)).toBe(blob.key);
   });
 });
