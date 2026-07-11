@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-    "generate:unicode": "node scripts/generate-unicode-case-folding.mjs",
+    "generate:unicode": "node scripts/generate-unicode-case-folding.mjs && node scripts/generate-unicode-nfc.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:types": "tsc -p tsconfig.test.json --noEmit"

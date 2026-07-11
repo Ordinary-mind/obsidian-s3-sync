@@ -6,3 +6,6 @@
 *.json text eol=lf
 *.md text eol=lf
 *.css text eol=lf
+
+# Preserve official Unicode inputs byte-for-byte for recorded SHA-256 values.
+scripts/unicode-source/15.1.0/*.txt -text -whitespace

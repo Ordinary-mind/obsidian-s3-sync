@@ -15,3 +15,13 @@ Input contract:
 The generator overlays full (`F`) mappings onto common (`C`) mappings, as
 required by Unicode Default Case Folding. The generated file records a hash of
 the deterministic mapping JSON, which is checked by the protocol vector test.
+
+NFC input contract:
+
+- `UnicodeData.txt` SHA-256: `2fc713e6a31a87c4850a37fe2caffa4218180fadb5de86b43a143ddb4581fb86`
+- `CompositionExclusions.txt` SHA-256: `59d2d9e3dfdf0a999cf9dae11d594f053631222679a2f5710315ea07f7fe82af`
+- Combined generated-input SHA-256: `f371954c66853d015a86ef70791e6350e79c1d8d2da41dbe4b6a4e8cdf1672f5`
+
+`nfc.ts` contains canonical decomposition, combining classes and composition
+pairs only. Hangul decomposition/composition is algorithmic as specified by
+Unicode Normalization Forms.
