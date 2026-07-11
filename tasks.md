@@ -6,7 +6,7 @@
 >
 > 禁止事项：任务 0 未完成前，不实现或改造同步核心，不复用旧 `.s3-sync/manifest.json` 协议。
 >
-> 文档状态：`design.md`、本文与 README 已于 2026-07-11 完成协议设计基线审查；机器可读 Schema、固定向量、测试底座和支持矩阵仍未完成。
+> 文档状态：`design.md`、本文与 README 已于 2026-07-11 完成协议设计基线审查。机器可读 Schema、严格解析/语义校验、Unicode 15.1 固定数据、固定向量和确定性测试底座已进入版本控制；供应商/Obsidian 适配器契约、完整状态向量和 CI 验收仍未完成，因此任务 0 尚未通过。
 
 ## 0. 协议冻结与测试基础设施
 
@@ -20,10 +20,10 @@
 - [x] 冻结 normalizedPrefix 的 NFC/分段规则和完整 S3 Key 1,024 UTF-8 bytes 上限。
 - [x] 冻结 repositoryId、writerId、20 位 sequence、Commit Hash 和 Version ID 的格式。
 - [x] 冻结 RFC 8785 规范 JSON、UTF-8、SHA-256、小写十六进制、UTF-8 数组排序和 Unicode 15.1.0 Default Case Folding 规则。
-- [ ] 使用 JSON Schema Draft 2020-12 冻结 RepositoryDescriptor/`format.json`、ConfigProfile、ConfigTree、两种 Change Chunk/Mutation 分支和 Commit；所有对象封闭、字段 required/条件组合与 `design.md` 完全一致。
-- [ ] Schema 与语义校验固定 descriptorHash 绑定、channel/Mutation 联合分支、四种 Commit kind、bootstrap/change/resolution/reduction 的 parent 基数、parent-reduction 单 Mutation 和 put/delete 字段组合。
-- [ ] 跨对象语义校验固定 ConfigSnapshotMutation 的 delete 因果：根快照 Tree 不含 delete，非根 Tree 的每个 delete path 至少由一个直接父 Tree 管理；缺父保持 pending，全部父验证后仍无依据则版本无效。
-- [ ] 将 `design.md` 第 7.1 节固定资源上限写入 JSON Schema、解析器测试和兼容性说明。
+- [x] 使用 JSON Schema Draft 2020-12 冻结 RepositoryDescriptor/`format.json`、ConfigProfile、ConfigTree、两种 Change Chunk/Mutation 分支和 Commit；所有对象封闭、字段 required/条件组合与 `design.md` 完全一致。
+- [x] Schema 与语义校验固定 descriptorHash 绑定、channel/Mutation 联合分支、四种 Commit kind、bootstrap/change/resolution/reduction 的 parent 基数、parent-reduction 单 Mutation 和 put/delete 字段组合。
+- [x] 跨对象语义校验固定 ConfigSnapshotMutation 的 delete 因果：根快照 Tree 不含 delete，非根 Tree 的每个 delete path 至少由一个直接父 Tree 管理；缺父保持 pending，全部父验证后仍无依据则版本无效。
+- [x] 将 `design.md` 第 7.1 节固定资源上限写入 JSON Schema、解析器测试和兼容性说明。
 - [x] 冻结 ConfigProfile、minimumTargetAppVersion、portablePluginIds、显式 config delete、停止管理与删除之间的语义；`core-plugins.json` 固定排除于 v1 portable Tree。
 - [x] 冻结 v1 信任模型：可信 Bucket/写入者、无签名、无 E2EE、插件代码属于高风险可执行内容。
 - [x] 冻结普通同步所需 S3 权限；DeleteObject 只属于可选 probe 清理或维护能力。
@@ -33,13 +33,13 @@
 
 ### 测试工具
 
-- [ ] 选择 TypeScript 测试运行器并添加 `npm test`、watch 和 CI 命令。
-- [ ] 引入属性测试能力，用固定 seed 输出可重放失败样本。
-- [ ] 固定 Unicode 15.1.0 NFC/CaseFolding 数据来源、许可证和上游文件 SHA-256，生成可复现的规范化与 C/F 映射产物/向量；测试和运行时不依赖宿主 Unicode 版本或网络，并评估移动端 bundle 体积。
-- [ ] 实现有界 UTF-8/JSON 读取和验证管线测试：正文上限 -> 非法编码/BOM/重复 Key/深度/数组/字符串上限 -> RFC 8785 逐字节相等 -> 封闭 Schema -> 跨对象语义。
-- [ ] 实现确定性虚拟时钟、Fake Local FS、Fake Editor Events 和 Fake ObjectStore。
-- [ ] Fake Local FS 必须支持在每个读、rename、写、删除和状态落盘边界注入竞态与崩溃。
-- [ ] Fake ObjectStore 必须支持 List 乱序、重复、空页、晚可见、临时 404、丢失响应和对象篡改。
+- [x] 选择 TypeScript 测试运行器并添加 `npm test`、watch 和 CI 命令。
+- [x] 引入属性测试能力，用固定 seed 输出可重放失败样本。
+- [x] 固定 Unicode 15.1.0 NFC/CaseFolding 数据来源、许可证和上游文件 SHA-256，生成可复现的规范化与 C/F 映射产物/向量；测试和运行时不依赖宿主 Unicode 版本或网络，并评估移动端 bundle 体积。
+- [x] 实现有界 UTF-8/JSON 读取和验证管线测试：正文上限 -> 非法编码/BOM/重复 Key/深度/数组/字符串上限 -> RFC 8785 逐字节相等 -> 封闭 Schema -> 跨对象语义。
+- [x] 实现确定性虚拟时钟、Fake Local FS、Fake Editor Events 和 Fake ObjectStore。
+- [x] Fake Local FS 必须支持在每个读、rename、写、删除和状态落盘边界注入竞态与崩溃。
+- [x] Fake ObjectStore 必须支持 List 乱序、重复、空页、晚可见、临时 404、丢失响应和对象篡改。
 - [ ] 建立规范协议正向/状态向量：descriptor/configDir/historicalConfigDirs/descriptorHash、空仓库、Vault put/delete、多 Chunk bootstrap、ConfigTree、由直接父 Tree 支持的 config delete、writer 正常链/分叉、暂缺 parent 的 pending、Vault Unicode case alias/路径前缀结构冲突，以及 vault/config 两个 channel 中的 change、bootstrap、conflict-resolution、parent-reduction。
 - [ ] 建立规范协议负向向量：字段缺失/多余/错型、错误 kind/channel 分支、BOM/非法 UTF-8/未配对 surrogate/重复 Key/非规范 JSON、非规范数组、Key/Hash/descriptorHash 不一致、parent 自引用/循环/跨寄存器、根 ConfigTree 携带 delete、所有直接父 Tree 均未管理逐字节相同 delete path，以及 ConfigTree 非法插件 ID/alias/前缀形状。
 - [ ] 为小型向量保存规范 JSON 原始 bytes、SHA-256、S3 Key 和期望逻辑状态；大型边界使用确定性生成配方/计数流，覆盖每项固定上限的 `limit` 与 `limit + 1`，不提交 5 GB fixture。
@@ -48,7 +48,7 @@
 
 - [x] `design.md`、`tasks.md` 和 README 不再包含旧 manifest 作为目标协议。
 - [ ] 协议 Schema、上限和测试向量无待定字段。
-- [ ] 新测试命令可在无 Obsidian、无 AWS SDK、无网络环境运行。
+- [x] 新测试命令可在无 Obsidian、无 AWS SDK、无网络环境运行。
 - [ ] Schema 正反例、固定 bytes/Hash/Key 和全部资源边界在 CI 中可确定性复现；任何向量变化都必须作为协议变更审查。
 - [x] 文档用同一状态模型解释“本地编辑为何只能继承 projectedHeads 或精确本地冻结前驱，而不能继承刚拉到的 observedHeads”。
 
