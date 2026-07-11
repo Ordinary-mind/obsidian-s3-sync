@@ -2,7 +2,11 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
-import { ProtocolJsonError, parseCanonicalProtocolJson } from "../../protocol/json";
+import {
+  ProtocolJsonError,
+  parseBoundedProtocolJson,
+  parseCanonicalProtocolJson,
+} from "../../protocol/json";
 import { protocolLimits } from "../../protocol/limits";
 
 const encoder = new TextEncoder();
@@ -47,5 +51,15 @@ describe("strict v1 protocol JSON", () => {
       const bytes = vector.hex ? Uint8Array.from(Buffer.from(vector.hex, "hex")) : encoder.encode(vector.utf8!);
       expectCode(bytes, vector.error);
     }
+  });
+
+  it("applies the object-specific byte bounds before parsing", () => {
+    const oversizedDescriptor = encoder.encode(`{"a":"${"a".repeat(protocolLimits.formatBytes)}"}`);
+    expect(() => parseBoundedProtocolJson("descriptor", oversizedDescriptor)).toThrow(
+      expect.objectContaining({ code: "body-too-large" }),
+    );
+    expect(
+      parseBoundedProtocolJson("commit", encoder.encode('{"a":1}')),
+    ).toEqual({ a: 1 });
   });
 });

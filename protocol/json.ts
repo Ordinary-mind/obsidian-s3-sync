@@ -1,4 +1,5 @@
 import { validateParsedJsonLimits } from "./limits";
+import { protocolLimits } from "./limits";
 
 export type ProtocolJsonErrorCode =
   | "body-too-large"
@@ -17,6 +18,21 @@ export class ProtocolJsonError extends Error {
     super(message);
     this.name = "ProtocolJsonError";
   }
+}
+
+export type BoundedProtocolObject = "descriptor" | "commit" | "change-chunk" | "config-tree";
+
+export function parseBoundedProtocolJson(
+  kind: BoundedProtocolObject,
+  bytes: Uint8Array,
+): Record<string, unknown> {
+  const maxBytes = {
+    descriptor: protocolLimits.formatBytes,
+    commit: protocolLimits.commitBytes,
+    "change-chunk": protocolLimits.changeChunkBytes,
+    "config-tree": protocolLimits.configTreeBytes,
+  }[kind];
+  return parseCanonicalProtocolJson(bytes, maxBytes);
 }
 
 export function parseCanonicalProtocolJson(bytes: Uint8Array, maxBytes: number): Record<string, unknown> {
