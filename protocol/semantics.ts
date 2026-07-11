@@ -455,7 +455,7 @@ function isValidPlainSemVer(value: string): boolean {
 }
 
 function hasPathPrefixConflict(paths: string[]): boolean {
-  const sorted = [...paths].sort(compareUtf8);
+  const sorted = paths.map((path) => defaultCaseFold151(normalizeNfc151(path))).sort(compareUtf8);
   for (let index = 1; index < sorted.length; index += 1) {
     if (sorted[index].startsWith(`${sorted[index - 1]}/`)) return true;
   }

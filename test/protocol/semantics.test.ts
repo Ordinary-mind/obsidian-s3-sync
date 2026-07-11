@@ -226,6 +226,15 @@ describe("v1 protocol semantic envelope", () => {
         ],
       }),
     ).toContain("vault-put-path-prefix-conflict");
+    expect(
+      validateChangeChunkObject({
+        ...chunk([]),
+        mutations: [
+          { path: "Notes/active", kind: "put", parents: [], blobHash: "a".repeat(64) },
+          { path: "notes/active/child.md", kind: "put", parents: [], blobHash: "b".repeat(64) },
+        ],
+      }),
+    ).toContain("vault-put-path-prefix-conflict");
   });
 
   it("defensively enforces the Commit Chunk count boundary", () => {
@@ -408,6 +417,15 @@ describe("v1 protocol semantic envelope", () => {
         items: [
           { path: "themes/active", kind: "put" },
           { path: "themes/active/nested.css", kind: "put" },
+        ],
+      }),
+    ).toContain("config-put-path-prefix-conflict");
+    expect(
+      validateConfigTreeProfile({
+        ...tree,
+        items: [
+          { path: "Themes/active", kind: "put" },
+          { path: "themes/active/child.css", kind: "put" },
         ],
       }),
     ).toContain("config-put-path-prefix-conflict");
