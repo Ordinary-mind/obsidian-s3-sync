@@ -5,7 +5,11 @@ import Ajv2020 from "ajv/dist/2020.js";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import { validateCommitEnvelope, validateConfigTreeProfile } from "../../protocol/semantics";
+import {
+  validateCommitEnvelope,
+  validateConfigTreeProfile,
+  validateRepositoryDescriptor,
+} from "../../protocol/semantics";
 
 const schema = JSON.parse(
   readFileSync(new URL("../../protocol/schemas/v1.schema.json", import.meta.url), "utf8"),
@@ -65,6 +69,7 @@ describe("v1 protocol schema", () => {
     const validate = validator("RepositoryDescriptor");
 
     expect(validate(descriptorVector.object)).toBe(true);
+    expect(validateRepositoryDescriptor(descriptorVector.object)).toEqual([]);
     expect(
       createHash("sha256").update(descriptorVector.canonicalJson, "utf8").digest("hex"),
     ).toBe(descriptorVector.sha256);
