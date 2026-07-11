@@ -188,6 +188,18 @@ describe("v1 protocol semantic envelope", () => {
     ).toContain("chunk-mutations-exceeded");
   });
 
+  it("defensively enforces the Commit Chunk count boundary", () => {
+    const hashes = Array.from({ length: 1025 }, (_, index) => index.toString(16).padStart(64, "0"));
+    expect(
+      validateCommitEnvelope(
+        descriptorHash,
+        { ...commit("bootstrap"), changeChunkHashes: hashes },
+        [],
+        [],
+      ),
+    ).toContain("commit-chunks-exceeded");
+  });
+
   it("requires real UTC calendar timestamps and SemVer without build metadata", () => {
     const valid = chunk([]);
     expect(

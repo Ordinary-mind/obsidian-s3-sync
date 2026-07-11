@@ -32,6 +32,7 @@ export type ProtocolViolation =
   | "invalid-client-version"
   | "previous-commit-chain-shape"
   | "chunk-count-mismatch"
+  | "commit-chunks-exceeded"
   | "chunk-hash-order-mismatch"
   | "duplicate-chunk-hash"
   | "chunk-index-not-contiguous"
@@ -117,6 +118,7 @@ export function validateCommitEnvelope(
   const violations = validateCommitFields(commit);
 
   if (commit.descriptorHash !== descriptorHash) violations.push("descriptor-hash-mismatch");
+  if (commit.changeChunkHashes.length > 1024) violations.push("commit-chunks-exceeded");
   if (chunks.length !== commit.changeChunkHashes.length) violations.push("chunk-count-mismatch");
   if (
     chunkHashes.length !== commit.changeChunkHashes.length ||
