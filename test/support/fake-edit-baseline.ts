@@ -9,6 +9,7 @@ export class FakeEditBaseline {
   private readonly projectedHeads = new Map<string, string[]>();
   private readonly intents = new Map<string, DirtyIntent>();
   private readonly frozenVersions = new Map<string, string>();
+  private readonly publishedVersions = new Map<string, string>();
 
   setProjectedHeads(path: string, heads: string[]): void {
     this.projectedHeads.set(path, [...heads]);
@@ -47,6 +48,21 @@ export class FakeEditBaseline {
     };
     this.intents.set(path, intent);
     return { ...intent, basisHeads: [] };
+  }
+
+  requestDeleteAfterRootPut(path: string): "waiting-for-root-publish" | DirtyIntent {
+    const frozen = this.frozenVersions.get(path);
+    if (!frozen || this.publishedVersions.get(path) !== frozen) return "waiting-for-root-publish";
+    const intent = { generation: 2, basisHeads: [], localPredecessorVersion: frozen };
+    this.intents.set(path, intent);
+    return { ...intent, basisHeads: [] };
+  }
+
+  confirmPublished(path: string, versionId: string): void {
+    if (this.frozenVersions.get(path) !== versionId) {
+      throw new Error(`cannot confirm an unfrozen version: ${versionId}`);
+    }
+    this.publishedVersions.set(path, versionId);
   }
 
   getObservedHeads(path: string): string[] {

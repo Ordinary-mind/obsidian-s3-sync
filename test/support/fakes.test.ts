@@ -65,6 +65,19 @@ describe("deterministic test fakes", () => {
     });
   });
 
+  it("does not freeze a root delete before the frozen root put is verified published", () => {
+    const baseline = new FakeEditBaseline();
+    baseline.beginEdit("notes/new.md");
+    baseline.freeze("notes/new.md", "root-put:0:0");
+    expect(baseline.requestDeleteAfterRootPut("notes/new.md")).toBe("waiting-for-root-publish");
+    baseline.confirmPublished("notes/new.md", "root-put:0:0");
+    expect(baseline.requestDeleteAfterRootPut("notes/new.md")).toEqual({
+      generation: 2,
+      basisHeads: [],
+      localPredecessorVersion: "root-put:0:0",
+    });
+  });
+
   it("injects local races and crashes at read, write, rename, delete and state boundaries", () => {
     const fs = new FakeLocalFs();
     const boundaries: string[] = [];
