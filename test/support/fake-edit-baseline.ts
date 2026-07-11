@@ -2,6 +2,7 @@ export interface DirtyIntent {
   generation: number;
   basisHeads: string[];
   localPredecessorVersion: string | undefined;
+  awaitingLocalWrite: boolean;
 }
 
 export class FakeEditBaseline {
@@ -27,15 +28,26 @@ export class FakeEditBaseline {
       generation: 1,
       basisHeads: predecessor ? [] : [...(this.projectedHeads.get(path) ?? [])],
       localPredecessorVersion: predecessor,
+      awaitingLocalWrite: true,
     };
     this.intents.set(path, intent);
     return { ...intent, basisHeads: [...intent.basisHeads] };
   }
 
   freeze(path: string, versionId: string): void {
-    if (!this.intents.has(path)) throw new Error(`cannot freeze without dirty intent: ${path}`);
+    const intent = this.intents.get(path);
+    if (!intent) throw new Error(`cannot freeze without dirty intent: ${path}`);
+    if (intent.awaitingLocalWrite) throw new Error(`cannot freeze before editor write is proven: ${path}`);
     this.frozenVersions.set(path, versionId);
     this.intents.delete(path);
+  }
+
+  proveEditorWrite(path: string, generation: number): void {
+    const intent = this.intents.get(path);
+    if (!intent || intent.generation !== generation) {
+      throw new Error(`cannot prove an unknown editor generation: ${path}:${generation}`);
+    }
+    intent.awaitingLocalWrite = false;
   }
 
   nextGeneration(path: string): DirtyIntent {
@@ -45,6 +57,7 @@ export class FakeEditBaseline {
       generation: 2,
       basisHeads: [],
       localPredecessorVersion: predecessor,
+      awaitingLocalWrite: true,
     };
     this.intents.set(path, intent);
     return { ...intent, basisHeads: [] };
@@ -53,7 +66,7 @@ export class FakeEditBaseline {
   requestDeleteAfterRootPut(path: string): "waiting-for-root-publish" | DirtyIntent {
     const frozen = this.frozenVersions.get(path);
     if (!frozen || this.publishedVersions.get(path) !== frozen) return "waiting-for-root-publish";
-    const intent = { generation: 2, basisHeads: [], localPredecessorVersion: frozen };
+    const intent = { generation: 2, basisHeads: [], localPredecessorVersion: frozen, awaitingLocalWrite: true };
     this.intents.set(path, intent);
     return { ...intent, basisHeads: [] };
   }

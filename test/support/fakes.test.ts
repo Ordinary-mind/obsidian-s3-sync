@@ -58,18 +58,21 @@ describe("deterministic test fakes", () => {
       "remote-after:0:0",
     ]);
 
+    baseline.proveEditorWrite("notes/example.md", 1);
     baseline.freeze("notes/example.md", "local-frozen:0:0");
     baseline.observeHeads("notes/example.md", ["remote-after:0:0", "remote-later:0:0"]);
     expect(baseline.nextGeneration("notes/example.md")).toEqual({
       generation: 2,
       basisHeads: [],
       localPredecessorVersion: "local-frozen:0:0",
+      awaitingLocalWrite: true,
     });
   });
 
   it("does not freeze a root delete before the frozen root put is verified published", () => {
     const baseline = new FakeEditBaseline();
     baseline.beginEdit("notes/new.md");
+    baseline.proveEditorWrite("notes/new.md", 1);
     baseline.freeze("notes/new.md", "root-put:0:0");
     expect(baseline.requestDeleteAfterRootPut("notes/new.md")).toBe("waiting-for-root-publish");
     baseline.confirmPublished("notes/new.md", "root-put:0:0");
@@ -77,7 +80,20 @@ describe("deterministic test fakes", () => {
       generation: 2,
       basisHeads: [],
       localPredecessorVersion: "root-put:0:0",
+      awaitingLocalWrite: true,
     });
+  });
+
+  it("does not clear an editor write latch merely because remote state advances", () => {
+    const baseline = new FakeEditBaseline();
+    baseline.setProjectedHeads("notes/latch.md", ["before:0:0"]);
+    const intent = baseline.beginEdit("notes/latch.md");
+    baseline.observeHeads("notes/latch.md", ["before:0:0", "after:0:0"]);
+    expect(() => baseline.freeze("notes/latch.md", "frozen:0:0")).toThrow(
+      "cannot freeze before editor write is proven",
+    );
+    baseline.proveEditorWrite("notes/latch.md", intent.generation);
+    expect(() => baseline.freeze("notes/latch.md", "frozen:0:0")).not.toThrow();
   });
 
   it("stores frozen outbox bytes by value for exact retry after active content changes", () => {
