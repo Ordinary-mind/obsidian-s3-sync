@@ -98,5 +98,8 @@ describe("strict v1 protocol JSON", () => {
     expect(() => canonicalizeProtocolJson({ value: "\ud800" })).toThrow(
       expect.objectContaining({ code: "unpaired-surrogate" }),
     );
+    expect(() => canonicalizeProtocolJson({ "\ud800": "value" })).toThrow(
+      expect.objectContaining({ code: "unpaired-surrogate" }),
+    );
   });
 });

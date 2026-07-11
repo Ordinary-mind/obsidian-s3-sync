@@ -89,7 +89,12 @@ export function canonicalizeProtocolJson(value: unknown): string {
     const record = value as Record<string, unknown>;
     return `{${Object.keys(record)
       .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalizeProtocolJson(record[key])}`)
+      .map((key) => {
+        if (hasUnpairedSurrogate(key)) {
+          throw new ProtocolJsonError("unpaired-surrogate", "protocol object keys must contain Unicode scalar values");
+        }
+        return `${JSON.stringify(key)}:${canonicalizeProtocolJson(record[key])}`;
+      })
       .join(",")}}`;
   }
   throw new ProtocolJsonError("invalid-json", "protocol JSON contains an unsupported value");
