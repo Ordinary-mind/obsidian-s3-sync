@@ -8,16 +8,16 @@
       "channel": "config",
       "chunkIndex": 0,
       "chunkCount": 1,
-      "mutations": [{"key":"portable","kind":"snapshot","treeHash":"ca018f2d432300d41550ef8c9a390e7babc0456d85b8e14a17bade6a8b11ab29","parents":[]}]
+      "mutations": [{"key":"portable","kind":"snapshot","treeHash":"a5c6fe97b0a0d41a864bd6885172e16dea489496292328714c3c43277875e073","parents":[]}]
     },
-    "canonicalJson": "{\"channel\":\"config\",\"chunkCount\":1,\"chunkIndex\":0,\"descriptorHash\":\"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec\",\"mutations\":[{\"key\":\"portable\",\"kind\":\"snapshot\",\"parents\":[],\"treeHash\":\"ca018f2d432300d41550ef8c9a390e7babc0456d85b8e14a17bade6a8b11ab29\"}],\"protocol\":1,\"repositoryId\":\"123e4567-e89b-42d3-a456-426614174000\"}",
-    "sha256": "673621e5b93ac88ad39dea84ca97006f97e9b5bffd74a828f450fd8a0dce3b30",
-    "key": ".obsidian-s3-sync/v1/repositories/123e4567-e89b-42d3-a456-426614174000/changes/sha256/67/673621e5b93ac88ad39dea84ca97006f97e9b5bffd74a828f450fd8a0dce3b30.json"
+    "canonicalJson": "{\"channel\":\"config\",\"chunkCount\":1,\"chunkIndex\":0,\"descriptorHash\":\"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec\",\"mutations\":[{\"key\":\"portable\",\"kind\":\"snapshot\",\"parents\":[],\"treeHash\":\"a5c6fe97b0a0d41a864bd6885172e16dea489496292328714c3c43277875e073\"}],\"protocol\":1,\"repositoryId\":\"123e4567-e89b-42d3-a456-426614174000\"}",
+    "sha256": "2b7da6bfbb4129f4ece9ac2b9cc9d889d1aa03c3d3e1dbc292355ea730863efe",
+    "key": ".obsidian-s3-sync/v1/repositories/123e4567-e89b-42d3-a456-426614174000/changes/sha256/2b/2b7da6bfbb4129f4ece9ac2b9cc9d889d1aa03c3d3e1dbc292355ea730863efe.json"
   },
   "commit": {
-    "object": {"protocol":1,"repositoryId":"123e4567-e89b-42d3-a456-426614174000","descriptorHash":"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec","writerId":"123e4567-e89b-42d3-a456-426614174002","sequence":"00000000000000000001","previousCommitHash":null,"createdAt":"2026-07-11T00:00:00.000Z","channel":"config","kind":"bootstrap","changeChunkHashes":["673621e5b93ac88ad39dea84ca97006f97e9b5bffd74a828f450fd8a0dce3b30"],"clientVersion":"0.1.0"},
-    "canonicalJson": "{\"changeChunkHashes\":[\"673621e5b93ac88ad39dea84ca97006f97e9b5bffd74a828f450fd8a0dce3b30\"],\"channel\":\"config\",\"clientVersion\":\"0.1.0\",\"createdAt\":\"2026-07-11T00:00:00.000Z\",\"descriptorHash\":\"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec\",\"kind\":\"bootstrap\",\"previousCommitHash\":null,\"protocol\":1,\"repositoryId\":\"123e4567-e89b-42d3-a456-426614174000\",\"sequence\":\"00000000000000000001\",\"writerId\":\"123e4567-e89b-42d3-a456-426614174002\"}",
-    "sha256": "5b8365d8bb9e8dff07a86ee444d9e27935a63c289fd9401a5c26bb8840038f86",
-    "key": ".obsidian-s3-sync/v1/repositories/123e4567-e89b-42d3-a456-426614174000/commits/123e4567-e89b-42d3-a456-426614174002/00000000000000000001-5b8365d8bb9e8dff07a86ee444d9e27935a63c289fd9401a5c26bb8840038f86.json"
+    "object": {"protocol":1,"repositoryId":"123e4567-e89b-42d3-a456-426614174000","descriptorHash":"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec","writerId":"123e4567-e89b-42d3-a456-426614174002","sequence":"00000000000000000001","previousCommitHash":null,"createdAt":"2026-07-11T00:00:00.000Z","channel":"config","kind":"bootstrap","changeChunkHashes":["2b7da6bfbb4129f4ece9ac2b9cc9d889d1aa03c3d3e1dbc292355ea730863efe"],"clientVersion":"0.1.0"},
+    "canonicalJson": "{\"changeChunkHashes\":[\"2b7da6bfbb4129f4ece9ac2b9cc9d889d1aa03c3d3e1dbc292355ea730863efe\"],\"channel\":\"config\",\"clientVersion\":\"0.1.0\",\"createdAt\":\"2026-07-11T00:00:00.000Z\",\"descriptorHash\":\"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec\",\"kind\":\"bootstrap\",\"previousCommitHash\":null,\"protocol\":1,\"repositoryId\":\"123e4567-e89b-42d3-a456-426614174000\",\"sequence\":\"00000000000000000001\",\"writerId\":\"123e4567-e89b-42d3-a456-426614174002\"}",
+    "sha256": "a6effda7c8274b448944f2680b8049ef848933c17a95f2ac36399ff670ad90a8",
+    "key": ".obsidian-s3-sync/v1/repositories/123e4567-e89b-42d3-a456-426614174000/commits/123e4567-e89b-42d3-a456-426614174002/00000000000000000001-a6effda7c8274b448944f2680b8049ef848933c17a95f2ac36399ff670ad90a8.json"
   }
 }

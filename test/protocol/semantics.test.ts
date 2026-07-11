@@ -311,6 +311,7 @@ describe("v1 protocol semantic envelope", () => {
         { path: "app.json", kind: "put" as const },
         { path: "plugins/example-plugin/data.json", kind: "put" as const },
         { path: "plugins/example-plugin/main.js", kind: "put" as const },
+        { path: "plugins/example-plugin/manifest.json", kind: "put" as const },
         { path: "themes/active.css", kind: "put" as const },
       ],
     };
@@ -367,6 +368,12 @@ describe("v1 protocol semantic envelope", () => {
         ],
       }),
     ).toContain("config-put-path-prefix-conflict");
+    expect(
+      validateConfigTreeProfile({
+        ...tree,
+        items: [{ path: "plugins/example-plugin/main.js", kind: "put" }],
+      }),
+    ).toContain("plugin-package-manifest-missing");
     expect(
       validateConfigTreeProfile({
         ...tree,

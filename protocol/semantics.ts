@@ -83,6 +83,7 @@ export type ConfigTreeProfileViolation =
   | "config-item-path-invalid"
   | "config-put-case-alias"
   | "config-put-path-prefix-conflict"
+  | "plugin-package-manifest-missing"
   | "config-item-not-profiled";
 
 export type PathViolation =
@@ -389,10 +390,20 @@ export function validateConfigTreeProfile(tree: ConfigTreeForProfile): ConfigTre
   const putPaths = tree.items.filter((item) => item.kind === "put").map((item) => item.path);
   if (!isCaseFoldUnique(putPaths)) violations.push("config-put-case-alias");
   if (hasPathPrefixConflict(putPaths)) violations.push("config-put-path-prefix-conflict");
+  if (hasMissingPluginPackageManifest(tree)) violations.push("plugin-package-manifest-missing");
   if (tree.items.some((item) => !isItemCoveredByProfile(item.path, tree.profile))) {
     violations.push("config-item-not-profiled");
   }
   return [...new Set(violations)];
+}
+
+function hasMissingPluginPackageManifest(tree: ConfigTreeForProfile): boolean {
+  const putPaths = new Set(tree.items.filter((item) => item.kind === "put").map((item) => item.path));
+  return tree.profile.pluginPackages.some((pluginId) => {
+    const packageRoot = `plugins/${pluginId}/`;
+    const hasPackagePut = [...putPaths].some((path) => path.startsWith(packageRoot));
+    return hasPackagePut && !putPaths.has(`${packageRoot}manifest.json`);
+  });
 }
 
 function isItemCoveredByProfile(path: string, profile: ConfigTreeForProfile["profile"]): boolean {
