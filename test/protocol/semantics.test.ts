@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   isUtf8SortedUnique,
   validateCommitEnvelope,
+  validateChangeChunkObject,
   validateConfigDeleteLineage,
   validateConfigTreeExcludedPaths,
   validateConfigTreeProfile,
@@ -174,6 +175,17 @@ describe("v1 protocol semantic envelope", () => {
         [repeatedHash, repeatedHash],
       ),
     ).toContain("duplicate-chunk-hash");
+  });
+
+  it("defensively enforces Chunk mutation and parent bounds after Schema validation", () => {
+    const parents = Array.from({ length: 1025 }, (_, index) => `${index.toString(16).padStart(64, "0")}:0:0`);
+    expect(validateChangeChunkObject(chunk(parents))).toContain("mutation-parents-exceeded");
+    expect(
+      validateChangeChunkObject({
+        ...chunk([]),
+        mutations: Array.from({ length: 4097 }, (_, index) => ({ path: `notes/${index}`, parents: [] })),
+      }),
+    ).toContain("chunk-mutations-exceeded");
   });
 
   it("requires real UTC calendar timestamps and SemVer without build metadata", () => {

@@ -40,6 +40,8 @@ export type ProtocolViolation =
   | "parents-not-canonical"
   | "vault-mutations-not-canonical"
   | "vault-path-invalid"
+  | "chunk-mutations-exceeded"
+  | "mutation-parents-exceeded"
   | "duplicate-vault-path"
   | "config-commit-shape"
   | "bootstrap-parents"
@@ -190,6 +192,7 @@ export function validateCommitFields(commit: ProtocolCommit): ProtocolViolation[
 
 export function validateChangeChunkObject(chunk: ProtocolChunk): ProtocolViolation[] {
   const violations: ProtocolViolation[] = [];
+  if (chunk.mutations.length > 4096) violations.push("chunk-mutations-exceeded");
   if (chunk.channel === "vault") {
     if (!isUtf8SortedUnique(chunk.mutations.map((mutation) => mutation.path ?? ""))) {
       violations.push("vault-mutations-not-canonical");
@@ -197,6 +200,9 @@ export function validateChangeChunkObject(chunk: ProtocolChunk): ProtocolViolati
     if (chunk.mutations.some((mutation) => !mutation.path || validateProtocolPath(mutation.path).length > 0)) {
       violations.push("vault-path-invalid");
     }
+  }
+  if (chunk.mutations.some((mutation) => mutation.parents.length > 1024)) {
+    violations.push("mutation-parents-exceeded");
   }
   if (chunk.mutations.some((mutation) => !isUtf8SortedUnique(mutation.parents))) {
     violations.push("parents-not-canonical");
