@@ -10,7 +10,10 @@ export type ProtocolJsonErrorCode =
   | "unpaired-surrogate"
   | "number-not-safe-integer"
   | "root-not-object"
-  | "structure-limit"
+  | "json-depth-exceeded"
+  | "json-array-items-exceeded"
+  | "json-string-bytes-exceeded"
+  | "json-number-not-safe-integer"
   | "non-canonical-json";
 
 export class ProtocolJsonError extends Error {
@@ -54,8 +57,9 @@ export function parseCanonicalProtocolJson(bytes: Uint8Array, maxBytes: number):
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new ProtocolJsonError("root-not-object", "protocol JSON must have an object root");
   }
-  if (validateParsedJsonLimits(value).length > 0) {
-    throw new ProtocolJsonError("structure-limit", "JSON body exceeds a protocol structure limit");
+  const structureViolations = validateParsedJsonLimits(value);
+  if (structureViolations.length > 0) {
+    throw new ProtocolJsonError(structureViolations[0], "JSON body exceeds a protocol structure limit");
   }
   if (canonicalizeProtocolJson(value) !== source) {
     throw new ProtocolJsonError("non-canonical-json", "JSON body is not RFC 8785 canonical");

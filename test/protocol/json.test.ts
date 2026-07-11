@@ -64,6 +64,18 @@ describe("strict v1 protocol JSON", () => {
     ).toEqual({ a: 1 });
   });
 
+  it("reports the first deterministic parsed-value resource violation", () => {
+    let tooDeep: unknown = null;
+    for (let index = 0; index < protocolLimits.jsonDepth; index += 1) tooDeep = [tooDeep];
+    expectCode(encoder.encode(JSON.stringify({ value: tooDeep })), "json-depth-exceeded");
+    expect(() =>
+      parseBoundedProtocolJson(
+        "config-tree",
+        encoder.encode(`{"value":"${"a".repeat(protocolLimits.jsonStringUtf8Bytes + 1)}"}`),
+      ),
+    ).toThrow(expect.objectContaining({ code: "json-string-bytes-exceeded" }));
+  });
+
   it("uses RFC 8785 member-name ordering independently from protocol array ordering", () => {
     expect(canonicalizeProtocolJson({ "😀": 1, "\ufffd": 2 })).toBe('{"😀":1,"�":2}');
     expectCode(encoder.encode('{"�":2,"😀":1}'), "non-canonical-json");
