@@ -581,6 +581,15 @@ describe("v1 protocol semantic envelope", () => {
     ).toEqual(["version-parent-cycle"]);
   });
 
+  it("replays versioned parent graph pending, cross-register and cycle vectors", () => {
+    const vectors = JSON.parse(
+      readFileSync(new URL("../../protocol/vectors/version-graph.json", import.meta.url), "utf8"),
+    ) as Array<{ nodes: Parameters<typeof validateVersionGraph>[0]; violations: string[] }>;
+    for (const vector of vectors) {
+      expect(validateVersionGraph(vector.nodes)).toEqual(vector.violations);
+    }
+  });
+
   it("replays versioned ConfigTree case-alias, prefix and NFC negative vectors", () => {
     const vectors = JSON.parse(
       readFileSync(new URL("../../protocol/vectors/invalid-config-tree-semantics.json", import.meta.url), "utf8"),

@@ -1,0 +1,23 @@
+[
+  {
+    "name": "pending-parent",
+    "nodes": [{"versionId":"a","registry":"vault:note","parents":["missing"]}],
+    "violations": ["version-parent-pending"]
+  },
+  {
+    "name": "cross-registry-parent",
+    "nodes": [
+      {"versionId":"a","registry":"vault:note","parents":["b"]},
+      {"versionId":"b","registry":"config:portable","parents":[]}
+    ],
+    "violations": ["version-parent-cross-registry"]
+  },
+  {
+    "name": "cycle",
+    "nodes": [
+      {"versionId":"a","registry":"vault:note","parents":["b"]},
+      {"versionId":"b","registry":"vault:note","parents":["a"]}
+    ],
+    "violations": ["version-parent-cycle"]
+  }
+]
