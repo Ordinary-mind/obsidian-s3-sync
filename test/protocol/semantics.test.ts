@@ -5,6 +5,7 @@ import {
   validateCommitEnvelope,
   validateConfigDeleteLineage,
   validateConfigTreeProfile,
+  validatePluginId,
   validateProtocolPath,
 } from "../../protocol/semantics";
 
@@ -233,6 +234,9 @@ describe("v1 protocol semantic envelope", () => {
       validateConfigTreeProfile({ ...tree, profile: { ...tree.profile, portablePluginIds: ["A", "a"] } }),
     ).toContain("config-case-alias");
     expect(
+      validateConfigTreeProfile({ ...tree, profile: { ...tree.profile, portablePluginIds: ["NUL"] } }),
+    ).toContain("plugin-id-invalid");
+    expect(
       validateConfigTreeProfile({
         ...tree,
         items: [{ path: "snippets/disabled.css", kind: "put" }],
@@ -247,5 +251,15 @@ describe("v1 protocol semantic envelope", () => {
     expect(validateProtocolPath("notes\\windows.md")).toContain("path-invalid-segment");
     expect(validateProtocolPath("notes/\u0000bad.md")).toContain("path-control-character");
     expect(validateProtocolPath("a".repeat(1025))).toContain("path-too-long");
+  });
+
+  it("rejects plugin IDs that cannot be represented safely on all target platforms", () => {
+    expect(validatePluginId("example-plugin")).toEqual([]);
+    expect(validatePluginId("e\u0301-plugin")).toContain("plugin-id-not-nfc");
+    expect(validatePluginId("plugins/example")).toContain("plugin-id-invalid-shape");
+    expect(validatePluginId("NUL.json")).toContain("plugin-id-reserved-name");
+    expect(validatePluginId("com²")).toContain("plugin-id-reserved-name");
+    expect(validatePluginId("trailing.")).toContain("plugin-id-invalid-shape");
+    expect(validatePluginId("a".repeat(256))).toContain("plugin-id-too-long");
   });
 });

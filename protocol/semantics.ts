@@ -65,6 +65,7 @@ export interface ConfigTreeForProfile {
 export type ConfigTreeProfileViolation =
   | "config-array-not-canonical"
   | "config-case-alias"
+  | "plugin-id-invalid"
   | "plugin-scope-not-portable"
   | "config-item-path-duplicate"
   | "config-item-not-profiled";
@@ -74,6 +75,13 @@ export type PathViolation =
   | "path-invalid-segment"
   | "path-control-character"
   | "path-too-long";
+
+export type PluginIdViolation =
+  | "plugin-id-not-nfc"
+  | "plugin-id-invalid-shape"
+  | "plugin-id-control-character"
+  | "plugin-id-too-long"
+  | "plugin-id-reserved-name";
 
 export function validateCommitEnvelope(
   descriptorHash: string,
@@ -219,6 +227,16 @@ export function validateConfigTreeProfile(tree: ConfigTreeForProfile): ConfigTre
   if (profileArrays.some((values) => !isCaseFoldUnique(values))) {
     violations.push("config-case-alias");
   }
+  if (
+    [
+      ...tree.profile.portablePluginIds,
+      ...tree.profile.pluginPackages,
+      ...tree.profile.pluginData,
+      ...tree.enabledCommunityPlugins,
+    ].some((pluginId) => validatePluginId(pluginId).length > 0)
+  ) {
+    violations.push("plugin-id-invalid");
+  }
   const portable = new Set(tree.profile.portablePluginIds);
   if (
     [...tree.profile.pluginPackages, ...tree.profile.pluginData, ...tree.enabledCommunityPlugins].some(
@@ -261,5 +279,30 @@ export function validateProtocolPath(path: string): PathViolation[] {
     violations.push("path-invalid-segment");
   }
   if (/[\u0000-\u001f\u007f]/.test(path)) violations.push("path-control-character");
+  return violations;
+}
+
+export function validatePluginId(pluginId: string): PluginIdViolation[] {
+  const violations: PluginIdViolation[] = [];
+  if (normalizeNfc151(pluginId) !== pluginId) violations.push("plugin-id-not-nfc");
+  if (utf8ByteLength(pluginId) === 0 || utf8ByteLength(pluginId) > 255) {
+    violations.push("plugin-id-too-long");
+  }
+  if (
+    pluginId === "." ||
+    pluginId === ".." ||
+    /[<>:"/\\|?*]/.test(pluginId) ||
+    /[. ]$/.test(pluginId)
+  ) {
+    violations.push("plugin-id-invalid-shape");
+  }
+  if (/[\u0000-\u001f\u007f]/.test(pluginId)) violations.push("plugin-id-control-character");
+  const stem = pluginId.split(".", 1)[0].replace(/[a-z]/g, (character) => character.toUpperCase());
+  if (
+    ["CON", "PRN", "AUX", "NUL", "CLOCK$", "CONIN$", "CONOUT$"].includes(stem) ||
+    /^(COM|LPT)[1-9¹²³]$/.test(stem)
+  ) {
+    violations.push("plugin-id-reserved-name");
+  }
   return violations;
 }
