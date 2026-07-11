@@ -31,6 +31,8 @@ export type ProtocolViolation =
   | "chunk-index-not-contiguous"
   | "chunk-channel-mismatch"
   | "chunk-repository-mismatch"
+  | "parents-not-canonical"
+  | "vault-mutations-not-canonical"
   | "duplicate-vault-path"
   | "config-commit-shape"
   | "bootstrap-parents"
@@ -82,6 +84,9 @@ export function validateCommitEnvelope(
       );
     }
     if (commit.channel === "vault") {
+      if (!isUtf8SortedUnique(chunk.mutations.map((mutation) => mutation.path ?? ""))) {
+        violations.push("vault-mutations-not-canonical");
+      }
       for (const mutation of chunk.mutations) {
         if (mutation.path && seenPaths.has(mutation.path)) violations.push("duplicate-vault-path");
         if (mutation.path) seenPaths.add(mutation.path);
@@ -90,6 +95,9 @@ export function validateCommitEnvelope(
   }
 
   const mutations = chunks.flatMap((chunk) => chunk.mutations);
+  if (mutations.some((mutation) => !isUtf8SortedUnique(mutation.parents))) {
+    violations.push("parents-not-canonical");
+  }
   if (commit.channel === "config" && (chunks.length !== 1 || mutations.length !== 1)) {
     violations.push("config-commit-shape");
   }
@@ -112,6 +120,25 @@ export function validateCommitEnvelope(
     }
   }
   return [...new Set(violations)];
+}
+
+const utf8Encoder = new TextEncoder();
+
+export function isUtf8SortedUnique(values: string[]): boolean {
+  for (let index = 1; index < values.length; index += 1) {
+    if (compareUtf8(values[index - 1], values[index]) >= 0) return false;
+  }
+  return true;
+}
+
+function compareUtf8(left: string, right: string): number {
+  const leftBytes = utf8Encoder.encode(left);
+  const rightBytes = utf8Encoder.encode(right);
+  const length = Math.min(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < length; index += 1) {
+    if (leftBytes[index] !== rightBytes[index]) return leftBytes[index] - rightBytes[index];
+  }
+  return leftBytes.length - rightBytes.length;
 }
 
 export interface ConfigTreeForLineage {

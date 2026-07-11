@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { validateCommitEnvelope, validateConfigDeleteLineage } from "../../protocol/semantics";
+import {
+  isUtf8SortedUnique,
+  validateCommitEnvelope,
+  validateConfigDeleteLineage,
+} from "../../protocol/semantics";
 
 const repositoryId = "123e4567-e89b-42d3-a456-426614174000";
 const writerId = "123e4567-e89b-42d3-a456-426614174001";
@@ -168,5 +172,29 @@ describe("v1 protocol semantic envelope", () => {
     expect(
       validateConfigDeleteLineage([parent], tree, new Map([[parent, { items: [] }]])),
     ).toEqual(["config-delete-not-managed-by-parent"]);
+  });
+
+  it("requires UTF-8 canonical order for parents and Vault mutations", () => {
+    const high = "d".repeat(64) + ":0:0";
+    const low = "c".repeat(64) + ":0:0";
+    expect(isUtf8SortedUnique(["a", "é", "😀"])).toBe(true);
+    expect(isUtf8SortedUnique(["é", "a"])).toBe(false);
+    expect(validate("parent-reduction", [high, low])).toContain("parents-not-canonical");
+    expect(
+      validateCommitEnvelope(
+        descriptorHash,
+        commit("bootstrap"),
+        [
+          {
+            ...chunk([]),
+            mutations: [
+              { path: "notes/z.md", parents: [] },
+              { path: "notes/a.md", parents: [] },
+            ],
+          },
+        ],
+        ["b".repeat(64)],
+      ),
+    ).toContain("vault-mutations-not-canonical");
   });
 });
