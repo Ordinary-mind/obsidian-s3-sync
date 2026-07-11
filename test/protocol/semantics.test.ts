@@ -84,6 +84,19 @@ describe("v1 protocol semantic envelope", () => {
     expect(validate("parent-reduction", [parent, secondParent])).toEqual([]);
   });
 
+  it("replays versioned invalid Commit kind parent contracts", () => {
+    const vectors = JSON.parse(
+      readFileSync(new URL("../../protocol/vectors/invalid-commit-kind-semantics.json", import.meta.url), "utf8"),
+    ) as Array<{
+      kind: "bootstrap" | "conflict-resolution" | "parent-reduction";
+      parents: string[];
+      violation: string;
+    }>;
+    for (const vector of vectors) {
+      expect(validate(vector.kind, vector.parents)).toContain(vector.violation);
+    }
+  });
+
   it("accepts the same four Commit kind parent contracts in the Config channel", () => {
     const parent = "c".repeat(64) + ":0:0";
     const secondParent = "d".repeat(64) + ":0:0";

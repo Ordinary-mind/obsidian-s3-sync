@@ -1,0 +1,20 @@
+[
+  {
+    "name": "bootstrap-with-parent",
+    "kind": "bootstrap",
+    "parents": ["cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:0:0"],
+    "violation": "bootstrap-parents"
+  },
+  {
+    "name": "conflict-resolution-without-parent",
+    "kind": "conflict-resolution",
+    "parents": [],
+    "violation": "conflict-resolution-parents"
+  },
+  {
+    "name": "parent-reduction-with-one-parent",
+    "kind": "parent-reduction",
+    "parents": ["cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:0:0"],
+    "violation": "parent-reduction-parents"
+  }
+]
