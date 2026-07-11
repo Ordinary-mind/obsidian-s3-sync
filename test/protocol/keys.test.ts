@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   ProtocolKeyError,
+  assertCommitKey,
+  assertContentAddressedKey,
   assertS3KeyLength,
   blobKey,
   changeChunkKey,
@@ -46,6 +48,19 @@ describe("v1 object keys", () => {
     assertS3KeyLength("a".repeat(1024));
     expect(() => assertS3KeyLength("a".repeat(1025))).toThrow(
       expect.objectContaining({ code: "key-too-long" }),
+    );
+  });
+
+  it("binds content-addressed and Commit keys to their claimed identity fields", () => {
+    const chunk = changeChunkKey("", repositoryId, hash);
+    expect(() => assertContentAddressedKey(chunk, hash, ".json")).not.toThrow();
+    expect(() => assertContentAddressedKey(chunk, "cd" + "e".repeat(62), ".json")).toThrow(
+      expect.objectContaining({ code: "key-body-hash-mismatch" }),
+    );
+    const commit = commitKey("", repositoryId, writerId, "00000000000000000001", hash);
+    expect(() => assertCommitKey(commit, writerId, "00000000000000000001", hash)).not.toThrow();
+    expect(() => assertCommitKey(commit, writerId, "00000000000000000002", hash)).toThrow(
+      expect.objectContaining({ code: "commit-key-mismatch" }),
     );
   });
 });

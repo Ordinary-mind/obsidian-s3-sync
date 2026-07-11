@@ -4,9 +4,25 @@ import { normalizeNfc151 } from "./unicode";
 const namespace = ".obsidian-s3-sync/v1/repositories";
 
 export class ProtocolKeyError extends Error {
-  constructor(readonly code: "prefix-invalid" | "key-too-long", message: string) {
+  constructor(
+    readonly code: "prefix-invalid" | "key-too-long" | "key-body-hash-mismatch" | "commit-key-mismatch",
+    message: string,
+  ) {
     super(message);
     this.name = "ProtocolKeyError";
+  }
+}
+
+export function assertContentAddressedKey(key: string, hash: string, extension = ""): void {
+  const expectedSuffix = `/${hash.slice(0, 2)}/${hash}${extension}`;
+  if (!key.endsWith(expectedSuffix)) {
+    throw new ProtocolKeyError("key-body-hash-mismatch", "object key does not bind its content hash");
+  }
+}
+
+export function assertCommitKey(key: string, writerId: string, sequence: string, hash: string): void {
+  if (!key.endsWith(`/commits/${writerId}/${sequence}-${hash}.json`)) {
+    throw new ProtocolKeyError("commit-key-mismatch", "commit key does not bind writer, sequence and hash");
   }
 }
 
