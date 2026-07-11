@@ -82,8 +82,8 @@
 ### 本地因果命令
 
 - [ ] 定义 RemoteRegisterState、PathProjection、dirtyIntent、DirtyRecord、LocalConcurrentRecord、DeletionEvidence 和 generation 类型。
-- [ ] `captureDirtyIntent` 只能复制 projectedHeads，不接收 observedHeads 参数。
-- [ ] 实现 DirtyRecord 连续编辑合并，但 basisHeads 永远不可变。
+- [x] `captureDirtyIntent` 只能复制 projectedHeads，不接收 observedHeads 参数。
+- [x] 实现 DirtyRecord 连续编辑合并，但 basisHeads 永远不可变。
 - [ ] 定义 localPredecessorVersion：只能引用同一本地因果队列、同路径前一冻结 Outbox 的精确 Version ID；writerId 轮换不改变该引用，后续 generation 用它替代 basisHeads 且不能吸收新 observedHeads。
 - [ ] 实现相同最终字节的净变化消除；存在冻结 Outbox 时不得取消已冻结 generation。
 - [ ] 实现冲突解决命令；必须引用操作时已观察的全部头。
