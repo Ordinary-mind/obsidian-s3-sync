@@ -126,6 +126,15 @@ describe("deterministic test fakes", () => {
     expect(boundaries).toEqual(expect.arrayContaining(["rename:after:recovery", "write:before:active", "delete:after:active", "persist-state:after:state"]));
   });
 
+  it("keeps a renamed recovery file observable when an old handle writes after rename", () => {
+    const fs = new FakeLocalFs();
+    fs.seed("active", encoder.encode("before"));
+    const handle = fs.open("active");
+    fs.rename("active", "recovery");
+    fs.writeHandle(handle, encoder.encode("post-capture edit"));
+    expect(decoder.decode(fs.read("recovery"))).toBe("post-capture edit");
+  });
+
   it("models late visibility, list disorder, temporary 404, lost response and tampering", () => {
     const store = new FakeObjectStore();
     store.putImmutable("objects/a", encoder.encode("original"), { visibleAfter: 2 });
