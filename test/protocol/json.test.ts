@@ -82,6 +82,13 @@ describe("strict v1 protocol JSON", () => {
     expectCode(encoder.encode(`{"value":${nested}}`), "json-depth-exceeded");
   });
 
+  it("rejects an oversized array while parsing", () => {
+    const oversized = `{\"items\":[${"null,".repeat(100000)}null]}`;
+    expect(() => parseBoundedProtocolJson("config-tree", encoder.encode(oversized))).toThrow(
+      expect.objectContaining({ code: "json-array-items-exceeded" }),
+    );
+  });
+
   it("uses RFC 8785 member-name ordering independently from protocol array ordering", () => {
     expect(canonicalizeProtocolJson({ "😀": 1, "\ufffd": 2 })).toBe('{"😀":1,"�":2}');
     expectCode(encoder.encode('{"�":2,"😀":1}'), "non-canonical-json");

@@ -145,6 +145,7 @@ class StrictJsonParser {
     if (this.consume("]")) return this.leaveContainer(result);
     while (true) {
       result.push(this.parseValue());
+      if (result.length > 100000) this.fail("json-array-items-exceeded", "JSON array exceeds 100,000 items");
       this.skipWhitespace();
       if (this.consume("]")) return this.leaveContainer(result);
       if (!this.consume(",")) this.fail("invalid-json", "expected ',' or ']' in array");
