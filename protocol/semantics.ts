@@ -81,6 +81,7 @@ export type ConfigTreeProfileViolation =
   | "sync-plugin-managed"
   | "plugin-scope-not-portable"
   | "config-item-path-duplicate"
+  | "config-item-path-not-canonical"
   | "config-items-exceeded"
   | "config-item-path-invalid"
   | "config-put-case-alias"
@@ -390,7 +391,8 @@ export function validateConfigTreeProfile(tree: ConfigTreeForProfile): ConfigTre
     violations.push("plugin-scope-not-portable");
   }
   const paths = tree.items.map((item) => item.path);
-  if (!isUtf8SortedUnique(paths)) violations.push("config-item-path-duplicate");
+  if (new Set(paths).size !== paths.length) violations.push("config-item-path-duplicate");
+  if (!isUtf8SortedUnique(paths)) violations.push("config-item-path-not-canonical");
   if (tree.items.some((item) => validateProtocolPath(item.path).length > 0)) {
     violations.push("config-item-path-invalid");
   }

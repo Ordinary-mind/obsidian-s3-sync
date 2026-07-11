@@ -398,6 +398,24 @@ describe("v1 protocol semantic envelope", () => {
     expect(
       validateConfigTreeProfile({
         ...tree,
+        items: [
+          { path: "themes/z.css", kind: "put" },
+          { path: "themes/a.css", kind: "put" },
+        ],
+      }),
+    ).toContain("config-item-path-not-canonical");
+    expect(
+      validateConfigTreeProfile({
+        ...tree,
+        items: [
+          { path: "themes/a.css", kind: "put" },
+          { path: "themes/a.css", kind: "delete" },
+        ],
+      }),
+    ).toContain("config-item-path-duplicate");
+    expect(
+      validateConfigTreeProfile({
+        ...tree,
         items: [{ path: "snippets/disabled.css", kind: "put" }],
       }),
     ).toContain("config-item-not-profiled");
