@@ -205,7 +205,7 @@ export function validateConfigDeleteLineage(
   const violations: ConfigDeleteViolation[] = [];
   for (const deleted of deletes) {
     const managedByParent = parentTrees.some((parent) =>
-      parent?.items.some((item) => item.kind === "put" && item.path === deleted.path),
+      parent?.items.some((item) => item.path === deleted.path),
     );
     if (!managedByParent) violations.push("config-delete-not-managed-by-parent");
   }

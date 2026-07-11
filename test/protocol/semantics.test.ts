@@ -173,6 +173,13 @@ describe("v1 protocol semantic envelope", () => {
     expect(validateConfigDeleteLineage([parent], tree, new Map())).toEqual(["pending-parent-tree"]);
     expect(validateConfigDeleteLineage([parent], tree, new Map([[parent, parentTree]]))).toEqual([]);
     expect(
+      validateConfigDeleteLineage(
+        [parent],
+        tree,
+        new Map([[parent, { items: [{ path: "plugins/example/data.json", kind: "delete" as const }] }]]),
+      ),
+    ).toEqual([]);
+    expect(
       validateConfigDeleteLineage([parent], tree, new Map([[parent, { items: [] }]])),
     ).toEqual(["config-delete-not-managed-by-parent"]);
   });
