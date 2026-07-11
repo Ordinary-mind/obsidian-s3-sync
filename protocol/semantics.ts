@@ -1,3 +1,6 @@
+import { isValidSequence, utf8ByteLength } from "./limits";
+import { defaultCaseFold151, normalizeNfc151 } from "./unicode";
+
 export interface ProtocolCommit {
   protocol: 1;
   repositoryId: string;
@@ -65,6 +68,12 @@ export type ConfigTreeProfileViolation =
   | "plugin-scope-not-portable"
   | "config-item-path-duplicate"
   | "config-item-not-profiled";
+
+export type PathViolation =
+  | "path-not-nfc"
+  | "path-invalid-segment"
+  | "path-control-character"
+  | "path-too-long";
 
 export function validateCommitEnvelope(
   descriptorHash: string,
@@ -240,5 +249,17 @@ function isItemCoveredByProfile(path: string, profile: ConfigTreeForProfile["pro
   const dataCovered = profile.pluginData.includes(pluginId) && dataPath;
   return packageCovered !== dataCovered;
 }
-import { isValidSequence } from "./limits";
-import { defaultCaseFold151, normalizeNfc151 } from "./unicode";
+
+export function validateProtocolPath(path: string): PathViolation[] {
+  const violations: PathViolation[] = [];
+  if (normalizeNfc151(path) !== path) violations.push("path-not-nfc");
+  if (utf8ByteLength(path) > 1024) violations.push("path-too-long");
+  if (
+    /^[\/]|[\\]|\/\/|\/$/.test(path) ||
+    path.split("/").some((part) => part === "." || part === "..")
+  ) {
+    violations.push("path-invalid-segment");
+  }
+  if (/[\u0000-\u001f\u007f]/.test(path)) violations.push("path-control-character");
+  return violations;
+}

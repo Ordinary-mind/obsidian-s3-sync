@@ -5,6 +5,7 @@ import {
   validateCommitEnvelope,
   validateConfigDeleteLineage,
   validateConfigTreeProfile,
+  validateProtocolPath,
 } from "../../protocol/semantics";
 
 const repositoryId = "123e4567-e89b-42d3-a456-426614174000";
@@ -237,5 +238,14 @@ describe("v1 protocol semantic envelope", () => {
         items: [{ path: "snippets/disabled.css", kind: "put" }],
       }),
     ).toContain("config-item-not-profiled");
+  });
+
+  it("rejects non-canonical and unsafe protocol paths before object hashing", () => {
+    expect(validateProtocolPath("notes/é.md")).toEqual([]);
+    expect(validateProtocolPath("notes/e\u0301.md")).toContain("path-not-nfc");
+    expect(validateProtocolPath("../notes.md")).toContain("path-invalid-segment");
+    expect(validateProtocolPath("notes\\windows.md")).toContain("path-invalid-segment");
+    expect(validateProtocolPath("notes/\u0000bad.md")).toContain("path-control-character");
+    expect(validateProtocolPath("a".repeat(1025))).toContain("path-too-long");
   });
 });
