@@ -1,0 +1,23 @@
+{
+  "name": "config-bootstrap",
+  "chunk": {
+    "object": {
+      "protocol": 1,
+      "repositoryId": "123e4567-e89b-42d3-a456-426614174000",
+      "descriptorHash": "b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec",
+      "channel": "config",
+      "chunkIndex": 0,
+      "chunkCount": 1,
+      "mutations": [{"key":"portable","kind":"snapshot","treeHash":"ca018f2d432300d41550ef8c9a390e7babc0456d85b8e14a17bade6a8b11ab29","parents":[]}]
+    },
+    "canonicalJson": "{\"channel\":\"config\",\"chunkCount\":1,\"chunkIndex\":0,\"descriptorHash\":\"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec\",\"mutations\":[{\"key\":\"portable\",\"kind\":\"snapshot\",\"parents\":[],\"treeHash\":\"ca018f2d432300d41550ef8c9a390e7babc0456d85b8e14a17bade6a8b11ab29\"}],\"protocol\":1,\"repositoryId\":\"123e4567-e89b-42d3-a456-426614174000\"}",
+    "sha256": "673621e5b93ac88ad39dea84ca97006f97e9b5bffd74a828f450fd8a0dce3b30",
+    "key": ".obsidian-s3-sync/v1/repositories/123e4567-e89b-42d3-a456-426614174000/changes/sha256/67/673621e5b93ac88ad39dea84ca97006f97e9b5bffd74a828f450fd8a0dce3b30.json"
+  },
+  "commit": {
+    "object": {"protocol":1,"repositoryId":"123e4567-e89b-42d3-a456-426614174000","descriptorHash":"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec","writerId":"123e4567-e89b-42d3-a456-426614174002","sequence":"00000000000000000001","previousCommitHash":null,"createdAt":"2026-07-11T00:00:00.000Z","channel":"config","kind":"bootstrap","changeChunkHashes":["673621e5b93ac88ad39dea84ca97006f97e9b5bffd74a828f450fd8a0dce3b30"],"clientVersion":"0.1.0"},
+    "canonicalJson": "{\"changeChunkHashes\":[\"673621e5b93ac88ad39dea84ca97006f97e9b5bffd74a828f450fd8a0dce3b30\"],\"channel\":\"config\",\"clientVersion\":\"0.1.0\",\"createdAt\":\"2026-07-11T00:00:00.000Z\",\"descriptorHash\":\"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec\",\"kind\":\"bootstrap\",\"previousCommitHash\":null,\"protocol\":1,\"repositoryId\":\"123e4567-e89b-42d3-a456-426614174000\",\"sequence\":\"00000000000000000001\",\"writerId\":\"123e4567-e89b-42d3-a456-426614174002\"}",
+    "sha256": "5b8365d8bb9e8dff07a86ee444d9e27935a63c289fd9401a5c26bb8840038f86",
+    "key": ".obsidian-s3-sync/v1/repositories/123e4567-e89b-42d3-a456-426614174000/commits/123e4567-e89b-42d3-a456-426614174002/00000000000000000001-5b8365d8bb9e8dff07a86ee444d9e27935a63c289fd9401a5c26bb8840038f86.json"
+  }
+}
