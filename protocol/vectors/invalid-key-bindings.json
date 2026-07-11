@@ -1,0 +1,9 @@
+{
+  "name": "key-and-repository-binding-failures",
+  "source": "vault-bootstrap-multi-chunk.json",
+  "cases": [
+    { "name": "chunk-key-hash-mismatch", "chunkKeyPrefix": "00", "expectedCode": "key-body-hash-mismatch" },
+    { "name": "commit-key-hash-mismatch", "commitHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "expectedCode": "commit-key-mismatch" },
+    { "name": "repository-descriptor-hash-mismatch", "descriptorHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "expectedCode": "commit-envelope-invalid" }
+  ]
+}

@@ -13,6 +13,11 @@
     "violations": ["version-parent-cross-registry"]
   },
   {
+    "name": "self-referencing-parent",
+    "nodes": [{"versionId":"a","registry":"vault:note","parents":["a"]}],
+    "violations": ["version-parent-self-reference","version-parent-cycle"]
+  },
+  {
     "name": "cycle",
     "nodes": [
       {"versionId":"a","registry":"vault:note","parents":["b"]},

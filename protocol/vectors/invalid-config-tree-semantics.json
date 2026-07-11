@@ -49,5 +49,14 @@
       "items": [{"path":"plugins/example/other.json","kind":"put"}]
     },
     "violation": "config-item-not-profiled"
+  },
+  {
+    "name": "windows-reserved-plugin-id",
+    "tree": {
+      "profile": {"baseFiles":[],"syncThemes":false,"syncSnippets":false,"portablePluginIds":["COM1"],"pluginPackages":[],"pluginData":[]},
+      "enabledCommunityPlugins": [],
+      "items": []
+    },
+    "violation": "plugin-id-invalid"
   }
 ]

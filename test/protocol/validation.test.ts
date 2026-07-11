@@ -202,6 +202,34 @@ describe("protocol receive validation pipeline", () => {
     ).toThrow(expect.objectContaining({ code: "key-body-hash-mismatch" }));
   });
 
+  it("replays versioned physical key and repository binding failures", () => {
+    const scenario = vector("../../protocol/vectors/invalid-key-bindings.json");
+    const multi = vector(`../../protocol/vectors/${scenario.source}`);
+    const root = ".obsidian-s3-sync/v1/repositories/123e4567-e89b-42d3-a456-426614174000";
+    const commitKey = `${root}/commits/${multi.commit.object.writerId}/${multi.commit.object.sequence}-${multi.commit.sha256}.json`;
+    const chunkKeys = multi.chunks.map(
+      (chunk: { sha256: string }) => `${root}/changes/sha256/${chunk.sha256.slice(0, 2)}/${chunk.sha256}.json`,
+    );
+    const bytes = multi.chunks.map((chunk: { canonicalJson: string }) => encoder.encode(chunk.canonicalJson));
+    const base = [
+      "123e4567-e89b-42d3-a456-426614174000",
+      "b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec",
+      commitKey,
+      encoder.encode(multi.commit.canonicalJson),
+      chunkKeys,
+      bytes,
+    ] as const;
+    for (const entry of scenario.cases) {
+      const args = [...base] as [string, string, string, Uint8Array, string[], Uint8Array[]];
+      if (entry.chunkKeyPrefix) args[4] = [chunkKeys[0].replace(`/${multi.chunks[0].sha256.slice(0, 2)}/`, `/${entry.chunkKeyPrefix}/`), chunkKeys[1]];
+      if (entry.commitHash) args[2] = commitKey.replace(multi.commit.sha256, entry.commitHash);
+      if (entry.descriptorHash) args[1] = entry.descriptorHash;
+      expect(() => parseAndValidateKeyedCommitEnvelope(...args)).toThrow(
+        expect.objectContaining({ code: entry.expectedCode }),
+      );
+    }
+  });
+
   it("binds non-descriptor objects to the verified repository descriptor", () => {
     const tree = vector("../../protocol/vectors/config-tree-basic.json");
     const descriptorHash = "b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec";
