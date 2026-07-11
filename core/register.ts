@@ -39,8 +39,16 @@ export function reduceRegister(versions: readonly RegisterVersion[]): RegisterSt
       }
     }
   }
+  const reachesMissingParent = (versionId: string, visiting = new Set<string>()): boolean => {
+    if (visiting.has(versionId)) return false;
+    visiting.add(versionId);
+    const version = byId.get(versionId)!;
+    return version.parents.some((parent) => !byId.has(parent) || reachesMissingParent(parent, visiting));
+  };
   for (const version of byId.values()) {
-    if (!verified.has(version.versionId) && version.parents.every((parent) => byId.has(parent))) invalid.add(version.versionId);
+    if (!verified.has(version.versionId) && !invalid.has(version.versionId) && !reachesMissingParent(version.versionId)) {
+      invalid.add(version.versionId);
+    }
   }
   const superseded = new Set<string>();
   for (const versionId of verified) for (const parent of byId.get(versionId)!.parents) superseded.add(parent);

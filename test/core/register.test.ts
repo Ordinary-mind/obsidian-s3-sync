@@ -10,6 +10,7 @@ describe("core register reduction", () => {
   });
   it("separates missing parents from invalid cross-register and cyclic links", () => {
     expect(reduceRegister([{ versionId: "p", logicalKey: "vault:a", parents: ["missing"] }])).toEqual({ heads: [], pending: ["p"], invalid: [] });
+    expect(reduceRegister([{ versionId: "p", logicalKey: "vault:a", parents: ["missing"] }, { versionId: "child", logicalKey: "vault:a", parents: ["p"] }]).pending).toEqual(["child", "p"]);
     expect(reduceRegister([{ versionId: "a", logicalKey: "vault:a", parents: [] }, { versionId: "b", logicalKey: "config:portable", parents: ["a"] }]).invalid).toEqual(["b"]);
     expect(reduceRegister([{ versionId: "a", logicalKey: "vault:a", parents: ["b"] }, { versionId: "b", logicalKey: "vault:a", parents: ["a"] }]).invalid).toEqual(["a", "b"]);
   });
