@@ -20,6 +20,9 @@ const commitVector = JSON.parse(
     "utf8",
   ),
 );
+const configTreeVector = JSON.parse(
+  readFileSync(new URL("../../protocol/vectors/config-tree-basic.json", import.meta.url), "utf8"),
+);
 
 const ajv = new Ajv2020({ allErrors: true, strict: true });
 ajv.addSchema(schema);
@@ -54,6 +57,18 @@ describe("v1 protocol schema", () => {
     );
     expect(commitVector.key).toBe(
       `.obsidian-s3-sync/v1/repositories/${commitVector.object.repositoryId}/commits/${commitVector.object.writerId}/${commitVector.object.sequence}-${commitVector.sha256}.json`,
+    );
+  });
+
+  it("accepts the fixed ConfigTree bytes fixture and exact object key", () => {
+    const validate = validator("ConfigTree");
+
+    expect(validate(configTreeVector.object)).toBe(true);
+    expect(createHash("sha256").update(configTreeVector.canonicalJson, "utf8").digest("hex")).toBe(
+      configTreeVector.sha256,
+    );
+    expect(configTreeVector.key).toBe(
+      `.obsidian-s3-sync/v1/repositories/${configTreeVector.object.repositoryId}/config-trees/sha256/${configTreeVector.sha256.slice(0, 2)}/${configTreeVector.sha256}.json`,
     );
   });
 

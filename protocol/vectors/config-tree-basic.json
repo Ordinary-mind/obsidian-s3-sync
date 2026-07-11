@@ -1,0 +1,31 @@
+{
+  "name": "config-tree-basic",
+  "kind": "ConfigTree",
+  "object": {
+    "protocol": 1,
+    "repositoryId": "123e4567-e89b-42d3-a456-426614174000",
+    "descriptorHash": "b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec",
+    "profile": {
+      "schema": 1,
+      "baseFiles": ["app.json"],
+      "syncThemes": true,
+      "syncSnippets": false,
+      "minimumTargetAppVersion": "1.5.0",
+      "portablePluginIds": ["example-plugin"],
+      "pluginPackages": ["example-plugin"],
+      "pluginData": ["example-plugin"]
+    },
+    "enabledCommunityPlugins": ["example-plugin"],
+    "items": [
+      {
+        "path": "plugins/example-plugin/main.js",
+        "kind": "put",
+        "blobHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "size": 17
+      }
+    ]
+  },
+  "canonicalJson": "{\"descriptorHash\":\"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec\",\"enabledCommunityPlugins\":[\"example-plugin\"],\"items\":[{\"blobHash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"kind\":\"put\",\"path\":\"plugins/example-plugin/main.js\",\"size\":17}],\"profile\":{\"baseFiles\":[\"app.json\"],\"minimumTargetAppVersion\":\"1.5.0\",\"pluginData\":[\"example-plugin\"],\"pluginPackages\":[\"example-plugin\"],\"portablePluginIds\":[\"example-plugin\"],\"schema\":1,\"syncSnippets\":false,\"syncThemes\":true},\"protocol\":1,\"repositoryId\":\"123e4567-e89b-42d3-a456-426614174000\"}",
+  "sha256": "ca018f2d432300d41550ef8c9a390e7babc0456d85b8e14a17bade6a8b11ab29",
+  "key": ".obsidian-s3-sync/v1/repositories/123e4567-e89b-42d3-a456-426614174000/config-trees/sha256/ca/ca018f2d432300d41550ef8c9a390e7babc0456d85b8e14a17bade6a8b11ab29.json"
+}
