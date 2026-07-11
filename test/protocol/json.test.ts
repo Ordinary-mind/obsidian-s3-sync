@@ -38,4 +38,14 @@ describe("strict v1 protocol JSON", () => {
     expectCode(encoder.encode('{"a":-0}'), "number-not-safe-integer");
     expectCode(encoder.encode('{"a":9007199254740992}'), "number-not-safe-integer");
   });
+
+  it("replays the versioned invalid JSON byte vectors", () => {
+    const vectors = JSON.parse(
+      readFileSync(new URL("../../protocol/vectors/invalid-json.json", import.meta.url), "utf8"),
+    ) as Array<{ hex?: string; utf8?: string; error: ProtocolJsonError["code"] }>;
+    for (const vector of vectors) {
+      const bytes = vector.hex ? Uint8Array.from(Buffer.from(vector.hex, "hex")) : encoder.encode(vector.utf8!);
+      expectCode(bytes, vector.error);
+    }
+  });
 });
