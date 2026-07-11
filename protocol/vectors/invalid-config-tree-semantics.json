@@ -31,5 +31,23 @@
       "items": [{"path":"themes/é.css","kind":"put"}]
     },
     "violation": "config-item-path-invalid"
+  },
+  {
+    "name": "plugin-package-must-not-cover-data-json",
+    "tree": {
+      "profile": {"baseFiles":[],"syncThemes":false,"syncSnippets":false,"portablePluginIds":["example"],"pluginPackages":["example"],"pluginData":[]},
+      "enabledCommunityPlugins": [],
+      "items": [{"path":"plugins/example/data.json","kind":"put"}]
+    },
+    "violation": "config-item-not-profiled"
+  },
+  {
+    "name": "plugin-data-covers-only-exact-data-json",
+    "tree": {
+      "profile": {"baseFiles":[],"syncThemes":false,"syncSnippets":false,"portablePluginIds":["example"],"pluginPackages":[],"pluginData":["example"]},
+      "enabledCommunityPlugins": [],
+      "items": [{"path":"plugins/example/other.json","kind":"put"}]
+    },
+    "violation": "config-item-not-profiled"
   }
 ]
