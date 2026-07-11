@@ -1,0 +1,38 @@
+[
+  {
+    "name": "commit-unknown-field",
+    "definition": "Commit",
+    "base": "commit",
+    "patch": {"unexpected": true}
+  },
+  {
+    "name": "commit-wrong-channel",
+    "definition": "Commit",
+    "base": "commit",
+    "patch": {"channel": "unknown"}
+  },
+  {
+    "name": "vault-put-missing-blob",
+    "definition": "VaultMutation",
+    "base": "vaultPut",
+    "delete": ["blobHash"]
+  },
+  {
+    "name": "vault-delete-has-blob",
+    "definition": "VaultMutation",
+    "base": "vaultDelete",
+    "patch": {"blobHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+  },
+  {
+    "name": "config-chunk-wrong-count",
+    "definition": "ChangeChunk",
+    "base": "configChunk",
+    "patch": {"chunkCount": 2}
+  },
+  {
+    "name": "config-tree-item-wrong-type",
+    "definition": "ConfigTree",
+    "base": "configTree",
+    "patch": {"items": "not-an-array"}
+  }
+]

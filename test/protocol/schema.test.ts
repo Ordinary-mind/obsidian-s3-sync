@@ -34,6 +34,14 @@ const multiChunkVector = JSON.parse(
 const configBootstrapVector = JSON.parse(
   readFileSync(new URL("../../protocol/vectors/config-bootstrap.json", import.meta.url), "utf8"),
 );
+const invalidSchemaVectors = JSON.parse(
+  readFileSync(new URL("../../protocol/vectors/invalid-schema-objects.json", import.meta.url), "utf8"),
+) as Array<{
+  definition: string;
+  base: string;
+  patch?: Record<string, unknown>;
+  delete?: string[];
+}>;
 
 const ajv = new Ajv2020({ allErrors: true, strict: true });
 ajv.addSchema(schema);
@@ -216,5 +224,20 @@ describe("v1 protocol schema", () => {
     expect(
       validate({ path: "note.md", kind: "delete", blobHash: hash, parents: [] }),
     ).toBe(false);
+  });
+
+  it("replays versioned invalid schema object vectors", () => {
+    const bases: Record<string, Record<string, unknown>> = {
+      commit: commitVector.object,
+      vaultPut: { path: "note.md", kind: "put", blobHash: "a".repeat(64), size: 0, parents: [] },
+      vaultDelete: { path: "note.md", kind: "delete", parents: [] },
+      configChunk: configBootstrapVector.chunk.object,
+      configTree: configTreeVector.object,
+    };
+    for (const vector of invalidSchemaVectors) {
+      const candidate = { ...bases[vector.base], ...vector.patch };
+      for (const field of vector.delete ?? []) delete candidate[field];
+      expect(validator(vector.definition)(candidate)).toBe(false);
+    }
   });
 });
