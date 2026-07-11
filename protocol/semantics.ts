@@ -76,6 +76,7 @@ export type ConfigTreeProfileViolation =
   | "base-file-invalid"
   | "minimum-app-version-invalid"
   | "plugin-id-invalid"
+  | "sync-plugin-managed"
   | "plugin-scope-not-portable"
   | "config-item-path-duplicate"
   | "config-items-exceeded"
@@ -349,6 +350,16 @@ export function validateConfigTreeProfile(tree: ConfigTreeForProfile): ConfigTre
     ].some((pluginId) => validatePluginId(pluginId).length > 0)
   ) {
     violations.push("plugin-id-invalid");
+  }
+  if (
+    [
+      ...tree.profile.portablePluginIds,
+      ...tree.profile.pluginPackages,
+      ...tree.profile.pluginData,
+      ...tree.enabledCommunityPlugins,
+    ].some((pluginId) => defaultCaseFold151(normalizeNfc151(pluginId)) === "obsidian-s3-sync")
+  ) {
+    violations.push("sync-plugin-managed");
   }
   const portable = new Set(tree.profile.portablePluginIds);
   if (

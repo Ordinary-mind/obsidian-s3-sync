@@ -313,6 +313,12 @@ describe("v1 protocol semantic envelope", () => {
       validateConfigTreeProfile({ ...tree, profile: { ...tree.profile, portablePluginIds: ["NUL"] } }),
     ).toContain("plugin-id-invalid");
     expect(
+      validateConfigTreeProfile({
+        ...tree,
+        profile: { ...tree.profile, portablePluginIds: ["Obsidian-S3-Sync"] },
+      }),
+    ).toContain("sync-plugin-managed");
+    expect(
       validateConfigTreeProfile({ ...tree, profile: { ...tree.profile, baseFiles: ["workspace.json"] } }),
     ).toContain("base-file-invalid");
     expect(
