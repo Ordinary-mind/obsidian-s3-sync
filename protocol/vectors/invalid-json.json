@@ -5,5 +5,8 @@
   {"name":"unpaired-surrogate","utf8":"{\"a\":\"\\uD800\"}","error":"unpaired-surrogate"},
   {"name":"non-canonical-member-order","utf8":"{\"z\":1,\"a\":2}","error":"non-canonical-json"},
   {"name":"negative-zero","utf8":"{\"a\":-0}","error":"number-not-safe-integer"},
-  {"name":"unsafe-integer","utf8":"{\"a\":9007199254740992}","error":"number-not-safe-integer"}
+  {"name":"unsafe-integer","utf8":"{\"a\":9007199254740992}","error":"number-not-safe-integer"},
+  {"name":"leading-zero-number","utf8":"{\"a\":01}","error":"invalid-json"},
+  {"name":"fractional-number","utf8":"{\"a\":1.5}","error":"number-not-safe-integer"},
+  {"name":"exponent-number","utf8":"{\"a\":1e3}","error":"non-canonical-json"}
 ]
