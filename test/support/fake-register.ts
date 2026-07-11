@@ -16,12 +16,26 @@ export class FakeRegister {
   }
 
   heads(): string[] {
+    const verified = this.verifiedVersions();
     const superseded = new Set<string>();
-    for (const version of this.known.values()) {
-      if (version.parents.every((parent) => this.known.has(parent))) {
-        for (const parent of version.parents) superseded.add(parent);
+    for (const version of verified.values()) {
+      for (const parent of version.parents) superseded.add(parent);
+    }
+    return [...verified.keys()].filter((versionId) => !superseded.has(versionId)).sort();
+  }
+
+  private verifiedVersions(): Map<string, FakeRegisterVersion> {
+    const verified = new Map<string, FakeRegisterVersion>();
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const [versionId, version] of this.known) {
+        if (!verified.has(versionId) && version.parents.every((parent) => verified.has(parent))) {
+          verified.set(versionId, version);
+          changed = true;
+        }
       }
     }
-    return [...this.known.keys()].filter((versionId) => !superseded.has(versionId)).sort();
+    return verified;
   }
 }

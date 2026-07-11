@@ -7,9 +7,18 @@
     { "versionId": "resolved:0:0", "parents": ["writer-a:0:0", "writer-b:0:0"] }
   ],
   "deliveries": [
-    ["root:0:0", "writer-a:0:0", "writer-b:0:0", "resolved:0:0"],
-    ["resolved:0:0", "writer-b:0:0", "root:0:0", "writer-a:0:0"],
-    ["writer-a:0:0", "root:0:0", "writer-a:0:0", "resolved:0:0", "writer-b:0:0", "resolved:0:0"]
+    {
+      "versions": ["root:0:0", "writer-a:0:0", "writer-b:0:0", "resolved:0:0"],
+      "headsAfterEachDelivery": [["root:0:0"], ["writer-a:0:0"], ["writer-a:0:0", "writer-b:0:0"], ["resolved:0:0"]]
+    },
+    {
+      "versions": ["resolved:0:0", "writer-b:0:0", "root:0:0", "writer-a:0:0"],
+      "headsAfterEachDelivery": [[], [], ["writer-b:0:0"], ["resolved:0:0"]]
+    },
+    {
+      "versions": ["writer-a:0:0", "root:0:0", "writer-a:0:0", "resolved:0:0", "writer-b:0:0", "resolved:0:0"],
+      "headsAfterEachDelivery": [[], ["writer-a:0:0"], ["writer-a:0:0"], ["writer-a:0:0"], ["resolved:0:0"], ["resolved:0:0"]]
+    }
   ],
   "expectedHeads": ["resolved:0:0"]
 }

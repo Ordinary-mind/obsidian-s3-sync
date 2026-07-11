@@ -8,12 +8,19 @@ describe("fixed register delivery vectors", () => {
   it("derives identical heads from reordered and duplicate delivery", () => {
     const vector = JSON.parse(
       readFileSync(new URL("../../protocol/vectors/register-delivery-order.json", import.meta.url), "utf8"),
-    ) as { nodes: FakeRegisterVersion[]; deliveries: string[][]; expectedHeads: string[] };
+    ) as {
+      nodes: FakeRegisterVersion[];
+      deliveries: Array<{ versions: string[]; headsAfterEachDelivery: string[][] }>;
+      expectedHeads: string[];
+    };
     const catalog = new Map(vector.nodes.map((node) => [node.versionId, node]));
 
     for (const delivery of vector.deliveries) {
       const register = new FakeRegister(catalog);
-      for (const versionId of delivery) register.deliver(versionId);
+      delivery.versions.forEach((versionId, index) => {
+        register.deliver(versionId);
+        expect(register.heads()).toEqual(delivery.headsAfterEachDelivery[index]);
+      });
       expect(register.heads()).toEqual(vector.expectedHeads);
     }
   });
