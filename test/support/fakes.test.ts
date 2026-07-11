@@ -9,6 +9,7 @@ import {
 } from "./fake-object-store";
 import { FakeClock } from "./fake-clock";
 import { FakeEditorEvents } from "./fake-editor-events";
+import { FakeEditBaseline } from "./fake-edit-baseline";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -41,6 +42,27 @@ describe("deterministic test fakes", () => {
       "notes/other.md:1:other",
       "notes/example.md:2:second",
     ]);
+  });
+
+  it("keeps an editor dirty baseline immutable across later remote observations", () => {
+    const baseline = new FakeEditBaseline();
+    baseline.setProjectedHeads("notes/example.md", ["remote-before:0:0"]);
+    const first = baseline.beginEdit("notes/example.md");
+    baseline.observeHeads("notes/example.md", ["remote-before:0:0", "remote-after:0:0"]);
+    expect(first.basisHeads).toEqual(["remote-before:0:0"]);
+    expect(baseline.beginEdit("notes/example.md").basisHeads).toEqual(["remote-before:0:0"]);
+    expect(baseline.getObservedHeads("notes/example.md")).toEqual([
+      "remote-before:0:0",
+      "remote-after:0:0",
+    ]);
+
+    baseline.freeze("notes/example.md", "local-frozen:0:0");
+    baseline.observeHeads("notes/example.md", ["remote-after:0:0", "remote-later:0:0"]);
+    expect(baseline.nextGeneration("notes/example.md")).toEqual({
+      generation: 2,
+      basisHeads: [],
+      localPredecessorVersion: "local-frozen:0:0",
+    });
   });
 
   it("injects local races and crashes at read, write, rename, delete and state boundaries", () => {
