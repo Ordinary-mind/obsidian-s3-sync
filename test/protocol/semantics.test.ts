@@ -4,6 +4,7 @@ import {
   isUtf8SortedUnique,
   validateCommitEnvelope,
   validateConfigDeleteLineage,
+  validateConfigTreeExcludedPaths,
   validateConfigTreeProfile,
   validatePluginId,
   validateProtocolPath,
@@ -324,5 +325,29 @@ describe("v1 protocol semantic envelope", () => {
     expect(
       validateRepositoryDescriptor({ configDir: ".obsidian", historicalConfigDirs: ["../old"] }),
     ).toContain("descriptor-historical-dir-invalid");
+  });
+
+  it("keeps ConfigTree items out of historical and local-only roots", () => {
+    expect(
+      validateConfigTreeExcludedPaths(".obsidian", [".obsidian-old"], [
+        { path: "themes/active.css" },
+      ]),
+    ).toEqual([]);
+    expect(
+      validateConfigTreeExcludedPaths(".obsidian", [".obsidian-old"], [
+        { path: "themes/active.css" },
+      ]),
+    ).toEqual([]);
+    expect(
+      validateConfigTreeExcludedPaths(".obsidian", [".obsidian/themes-old"], [
+        { path: "Themes-Old/active.css" },
+      ]),
+    ).toEqual(["config-item-in-excluded-root"]);
+    expect(
+      validateConfigTreeExcludedPaths(".obsidian", [], [{ path: "plugins/obsidian-s3-sync/main.js" }]),
+    ).toEqual(["config-item-in-excluded-root"]);
+    expect(
+      validateConfigTreeExcludedPaths(".obsidian", [], [{ path: ".obsidian-s3-sync-local/state" }]),
+    ).toEqual(["config-item-in-excluded-root"]);
   });
 });

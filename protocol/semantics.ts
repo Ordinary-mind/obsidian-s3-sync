@@ -99,6 +99,8 @@ export type RepositoryDescriptorViolation =
   | "descriptor-historical-dirs-not-canonical"
   | "descriptor-historical-dir-case-alias";
 
+export type ConfigTreeExcludedPathViolation = "config-item-in-excluded-root";
+
 export function validateCommitEnvelope(
   descriptorHash: string,
   commit: ProtocolCommit,
@@ -383,4 +385,27 @@ export function validateRepositoryDescriptor(
     seen.add(caseFoldKey);
   }
   return [...new Set(violations)];
+}
+
+export function validateConfigTreeExcludedPaths(
+  currentConfigDir: string,
+  historicalConfigDirs: string[],
+  items: Array<{ path: string }>,
+): ConfigTreeExcludedPathViolation[] {
+  const historical = historicalConfigDirs.map((root) => defaultCaseFold151(normalizeNfc151(root)));
+  const localExcluded = [".obsidian-s3-sync-local", "plugins/obsidian-s3-sync"].map((root) =>
+    defaultCaseFold151(normalizeNfc151(root)),
+  );
+  const current = defaultCaseFold151(normalizeNfc151(currentConfigDir));
+  for (const item of items) {
+    const itemKey = defaultCaseFold151(normalizeNfc151(item.path));
+    const vaultPath = current.length === 0 ? itemKey : `${current}/${itemKey}`;
+    if (
+      historical.some((root) => vaultPath === root || vaultPath.startsWith(`${root}/`)) ||
+      localExcluded.some((root) => itemKey === root || itemKey.startsWith(`${root}/`))
+    ) {
+      return ["config-item-in-excluded-root"];
+    }
+  }
+  return [];
 }
