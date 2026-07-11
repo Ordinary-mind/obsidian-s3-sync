@@ -7,7 +7,8 @@ describe("core dirty intent causality", () => {
     expect(mergeDirtyEdit(first)).toMatchObject({ generation: 2, basisHeads: ["before"], awaitingLocalWrite: true });
   });
   it("uses an exact frozen local predecessor for later generations", () => {
-    expect(nextDirtyGeneration("notes/a.md", 2, "local:0:0")).toEqual({ path: "notes/a.md", generation: 2, basisHeads: [], localPredecessorVersion: "local:0:0", awaitingLocalWrite: true });
+    expect(nextDirtyGeneration("notes/a.md", 2, { path: "notes/a.md", queueId: "notes/a.md", versionId: "local:0:0" })).toMatchObject({ path: "notes/a.md", localPredecessorVersion: "local:0:0", basisHeads: [] });
+    expect(() => nextDirtyGeneration("notes/a.md", 2, { path: "notes/b.md", queueId: "notes/b.md", versionId: "remote:0:0" })).toThrow("same path queue");
   });
   it("does not clear the write latch for a different editor generation", () => {
     expect(() => proveEditorWrite(captureDirtyIntent("notes/a.md", []), 2)).toThrow("editor generation");
