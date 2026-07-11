@@ -4,6 +4,7 @@ import { FakeCrash, FakeLocalFs } from "./fake-local-fs";
 import {
   FakeObjectStore,
   ImmutableObjectExistsError,
+  ImmutableObjectIntegrityError,
   LostResponseError,
   ObjectNotFoundError,
 } from "./fake-object-store";
@@ -123,5 +124,14 @@ describe("deterministic test fakes", () => {
       ImmutableObjectExistsError,
     );
     expect(decoder.decode(store.get("objects/same"))).toBe("first");
+  });
+
+  it("treats an immutable create conflict as idempotent only after exact body verification", () => {
+    const store = new FakeObjectStore();
+    store.putImmutableIdempotent("objects/same", encoder.encode("body"));
+    expect(() => store.putImmutableIdempotent("objects/same", encoder.encode("body"))).not.toThrow();
+    expect(() => store.putImmutableIdempotent("objects/same", encoder.encode("other"))).toThrow(
+      ImmutableObjectIntegrityError,
+    );
   });
 });

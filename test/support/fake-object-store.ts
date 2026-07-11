@@ -19,6 +19,13 @@ export class ImmutableObjectExistsError extends Error {
   }
 }
 
+export class ImmutableObjectIntegrityError extends Error {
+  constructor(readonly key: string) {
+    super(`immutable object has different bytes: ${key}`);
+    this.name = "ImmutableObjectIntegrityError";
+  }
+}
+
 interface StoredObject {
   body: Uint8Array;
   visibleAt: number;
@@ -44,6 +51,16 @@ export class FakeObjectStore {
       tamperedBody: undefined,
     });
     if (options.loseResponse) throw new LostResponseError(key);
+  }
+
+  putImmutableIdempotent(key: string, body: Uint8Array): void {
+    try {
+      this.putImmutable(key, body);
+    } catch (error) {
+      if (!(error instanceof ImmutableObjectExistsError)) throw error;
+      const existing = this.get(key);
+      if (!sameBytes(existing, body)) throw new ImmutableObjectIntegrityError(key);
+    }
   }
 
   get(key: string): Uint8Array {
@@ -85,4 +102,8 @@ export class FakeObjectStore {
 
 function copy(value: Uint8Array): Uint8Array {
   return new Uint8Array(value);
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.byteLength === right.byteLength && left.every((byte, index) => byte === right[index]);
 }
