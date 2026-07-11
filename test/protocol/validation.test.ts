@@ -2,7 +2,12 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
-import { ProtocolValidationError, parseAndValidateProtocolObject, validateProtocolCommitEnvelope } from "../../protocol/validation";
+import {
+  ProtocolValidationError,
+  assertRepositoryBinding,
+  parseAndValidateProtocolObject,
+  validateProtocolCommitEnvelope,
+} from "../../protocol/validation";
 import { canonicalizeProtocolJson } from "../../protocol/json";
 
 const encoder = new TextEncoder();
@@ -76,5 +81,19 @@ describe("protocol receive validation pipeline", () => {
         hashes.slice(0, 1),
       ),
     ).toThrow(ProtocolValidationError);
+  });
+
+  it("binds non-descriptor objects to the verified repository descriptor", () => {
+    const tree = vector("../../protocol/vectors/config-tree-basic.json");
+    const descriptorHash = "b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec";
+    expect(() =>
+      assertRepositoryBinding(tree.object, "123e4567-e89b-42d3-a456-426614174000", descriptorHash),
+    ).not.toThrow();
+    expect(() => assertRepositoryBinding(tree.object, "123e4567-e89b-42d3-a456-426614174999", descriptorHash)).toThrow(
+      expect.objectContaining({ code: "repository-binding-invalid" }),
+    );
+    expect(() => assertRepositoryBinding(tree.object, tree.object.repositoryId, "a".repeat(64))).toThrow(
+      expect.objectContaining({ code: "repository-binding-invalid" }),
+    );
   });
 });

@@ -52,6 +52,19 @@ export function validateProtocolCommitEnvelope(
   }
 }
 
+export function assertRepositoryBinding(
+  object: Record<string, unknown>,
+  repositoryId: string,
+  descriptorHash: string,
+): void {
+  if (object.repositoryId !== repositoryId || object.descriptorHash !== descriptorHash) {
+    throw new ProtocolValidationError(
+      "repository-binding-invalid",
+      "object repositoryId or descriptorHash does not match the verified repository",
+    );
+  }
+}
+
 function definitionFor(kind: BoundedProtocolObject): SchemaDefinition {
   const definitions: Record<BoundedProtocolObject, SchemaDefinition> = {
     descriptor: "RepositoryDescriptor",
