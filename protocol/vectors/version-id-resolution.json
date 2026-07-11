@@ -1,0 +1,26 @@
+[
+  {
+    "name": "valid-index",
+    "parents": ["cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:1:0"],
+    "shapes": [["cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",{"chunkMutationCounts":[2,1]}]],
+    "violations": []
+  },
+  {
+    "name": "index-out-of-range",
+    "parents": ["cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:1:1"],
+    "shapes": [["cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",{"chunkMutationCounts":[2,1]}]],
+    "violations": ["version-id-index-out-of-range"]
+  },
+  {
+    "name": "missing-parent-commit",
+    "parents": ["dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd:0:0"],
+    "shapes": [],
+    "violations": ["version-id-parent-unresolved"]
+  },
+  {
+    "name": "leading-zero-index",
+    "parents": ["cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:01:0"],
+    "shapes": [],
+    "violations": ["version-id-malformed"]
+  }
+]

@@ -533,6 +533,19 @@ describe("v1 protocol semantic envelope", () => {
     expect(validateParentVersionIds(["not-a-version"], known)).toEqual(["version-id-malformed"]);
   });
 
+  it("replays versioned Version ID lexical, pending and index-range vectors", () => {
+    const vectors = JSON.parse(
+      readFileSync(new URL("../../protocol/vectors/version-id-resolution.json", import.meta.url), "utf8"),
+    ) as Array<{
+      parents: string[];
+      shapes: Array<[string, { chunkMutationCounts: number[] }]>;
+      violations: string[];
+    }>;
+    for (const vector of vectors) {
+      expect(validateParentVersionIds(vector.parents, new Map(vector.shapes))).toEqual(vector.violations);
+    }
+  });
+
   it("detects writer gaps, wrong previous hashes and same-sequence forks without choosing a winner", () => {
     const first = "a".repeat(64);
     const second = "b".repeat(64);
