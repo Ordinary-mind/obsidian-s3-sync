@@ -7,6 +7,7 @@ import {
   assertRepositoryBinding,
   parseAndValidateProtocolObject,
   parseAndValidateCommitEnvelope,
+  parseAndValidateBoundCommitEnvelope,
   parseAndValidateBoundObject,
   validateProtocolCommitEnvelope,
   verifyRepositoryDescriptor,
@@ -103,6 +104,28 @@ describe("protocol receive validation pipeline", () => {
         [encoder.encode(multi.chunks[0].canonicalJson)],
       ),
     ).toThrow(expect.objectContaining({ code: "commit-envelope-invalid" }));
+  });
+
+  it("binds a raw Commit envelope to the expected repository identity", () => {
+    const multi = vector("../../protocol/vectors/vault-bootstrap-multi-chunk.json");
+    const commitBytes = encoder.encode(multi.commit.canonicalJson);
+    const chunkBytes = multi.chunks.map((chunk: { canonicalJson: string }) => encoder.encode(chunk.canonicalJson));
+    expect(() =>
+      parseAndValidateBoundCommitEnvelope(
+        "123e4567-e89b-42d3-a456-426614174000",
+        "b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec",
+        commitBytes,
+        chunkBytes,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      parseAndValidateBoundCommitEnvelope(
+        "123e4567-e89b-42d3-a456-426614174999",
+        "b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec",
+        commitBytes,
+        chunkBytes,
+      ),
+    ).toThrow(expect.objectContaining({ code: "repository-binding-invalid" }));
   });
 
   it("binds non-descriptor objects to the verified repository descriptor", () => {

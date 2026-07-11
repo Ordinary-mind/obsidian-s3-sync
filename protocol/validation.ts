@@ -67,6 +67,20 @@ export function parseAndValidateCommitEnvelope(
   return { commit, chunks, chunkHashes, commitHash: sha256Hex(commitBytes) };
 }
 
+export function parseAndValidateBoundCommitEnvelope(
+  repositoryId: string,
+  descriptorHash: string,
+  commitBytes: Uint8Array,
+  chunkBytes: Uint8Array[],
+): { commit: ProtocolCommit; chunks: ProtocolChunk[]; chunkHashes: string[]; commitHash: string } {
+  const envelope = parseAndValidateCommitEnvelope(descriptorHash, commitBytes, chunkBytes);
+  assertRepositoryBinding(envelope.commit as unknown as Record<string, unknown>, repositoryId, descriptorHash);
+  for (const chunk of envelope.chunks) {
+    assertRepositoryBinding(chunk as unknown as Record<string, unknown>, repositoryId, descriptorHash);
+  }
+  return envelope;
+}
+
 export function assertRepositoryBinding(
   object: Record<string, unknown>,
   repositoryId: string,
