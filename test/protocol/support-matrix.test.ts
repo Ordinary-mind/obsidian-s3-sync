@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { statSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
@@ -9,6 +10,7 @@ describe("protocol support matrix", () => {
     ) as {
       protocol: number;
       runtimes: Array<{ name: string; version?: string; status: string }>;
+      unicodeRuntimeSourceBytes: { caseFolding: number; nfc: number; total: number };
     };
     expect(matrix.protocol).toBe(1);
     expect(matrix.runtimes).toContainEqual(
@@ -18,5 +20,12 @@ describe("protocol support matrix", () => {
       expect.arrayContaining([expect.objectContaining({ status: "pending-adapter-contract-tests" })]),
     );
     expect(process.versions.node.split(".")[0]).toBe("22");
+    const caseFolding = statSync(new URL("../../protocol/unicode/15.1.0/case-folding.ts", import.meta.url)).size;
+    const nfc = statSync(new URL("../../protocol/unicode/15.1.0/nfc.ts", import.meta.url)).size;
+    expect(matrix.unicodeRuntimeSourceBytes).toEqual(expect.objectContaining({
+      caseFolding,
+      nfc,
+      total: caseFolding + nfc,
+    }));
   });
 });

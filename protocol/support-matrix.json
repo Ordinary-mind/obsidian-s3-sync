@@ -23,5 +23,11 @@
     "Unicode 15.1.0 NFC and Default Case Folding tables",
     "RFC 8785 canonical UTF-8 JSON validation",
     "SHA-256 immutable object hashes"
-  ]
+  ],
+  "unicodeRuntimeSourceBytes": {
+    "caseFolding": 18433,
+    "nfc": 60120,
+    "total": 78553,
+    "note": "Source-table measurement; mobile bundle output remains pending adapter release validation."
+  }
 }
