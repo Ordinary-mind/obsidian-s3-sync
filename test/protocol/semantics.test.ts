@@ -8,6 +8,7 @@ import {
   validateChangeChunkObject,
   validateConfigDeleteLineage,
   validateConfigTreeExcludedPaths,
+  validateConfigBlobDependencies,
   validateConfigTreeProfile,
   validatePluginId,
   validateProtocolPath,
@@ -482,6 +483,26 @@ describe("v1 protocol semantic envelope", () => {
     expect(
       validateConfigTreeExcludedPaths(".obsidian", [], [{ path: ".obsidian-s3-sync-local/state" }]),
     ).toEqual(["config-item-in-excluded-root"]);
+  });
+
+  it("keeps ConfigTree puts pending until their blobs are known at the declared size", () => {
+    const tree = {
+      profile: {
+        baseFiles: ["app.json"],
+        syncThemes: false,
+        syncSnippets: false,
+        portablePluginIds: [],
+        pluginPackages: [],
+        pluginData: [],
+      },
+      enabledCommunityPlugins: [],
+      items: [{ path: "app.json", kind: "put" as const, blobHash: "a".repeat(64), size: 4 }],
+    };
+    expect(validateConfigBlobDependencies(tree, new Map())).toEqual(["config-blob-pending"]);
+    expect(validateConfigBlobDependencies(tree, new Map([["a".repeat(64), 3]]))).toEqual([
+      "config-blob-size-mismatch",
+    ]);
+    expect(validateConfigBlobDependencies(tree, new Map([["a".repeat(64), 4]]))).toEqual([]);
   });
 
   it("defers Version ID index validation until the parent Commit shape is available", () => {

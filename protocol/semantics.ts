@@ -69,7 +69,7 @@ export interface ConfigTreeForProfile {
     minimumTargetAppVersion?: string;
   };
   enabledCommunityPlugins: string[];
-  items: Array<{ path: string; kind: "put" | "delete" }>;
+  items: Array<{ path: string; kind: "put" | "delete"; blobHash?: string; size?: number }>;
 }
 
 export type ConfigTreeProfileViolation =
@@ -114,6 +114,8 @@ export type RepositoryDescriptorViolation =
   | "descriptor-historical-dir-case-alias";
 
 export type ConfigTreeExcludedPathViolation = "config-item-in-excluded-root";
+
+export type ConfigBlobDependencyViolation = "config-blob-pending" | "config-blob-size-mismatch";
 
 export interface CommitShapeForVersionId {
   chunkMutationCounts: number[];
@@ -541,6 +543,22 @@ export function validateConfigTreeExcludedPaths(
     }
   }
   return [];
+}
+
+export function validateConfigBlobDependencies(
+  tree: ConfigTreeForProfile,
+  resolvedBlobSizes: ReadonlyMap<string, number>,
+): ConfigBlobDependencyViolation[] {
+  const violations: ConfigBlobDependencyViolation[] = [];
+  for (const item of tree.items) {
+    if (item.kind !== "put") continue;
+    if (!item.blobHash || item.size === undefined || !resolvedBlobSizes.has(item.blobHash)) {
+      violations.push("config-blob-pending");
+      continue;
+    }
+    if (resolvedBlobSizes.get(item.blobHash) !== item.size) violations.push("config-blob-size-mismatch");
+  }
+  return [...new Set(violations)];
 }
 
 export function validateParentVersionIds(
