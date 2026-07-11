@@ -39,6 +39,7 @@ export type ProtocolViolation =
   | "chunk-repository-mismatch"
   | "parents-not-canonical"
   | "vault-mutations-not-canonical"
+  | "vault-path-invalid"
   | "duplicate-vault-path"
   | "config-commit-shape"
   | "bootstrap-parents"
@@ -111,16 +112,8 @@ export function validateCommitEnvelope(
   chunks: ProtocolChunk[],
   chunkHashes: string[],
 ): ProtocolViolation[] {
-  const violations: ProtocolViolation[] = [];
-  if (!isValidSequence(commit.sequence)) violations.push("invalid-sequence");
-  if (!isValidCreatedAt(commit.createdAt)) violations.push("invalid-created-at");
-  if (!isValidClientVersion(commit.clientVersion)) violations.push("invalid-client-version");
-  if (
-    (commit.sequence === "00000000000000000001" && commit.previousCommitHash !== null) ||
-    (commit.sequence !== "00000000000000000001" && commit.previousCommitHash === null)
-  ) {
-    violations.push("previous-commit-chain-shape");
-  }
+  const violations = validateCommitFields(commit);
+  
   if (commit.descriptorHash !== descriptorHash) violations.push("descriptor-hash-mismatch");
   if (chunks.length !== commit.changeChunkHashes.length) violations.push("chunk-count-mismatch");
   if (
@@ -148,9 +141,7 @@ export function validateCommitEnvelope(
       );
     }
     if (commit.channel === "vault") {
-      if (!isUtf8SortedUnique(chunk.mutations.map((mutation) => mutation.path ?? ""))) {
-        violations.push("vault-mutations-not-canonical");
-      }
+      for (const violation of validateChangeChunkObject(chunk)) violations.push(violation);
       for (const mutation of chunk.mutations) {
         if (mutation.path && seenPaths.has(mutation.path)) violations.push("duplicate-vault-path");
         if (mutation.path) seenPaths.add(mutation.path);
@@ -159,9 +150,6 @@ export function validateCommitEnvelope(
   }
 
   const mutations = chunks.flatMap((chunk) => chunk.mutations);
-  if (mutations.some((mutation) => !isUtf8SortedUnique(mutation.parents))) {
-    violations.push("parents-not-canonical");
-  }
   if (commit.channel === "config" && (chunks.length !== 1 || mutations.length !== 1)) {
     violations.push("config-commit-shape");
   }
@@ -182,6 +170,36 @@ export function validateCommitEnvelope(
     if (mutations.some((mutation) => mutation.parents.length < 2 || mutation.parents.length > 1024)) {
       violations.push("parent-reduction-parents");
     }
+  }
+  return [...new Set(violations)];
+}
+
+export function validateCommitFields(commit: ProtocolCommit): ProtocolViolation[] {
+  const violations: ProtocolViolation[] = [];
+  if (!isValidSequence(commit.sequence)) violations.push("invalid-sequence");
+  if (!isValidCreatedAt(commit.createdAt)) violations.push("invalid-created-at");
+  if (!isValidClientVersion(commit.clientVersion)) violations.push("invalid-client-version");
+  if (
+    (commit.sequence === "00000000000000000001" && commit.previousCommitHash !== null) ||
+    (commit.sequence !== "00000000000000000001" && commit.previousCommitHash === null)
+  ) {
+    violations.push("previous-commit-chain-shape");
+  }
+  return [...new Set(violations)];
+}
+
+export function validateChangeChunkObject(chunk: ProtocolChunk): ProtocolViolation[] {
+  const violations: ProtocolViolation[] = [];
+  if (chunk.channel === "vault") {
+    if (!isUtf8SortedUnique(chunk.mutations.map((mutation) => mutation.path ?? ""))) {
+      violations.push("vault-mutations-not-canonical");
+    }
+    if (chunk.mutations.some((mutation) => !mutation.path || validateProtocolPath(mutation.path).length > 0)) {
+      violations.push("vault-path-invalid");
+    }
+  }
+  if (chunk.mutations.some((mutation) => !isUtf8SortedUnique(mutation.parents))) {
+    violations.push("parents-not-canonical");
   }
   return [...new Set(violations)];
 }

@@ -6,6 +6,8 @@ import {
   ProtocolChunk,
   ProtocolCommit,
   ProtocolViolation,
+  validateChangeChunkObject,
+  validateCommitFields,
   validateCommitEnvelope,
   validateConfigTreeProfile,
   validateRepositoryDescriptor,
@@ -63,5 +65,7 @@ function definitionFor(kind: BoundedProtocolObject): SchemaDefinition {
 function singleObjectViolations(kind: BoundedProtocolObject, object: Record<string, unknown>): string[] {
   if (kind === "descriptor") return validateRepositoryDescriptor(object as never);
   if (kind === "config-tree") return validateConfigTreeProfile(object as never);
+  if (kind === "commit") return validateCommitFields(object as unknown as ProtocolCommit);
+  if (kind === "change-chunk") return validateChangeChunkObject(object as unknown as ProtocolChunk);
   return [];
 }

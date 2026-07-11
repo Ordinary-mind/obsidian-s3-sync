@@ -38,6 +38,23 @@ describe("protocol receive validation pipeline", () => {
     );
   });
 
+  it("rejects object-local Commit and Change Chunk violations before dependency loading", () => {
+    const chunk = vector("../../protocol/vectors/vault-change-chunk-put-delete.json");
+    const commit = vector("../../protocol/vectors/vault-bootstrap-commit.json");
+    const unsortedChunk = {
+      ...chunk.object,
+      mutations: [...chunk.object.mutations].reverse(),
+    };
+    const invalidCommit = { ...commit.object, createdAt: "2026-02-29T00:00:00.000Z" };
+
+    expect(() =>
+      parseAndValidateProtocolObject("change-chunk", encoder.encode(canonicalizeProtocolJson(unsortedChunk))),
+    ).toThrow(expect.objectContaining({ code: "semantic-invalid" }));
+    expect(() =>
+      parseAndValidateProtocolObject("commit", encoder.encode(canonicalizeProtocolJson(invalidCommit))),
+    ).toThrow(expect.objectContaining({ code: "semantic-invalid" }));
+  });
+
   it("only validates cross-object Commit rules after the complete Chunk envelope is supplied", () => {
     const multi = vector("../../protocol/vectors/vault-bootstrap-multi-chunk.json");
     const chunks = multi.chunks.map((chunk: { object: unknown }) => chunk.object);
