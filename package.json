@@ -9,7 +9,8 @@
     "generate:unicode": "node scripts/generate-unicode-case-folding.mjs && node scripts/generate-unicode-nfc.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:types": "tsc -p tsconfig.test.json --noEmit"
+    "test:types": "tsc -p tsconfig.test.json --noEmit",
+    "test:ci": "npm test && npm run test:types && npm run build"
   },
   "keywords": [
     "obsidian",
