@@ -83,6 +83,17 @@ export type PluginIdViolation =
   | "plugin-id-too-long"
   | "plugin-id-reserved-name";
 
+export interface RepositoryDescriptorForSemantics {
+  configDir: string;
+  historicalConfigDirs: string[];
+}
+
+export type RepositoryDescriptorViolation =
+  | "descriptor-config-dir-invalid"
+  | "descriptor-historical-dir-invalid"
+  | "descriptor-historical-dirs-not-canonical"
+  | "descriptor-historical-dir-case-alias";
+
 export function validateCommitEnvelope(
   descriptorHash: string,
   commit: ProtocolCommit,
@@ -305,4 +316,24 @@ export function validatePluginId(pluginId: string): PluginIdViolation[] {
     violations.push("plugin-id-reserved-name");
   }
   return violations;
+}
+
+export function validateRepositoryDescriptor(
+  descriptor: RepositoryDescriptorForSemantics,
+): RepositoryDescriptorViolation[] {
+  const violations: RepositoryDescriptorViolation[] = [];
+  if (descriptor.configDir.length === 0 || validateProtocolPath(descriptor.configDir).length > 0) {
+    violations.push("descriptor-config-dir-invalid");
+  }
+  if (!isUtf8SortedUnique(descriptor.historicalConfigDirs)) {
+    violations.push("descriptor-historical-dirs-not-canonical");
+  }
+  const seen = new Set<string>([defaultCaseFold151(normalizeNfc151(descriptor.configDir))]);
+  for (const historical of descriptor.historicalConfigDirs) {
+    if (validateProtocolPath(historical).length > 0) violations.push("descriptor-historical-dir-invalid");
+    const caseFoldKey = defaultCaseFold151(normalizeNfc151(historical));
+    if (seen.has(caseFoldKey)) violations.push("descriptor-historical-dir-case-alias");
+    seen.add(caseFoldKey);
+  }
+  return [...new Set(violations)];
 }

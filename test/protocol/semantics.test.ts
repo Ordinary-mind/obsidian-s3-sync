@@ -7,6 +7,7 @@ import {
   validateConfigTreeProfile,
   validatePluginId,
   validateProtocolPath,
+  validateRepositoryDescriptor,
 } from "../../protocol/semantics";
 
 const repositoryId = "123e4567-e89b-42d3-a456-426614174000";
@@ -268,5 +269,23 @@ describe("v1 protocol semantic envelope", () => {
     expect(validatePluginId("com²")).toContain("plugin-id-reserved-name");
     expect(validatePluginId("trailing.")).toContain("plugin-id-invalid-shape");
     expect(validatePluginId("a".repeat(256))).toContain("plugin-id-too-long");
+  });
+
+  it("requires descriptor config roots to be canonical and case-fold distinct", () => {
+    expect(
+      validateRepositoryDescriptor({ configDir: ".obsidian", historicalConfigDirs: [".obsidian-old"] }),
+    ).toEqual([]);
+    expect(
+      validateRepositoryDescriptor({ configDir: ".obsidian", historicalConfigDirs: ["z", "a"] }),
+    ).toContain("descriptor-historical-dirs-not-canonical");
+    expect(
+      validateRepositoryDescriptor({ configDir: ".obsidian", historicalConfigDirs: [".OBSIDIAN"] }),
+    ).toContain("descriptor-historical-dir-case-alias");
+    expect(
+      validateRepositoryDescriptor({ configDir: "", historicalConfigDirs: [] }),
+    ).toContain("descriptor-config-dir-invalid");
+    expect(
+      validateRepositoryDescriptor({ configDir: ".obsidian", historicalConfigDirs: ["../old"] }),
+    ).toContain("descriptor-historical-dir-invalid");
   });
 });
