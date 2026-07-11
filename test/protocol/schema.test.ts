@@ -5,6 +5,8 @@ import Ajv2020 from "ajv/dist/2020.js";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
+import { validateCommitEnvelope } from "../../protocol/semantics";
+
 const schema = JSON.parse(
   readFileSync(new URL("../../protocol/schemas/v1.schema.json", import.meta.url), "utf8"),
 );
@@ -22,6 +24,12 @@ const commitVector = JSON.parse(
 );
 const configTreeVector = JSON.parse(
   readFileSync(new URL("../../protocol/vectors/config-tree-basic.json", import.meta.url), "utf8"),
+);
+const vaultChangeVector = JSON.parse(
+  readFileSync(new URL("../../protocol/vectors/vault-change-chunk-put-delete.json", import.meta.url), "utf8"),
+);
+const multiChunkVector = JSON.parse(
+  readFileSync(new URL("../../protocol/vectors/vault-bootstrap-multi-chunk.json", import.meta.url), "utf8"),
 );
 
 const ajv = new Ajv2020({ allErrors: true, strict: true });
@@ -70,6 +78,43 @@ describe("v1 protocol schema", () => {
     expect(configTreeVector.key).toBe(
       `.obsidian-s3-sync/v1/repositories/${configTreeVector.object.repositoryId}/config-trees/sha256/${configTreeVector.sha256.slice(0, 2)}/${configTreeVector.sha256}.json`,
     );
+  });
+
+  it("accepts fixed Vault put/delete Chunk bytes and its exact object key", () => {
+    const validate = validator("ChangeChunk");
+
+    expect(validate(vaultChangeVector.object)).toBe(true);
+    expect(createHash("sha256").update(vaultChangeVector.canonicalJson, "utf8").digest("hex")).toBe(
+      vaultChangeVector.sha256,
+    );
+    expect(vaultChangeVector.key).toBe(
+      `.obsidian-s3-sync/v1/repositories/${vaultChangeVector.object.repositoryId}/changes/sha256/${vaultChangeVector.sha256.slice(0, 2)}/${vaultChangeVector.sha256}.json`,
+    );
+  });
+
+  it("accepts the fixed multi-Chunk bootstrap envelope in chunk index order", () => {
+    const validateChunk = validator("ChangeChunk");
+    const validateCommit = validator("Commit");
+    const chunks = multiChunkVector.chunks.map((chunk: { object: unknown }) => chunk.object);
+    const hashes = multiChunkVector.chunks.map((chunk: { sha256: string }) => chunk.sha256);
+
+    expect(multiChunkVector.chunks.every((chunk: { object: unknown }) => validateChunk(chunk.object))).toBe(
+      true,
+    );
+    expect(validateCommit(multiChunkVector.commit.object)).toBe(true);
+    expect(
+      multiChunkVector.chunks.map((chunk: { canonicalJson: string }) =>
+        createHash("sha256").update(chunk.canonicalJson, "utf8").digest("hex"),
+      ),
+    ).toEqual(hashes);
+    expect(
+      validateCommitEnvelope(
+        descriptorVector.sha256,
+        multiChunkVector.commit.object,
+        chunks,
+        hashes,
+      ),
+    ).toEqual([]);
   });
 
   it("rejects unknown descriptor fields", () => {

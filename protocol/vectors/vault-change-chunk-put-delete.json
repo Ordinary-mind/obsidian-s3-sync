@@ -1,0 +1,29 @@
+{
+  "name": "vault-change-chunk-put-delete",
+  "kind": "VaultChangeChunk",
+  "object": {
+    "protocol": 1,
+    "repositoryId": "123e4567-e89b-42d3-a456-426614174000",
+    "descriptorHash": "b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec",
+    "channel": "vault",
+    "chunkIndex": 0,
+    "chunkCount": 1,
+    "mutations": [
+      {
+        "path": "notes/first.md",
+        "kind": "put",
+        "blobHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "size": 5,
+        "parents": []
+      },
+      {
+        "path": "notes/old.md",
+        "kind": "delete",
+        "parents": ["dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd:0:0"]
+      }
+    ]
+  },
+  "canonicalJson": "{\"channel\":\"vault\",\"chunkCount\":1,\"chunkIndex\":0,\"descriptorHash\":\"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec\",\"mutations\":[{\"blobHash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"kind\":\"put\",\"parents\":[],\"path\":\"notes/first.md\",\"size\":5},{\"kind\":\"delete\",\"parents\":[\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd:0:0\"],\"path\":\"notes/old.md\"}],\"protocol\":1,\"repositoryId\":\"123e4567-e89b-42d3-a456-426614174000\"}",
+  "sha256": "7698e4e16f22c4c49434663e098a7e48726c888621063b366ad7e5871d6ea54c",
+  "key": ".obsidian-s3-sync/v1/repositories/123e4567-e89b-42d3-a456-426614174000/changes/sha256/76/7698e4e16f22c4c49434663e098a7e48726c888621063b366ad7e5871d6ea54c.json"
+}

@@ -1,0 +1,20 @@
+{
+  "name": "vault-bootstrap-multi-chunk",
+  "chunks": [
+    {
+      "object": {"protocol":1,"repositoryId":"123e4567-e89b-42d3-a456-426614174000","descriptorHash":"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec","channel":"vault","chunkIndex":0,"chunkCount":2,"mutations":[{"path":"notes/first.md","kind":"put","blobHash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","size":5,"parents":[]}]},
+      "canonicalJson":"{\"channel\":\"vault\",\"chunkCount\":2,\"chunkIndex\":0,\"descriptorHash\":\"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec\",\"mutations\":[{\"blobHash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"kind\":\"put\",\"parents\":[],\"path\":\"notes/first.md\",\"size\":5}],\"protocol\":1,\"repositoryId\":\"123e4567-e89b-42d3-a456-426614174000\"}",
+      "sha256":"e242c675b7f03c00ef76c4185a5e8b58fd70375ede6e01eb12905ee363733d0b"
+    },
+    {
+      "object":{"protocol":1,"repositoryId":"123e4567-e89b-42d3-a456-426614174000","descriptorHash":"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec","channel":"vault","chunkIndex":1,"chunkCount":2,"mutations":[{"path":"notes/second.md","kind":"put","blobHash":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","size":5,"parents":[]}]},
+      "canonicalJson":"{\"channel\":\"vault\",\"chunkCount\":2,\"chunkIndex\":1,\"descriptorHash\":\"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec\",\"mutations\":[{\"blobHash\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"kind\":\"put\",\"parents\":[],\"path\":\"notes/second.md\",\"size\":5}],\"protocol\":1,\"repositoryId\":\"123e4567-e89b-42d3-a456-426614174000\"}",
+      "sha256":"a6c658a5bbf5e372454ec42d36ae910fc1d7ab49edae35f375db7f8f848e4af9"
+    }
+  ],
+  "commit": {
+    "object":{"protocol":1,"repositoryId":"123e4567-e89b-42d3-a456-426614174000","descriptorHash":"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec","writerId":"123e4567-e89b-42d3-a456-426614174001","sequence":"00000000000000000001","previousCommitHash":null,"createdAt":"2026-07-11T00:00:00.000Z","channel":"vault","kind":"bootstrap","changeChunkHashes":["e242c675b7f03c00ef76c4185a5e8b58fd70375ede6e01eb12905ee363733d0b","a6c658a5bbf5e372454ec42d36ae910fc1d7ab49edae35f375db7f8f848e4af9"],"clientVersion":"0.1.0"},
+    "canonicalJson":"{\"changeChunkHashes\":[\"e242c675b7f03c00ef76c4185a5e8b58fd70375ede6e01eb12905ee363733d0b\",\"a6c658a5bbf5e372454ec42d36ae910fc1d7ab49edae35f375db7f8f848e4af9\"],\"channel\":\"vault\",\"clientVersion\":\"0.1.0\",\"createdAt\":\"2026-07-11T00:00:00.000Z\",\"descriptorHash\":\"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec\",\"kind\":\"bootstrap\",\"previousCommitHash\":null,\"protocol\":1,\"repositoryId\":\"123e4567-e89b-42d3-a456-426614174000\",\"sequence\":\"00000000000000000001\",\"writerId\":\"123e4567-e89b-42d3-a456-426614174001\"}",
+    "sha256":"3eeb9d5379aeabc2aefaf208ef67c2a2a89e6148250fcd1c3067377de30822f2"
+  }
+}
