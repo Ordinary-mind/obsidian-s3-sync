@@ -1,0 +1,15 @@
+{
+  "name": "vault-register-concurrent-branches-and-resolution",
+  "nodes": [
+    { "versionId": "root:0:0", "parents": [] },
+    { "versionId": "writer-a:0:0", "parents": ["root:0:0"] },
+    { "versionId": "writer-b:0:0", "parents": ["root:0:0"] },
+    { "versionId": "resolved:0:0", "parents": ["writer-a:0:0", "writer-b:0:0"] }
+  ],
+  "deliveries": [
+    ["root:0:0", "writer-a:0:0", "writer-b:0:0", "resolved:0:0"],
+    ["resolved:0:0", "writer-b:0:0", "root:0:0", "writer-a:0:0"],
+    ["writer-a:0:0", "root:0:0", "writer-a:0:0", "resolved:0:0", "writer-b:0:0", "resolved:0:0"]
+  ],
+  "expectedHeads": ["resolved:0:0"]
+}
