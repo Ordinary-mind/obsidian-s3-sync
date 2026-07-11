@@ -1,4 +1,4 @@
-import { isValidSequence, utf8ByteLength } from "./limits";
+import { isValidSequence, isWithinCollectionLimit, utf8ByteLength } from "./limits";
 import { defaultCaseFold151, normalizeNfc151 } from "./unicode";
 
 export interface ProtocolCommit {
@@ -78,6 +78,7 @@ export type ConfigTreeProfileViolation =
   | "plugin-id-invalid"
   | "plugin-scope-not-portable"
   | "config-item-path-duplicate"
+  | "config-items-exceeded"
   | "config-item-path-invalid"
   | "config-put-case-alias"
   | "config-put-path-prefix-conflict"
@@ -314,6 +315,9 @@ export function validateConfigDeleteLineage(
 
 export function validateConfigTreeProfile(tree: ConfigTreeForProfile): ConfigTreeProfileViolation[] {
   const violations: ConfigTreeProfileViolation[] = [];
+  if (!isWithinCollectionLimit("config-tree-items", tree.items.length)) {
+    return ["config-items-exceeded"];
+  }
   const profileArrays = [
     tree.profile.baseFiles,
     tree.profile.portablePluginIds,
@@ -406,12 +410,9 @@ function isValidPlainSemVer(value: string): boolean {
 }
 
 function hasPathPrefixConflict(paths: string[]): boolean {
-  for (let left = 0; left < paths.length; left += 1) {
-    for (let right = left + 1; right < paths.length; right += 1) {
-      if (paths[left].startsWith(`${paths[right]}/`) || paths[right].startsWith(`${paths[left]}/`)) {
-        return true;
-      }
-    }
+  const sorted = [...paths].sort(compareUtf8);
+  for (let index = 1; index < sorted.length; index += 1) {
+    if (sorted[index].startsWith(`${sorted[index - 1]}/`)) return true;
   }
   return false;
 }

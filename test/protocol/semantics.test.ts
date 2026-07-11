@@ -350,6 +350,7 @@ describe("v1 protocol semantic envelope", () => {
     ).toContain("config-item-not-profiled");
   });
 
+
   it("rejects non-canonical and unsafe protocol paths before object hashing", () => {
     expect(validateProtocolPath("notes/é.md")).toEqual([]);
     expect(validateProtocolPath("")).toContain("path-invalid-segment");
