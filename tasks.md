@@ -42,14 +42,14 @@
 - [x] Fake ObjectStore 必须支持 List 乱序、重复、空页、晚可见、临时 404、丢失响应和对象篡改。
 - [x] 建立规范协议正向/状态向量：descriptor/configDir/historicalConfigDirs/descriptorHash、空仓库、Vault put/delete、多 Chunk bootstrap、ConfigTree、由直接父 Tree 支持的 config delete、writer 正常链/分叉、暂缺 parent 的 pending、Vault Unicode case alias/路径前缀结构冲突，以及 vault/config 两个 channel 中的 change、bootstrap、conflict-resolution、parent-reduction。
 - [x] 建立规范协议负向向量：字段缺失/多余/错型、错误 kind/channel 分支、BOM/非法 UTF-8/未配对 surrogate/重复 Key/非规范 JSON、非规范数组、Key/Hash/descriptorHash 不一致、parent 自引用/循环/跨寄存器、根 ConfigTree 携带 delete、所有直接父 Tree 均未管理逐字节相同 delete path，以及 ConfigTree 非法插件 ID/alias/前缀形状。
-- [ ] 为小型向量保存规范 JSON 原始 bytes、SHA-256、S3 Key 和期望逻辑状态；大型边界使用确定性生成配方/计数流，覆盖每项固定上限的 `limit` 与 `limit + 1`，不提交 5 GB fixture。
+- [x] 为小型向量保存规范 JSON 原始 bytes、SHA-256、S3 Key 和期望逻辑状态；大型边界使用确定性生成配方/计数流，覆盖每项固定上限的 `limit` 与 `limit + 1`，不提交 5 GB fixture。
 
 ### 验收门
 
 - [x] `design.md`、`tasks.md` 和 README 不再包含旧 manifest 作为目标协议。
-- [ ] 协议 Schema、上限和测试向量无待定字段。
+- [x] 协议 Schema、上限和测试向量无待定字段。
 - [x] 新测试命令可在无 Obsidian、无 AWS SDK、无网络环境运行。
-- [ ] Schema 正反例、固定 bytes/Hash/Key 和全部资源边界在 CI 中可确定性复现；任何向量变化都必须作为协议变更审查。
+- [x] Schema 正反例、固定 bytes/Hash/Key 和全部资源边界在 CI 中可确定性复现；任何向量变化都必须作为协议变更审查。
 - [x] 文档用同一状态模型解释“本地编辑为何只能继承 projectedHeads 或精确本地冻结前驱，而不能继承刚拉到的 observedHeads”。
 
 ## 1. 可测试的领域核心
