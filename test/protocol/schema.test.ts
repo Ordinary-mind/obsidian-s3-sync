@@ -10,6 +10,7 @@ import {
   validateConfigTreeProfile,
   validateRepositoryDescriptor,
 } from "../../protocol/semantics";
+import { parseBoundedProtocolJson } from "../../protocol/json";
 
 const schema = JSON.parse(
   readFileSync(new URL("../../protocol/schemas/v1.schema.json", import.meta.url), "utf8"),
@@ -64,11 +65,20 @@ function validator(definition: string) {
   return validate;
 }
 
+function expectCanonicalVector(
+  kind: "descriptor" | "commit" | "change-chunk" | "config-tree",
+  canonicalJson: string,
+  object: unknown,
+) {
+  expect(parseBoundedProtocolJson(kind, new TextEncoder().encode(canonicalJson))).toEqual(object);
+}
+
 describe("v1 protocol schema", () => {
   it("accepts the fixed RepositoryDescriptor bytes fixture", () => {
     const validate = validator("RepositoryDescriptor");
 
     expect(validate(descriptorVector.object)).toBe(true);
+    expectCanonicalVector("descriptor", descriptorVector.canonicalJson, descriptorVector.object);
     expect(validateRepositoryDescriptor(descriptorVector.object)).toEqual([]);
     expect(
       createHash("sha256").update(descriptorVector.canonicalJson, "utf8").digest("hex"),
@@ -82,6 +92,7 @@ describe("v1 protocol schema", () => {
     const validate = validator("Commit");
 
     expect(validate(commitVector.object)).toBe(true);
+    expectCanonicalVector("commit", commitVector.canonicalJson, commitVector.object);
     expect(createHash("sha256").update(commitVector.canonicalJson, "utf8").digest("hex")).toBe(
       commitVector.sha256,
     );
@@ -94,6 +105,7 @@ describe("v1 protocol schema", () => {
     const validate = validator("ConfigTree");
 
     expect(validate(configTreeVector.object)).toBe(true);
+    expectCanonicalVector("config-tree", configTreeVector.canonicalJson, configTreeVector.object);
     expect(validateConfigTreeProfile(configTreeVector.object)).toEqual([]);
     expect(createHash("sha256").update(configTreeVector.canonicalJson, "utf8").digest("hex")).toBe(
       configTreeVector.sha256,
@@ -107,6 +119,7 @@ describe("v1 protocol schema", () => {
     const validate = validator("ChangeChunk");
 
     expect(validate(vaultChangeVector.object)).toBe(true);
+    expectCanonicalVector("change-chunk", vaultChangeVector.canonicalJson, vaultChangeVector.object);
     expect(createHash("sha256").update(vaultChangeVector.canonicalJson, "utf8").digest("hex")).toBe(
       vaultChangeVector.sha256,
     );
@@ -124,6 +137,10 @@ describe("v1 protocol schema", () => {
     expect(multiChunkVector.chunks.every((chunk: { object: unknown }) => validateChunk(chunk.object))).toBe(
       true,
     );
+    for (const chunk of multiChunkVector.chunks) {
+      expectCanonicalVector("change-chunk", chunk.canonicalJson, chunk.object);
+    }
+    expectCanonicalVector("commit", multiChunkVector.commit.canonicalJson, multiChunkVector.commit.object);
     expect(validateCommit(multiChunkVector.commit.object)).toBe(true);
     expect(
       multiChunkVector.chunks.map((chunk: { canonicalJson: string }) =>
@@ -147,6 +164,8 @@ describe("v1 protocol schema", () => {
 
     expect(validateChunk(chunk.object)).toBe(true);
     expect(validateCommit(commit.object)).toBe(true);
+    expectCanonicalVector("change-chunk", chunk.canonicalJson, chunk.object);
+    expectCanonicalVector("commit", commit.canonicalJson, commit.object);
     expect(createHash("sha256").update(chunk.canonicalJson, "utf8").digest("hex")).toBe(
       chunk.sha256,
     );
@@ -167,6 +186,8 @@ describe("v1 protocol schema", () => {
 
     expect(validateChunk(chunk.object)).toBe(true);
     expect(validateCommit(commit.object)).toBe(true);
+    expectCanonicalVector("change-chunk", chunk.canonicalJson, chunk.object);
+    expectCanonicalVector("commit", commit.canonicalJson, commit.object);
     expect(createHash("sha256").update(chunk.canonicalJson, "utf8").digest("hex")).toBe(
       chunk.sha256,
     );
@@ -184,6 +205,8 @@ describe("v1 protocol schema", () => {
     for (const vector of changeAndResolutionVectors.vectors) {
       expect(validateChunk(vector.chunk.object)).toBe(true);
       expect(validateCommit(vector.commit.object)).toBe(true);
+      expectCanonicalVector("change-chunk", vector.chunk.canonicalJson, vector.chunk.object);
+      expectCanonicalVector("commit", vector.commit.canonicalJson, vector.commit.object);
       expect(createHash("sha256").update(vector.chunk.canonicalJson, "utf8").digest("hex")).toBe(
         vector.chunk.sha256,
       );
