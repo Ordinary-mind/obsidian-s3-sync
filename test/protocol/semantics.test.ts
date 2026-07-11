@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -454,5 +456,14 @@ describe("v1 protocol semantic envelope", () => {
         { sequence: "00000000000000000001", hash: second, previousCommitHash: null },
       ]),
     ).toContain("writer-sequence-fork");
+  });
+
+  it("replays versioned ConfigTree case-alias, prefix and NFC negative vectors", () => {
+    const vectors = JSON.parse(
+      readFileSync(new URL("../../protocol/vectors/invalid-config-tree-semantics.json", import.meta.url), "utf8"),
+    ) as Array<{ tree: Parameters<typeof validateConfigTreeProfile>[0]; violation: string }>;
+    for (const vector of vectors) {
+      expect(validateConfigTreeProfile(vector.tree)).toContain(vector.violation);
+    }
   });
 });

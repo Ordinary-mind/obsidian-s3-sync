@@ -1,0 +1,35 @@
+[
+  {
+    "name": "config-put-case-alias",
+    "tree": {
+      "profile": {"baseFiles":[],"syncThemes":true,"syncSnippets":false,"portablePluginIds":[],"pluginPackages":[],"pluginData":[]},
+      "enabledCommunityPlugins": [],
+      "items": [
+        {"path":"themes/active.css","kind":"put"},
+        {"path":"themes/ACTIVE.css","kind":"put"}
+      ]
+    },
+    "violation": "config-put-case-alias"
+  },
+  {
+    "name": "config-put-path-prefix",
+    "tree": {
+      "profile": {"baseFiles":[],"syncThemes":true,"syncSnippets":false,"portablePluginIds":[],"pluginPackages":[],"pluginData":[]},
+      "enabledCommunityPlugins": [],
+      "items": [
+        {"path":"themes/active","kind":"put"},
+        {"path":"themes/active/nested.css","kind":"put"}
+      ]
+    },
+    "violation": "config-put-path-prefix-conflict"
+  },
+  {
+    "name": "config-item-non-nfc",
+    "tree": {
+      "profile": {"baseFiles":[],"syncThemes":true,"syncSnippets":false,"portablePluginIds":[],"pluginPackages":[],"pluginData":[]},
+      "enabledCommunityPlugins": [],
+      "items": [{"path":"themes/é.css","kind":"put"}]
+    },
+    "violation": "config-item-path-invalid"
+  }
+]
