@@ -156,6 +156,29 @@ describe("v1 protocol semantic envelope", () => {
     ).toContain("chunk-channel-mismatch");
   });
 
+  it("rejects Vault structural aliases that are split across Chunk boundaries", () => {
+    const first = {
+      ...chunk([]),
+      chunkIndex: 0,
+      chunkCount: 2,
+      mutations: [{ path: "Notes/active", kind: "put" as const, blobHash: "a".repeat(64), parents: [] }],
+    };
+    const second = {
+      ...chunk([]),
+      chunkIndex: 1,
+      chunkCount: 2,
+      mutations: [{ path: "notes/active/child", kind: "put" as const, blobHash: "b".repeat(64), parents: [] }],
+    };
+    expect(
+      validateCommitEnvelope(
+        descriptorHash,
+        { ...commit("bootstrap"), changeChunkHashes: ["b".repeat(64), "c".repeat(64)] },
+        [first, second],
+        ["b".repeat(64), "c".repeat(64)],
+      ),
+    ).toContain("vault-global-path-prefix-conflict");
+  });
+
   it("enforces the first Commit previous hash and the exact sequence range", () => {
     const valid = chunk([]);
     expect(

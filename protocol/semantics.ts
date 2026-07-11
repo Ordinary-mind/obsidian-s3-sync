@@ -46,6 +46,8 @@ export type ProtocolViolation =
   | "chunk-mutations-exceeded"
   | "mutation-parents-exceeded"
   | "duplicate-vault-path"
+  | "vault-global-case-alias"
+  | "vault-global-path-prefix-conflict"
   | "config-commit-shape"
   | "bootstrap-parents"
   | "change-parents"
@@ -165,6 +167,7 @@ export function validateCommitEnvelope(
   }
 
   const seenPaths = new Set<string>();
+  const vaultPutPaths: string[] = [];
   for (let index = 0; index < chunks.length; index += 1) {
     const chunk = chunks[index];
     if (chunk.repositoryId !== commit.repositoryId) violations.push("chunk-repository-mismatch");
@@ -183,8 +186,14 @@ export function validateCommitEnvelope(
       for (const mutation of chunk.mutations) {
         if (mutation.path && seenPaths.has(mutation.path)) violations.push("duplicate-vault-path");
         if (mutation.path) seenPaths.add(mutation.path);
+        if (mutation.kind === "put" && mutation.path) vaultPutPaths.push(mutation.path);
       }
     }
+  }
+
+  if (commit.channel === "vault") {
+    if (!isCaseFoldUnique(vaultPutPaths)) violations.push("vault-global-case-alias");
+    if (hasPathPrefixConflict(vaultPutPaths)) violations.push("vault-global-path-prefix-conflict");
   }
 
   const mutations = chunks.flatMap((chunk) => chunk.mutations);
