@@ -1,5 +1,7 @@
 export interface RegisterVersion {
   versionId: string;
+  repositoryId: string;
+  channel: "vault" | "config";
   logicalKey: string;
   parents: string[];
 }
@@ -25,7 +27,7 @@ export function reduceRegister(versions: readonly RegisterVersion[]): RegisterSt
     if (version.parents.includes(version.versionId)) invalid.add(version.versionId);
     for (const parentId of version.parents) {
       const parent = byId.get(parentId);
-      if (parent && parent.logicalKey !== version.logicalKey) invalid.add(version.versionId);
+      if (parent && (parent.repositoryId !== version.repositoryId || parent.channel !== version.channel || parent.logicalKey !== version.logicalKey)) invalid.add(version.versionId);
     }
   }
   const verified = new Set<string>();
@@ -60,5 +62,5 @@ export function reduceRegister(versions: readonly RegisterVersion[]): RegisterSt
 }
 
 function sameVersion(left: RegisterVersion, right: RegisterVersion): boolean {
-  return left.logicalKey === right.logicalKey && left.parents.length === right.parents.length && left.parents.every((parent, index) => parent === right.parents[index]);
+  return left.repositoryId === right.repositoryId && left.channel === right.channel && left.logicalKey === right.logicalKey && left.parents.length === right.parents.length && left.parents.every((parent, index) => parent === right.parents[index]);
 }

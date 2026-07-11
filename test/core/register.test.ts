@@ -3,24 +3,25 @@ import fc from "fast-check";
 import { reduceRegister } from "../../core/register";
 
 describe("core register reduction", () => {
+  const base = { repositoryId: "repository", channel: "vault" as const };
   it("keeps concurrent heads and lets a verified resolution supersede them", () => {
     const root = "root";
-    expect(reduceRegister([{ versionId: root, logicalKey: "vault:a", parents: [] }, { versionId: "a", logicalKey: "vault:a", parents: [root] }, { versionId: "b", logicalKey: "vault:a", parents: [root] }]).heads).toEqual(["a", "b"]);
-    expect(reduceRegister([{ versionId: root, logicalKey: "vault:a", parents: [] }, { versionId: "a", logicalKey: "vault:a", parents: [root] }, { versionId: "b", logicalKey: "vault:a", parents: [root] }, { versionId: "r", logicalKey: "vault:a", parents: ["a", "b"] }]).heads).toEqual(["r"]);
+    expect(reduceRegister([{ ...base, versionId: root, logicalKey: "a", parents: [] }, { ...base, versionId: "a", logicalKey: "a", parents: [root] }, { ...base, versionId: "b", logicalKey: "a", parents: [root] }]).heads).toEqual(["a", "b"]);
+    expect(reduceRegister([{ ...base, versionId: root, logicalKey: "a", parents: [] }, { ...base, versionId: "a", logicalKey: "a", parents: [root] }, { ...base, versionId: "b", logicalKey: "a", parents: [root] }, { ...base, versionId: "r", logicalKey: "a", parents: ["a", "b"] }]).heads).toEqual(["r"]);
   });
   it("separates missing parents from invalid cross-register and cyclic links", () => {
-    expect(reduceRegister([{ versionId: "p", logicalKey: "vault:a", parents: ["missing"] }])).toEqual({ heads: [], pending: ["p"], invalid: [] });
-    expect(reduceRegister([{ versionId: "p", logicalKey: "vault:a", parents: ["missing"] }, { versionId: "child", logicalKey: "vault:a", parents: ["p"] }]).pending).toEqual(["child", "p"]);
-    expect(reduceRegister([{ versionId: "a", logicalKey: "vault:a", parents: [] }, { versionId: "b", logicalKey: "config:portable", parents: ["a"] }]).invalid).toEqual(["b"]);
-    expect(reduceRegister([{ versionId: "a", logicalKey: "vault:a", parents: ["b"] }, { versionId: "b", logicalKey: "vault:a", parents: ["a"] }]).invalid).toEqual(["a", "b"]);
+    expect(reduceRegister([{ ...base, versionId: "p", logicalKey: "a", parents: ["missing"] }])).toEqual({ heads: [], pending: ["p"], invalid: [] });
+    expect(reduceRegister([{ ...base, versionId: "p", logicalKey: "a", parents: ["missing"] }, { ...base, versionId: "child", logicalKey: "a", parents: ["p"] }]).pending).toEqual(["child", "p"]);
+    expect(reduceRegister([{ ...base, versionId: "a", logicalKey: "a", parents: [] }, { ...base, versionId: "b", channel: "config", logicalKey: "a", parents: ["a"] }]).invalid).toEqual(["b"]);
+    expect(reduceRegister([{ ...base, versionId: "a", logicalKey: "a", parents: ["b"] }, { ...base, versionId: "b", logicalKey: "a", parents: ["a"] }]).invalid).toEqual(["a", "b"]);
   });
 
   it("is invariant under 1,000 reordered and duplicate deliveries", () => {
     const versions = [
-      { versionId: "root", logicalKey: "vault:a", parents: [] },
-      { versionId: "a", logicalKey: "vault:a", parents: ["root"] },
-      { versionId: "b", logicalKey: "vault:a", parents: ["root"] },
-      { versionId: "resolution", logicalKey: "vault:a", parents: ["a", "b"] },
+      { ...base, versionId: "root", logicalKey: "a", parents: [] },
+      { ...base, versionId: "a", logicalKey: "a", parents: ["root"] },
+      { ...base, versionId: "b", logicalKey: "a", parents: ["root"] },
+      { ...base, versionId: "resolution", logicalKey: "a", parents: ["a", "b"] },
     ];
     const expected = reduceRegister(versions);
     fc.assert(
