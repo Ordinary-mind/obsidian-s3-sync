@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { FakeCrash, FakeLocalFs } from "./fake-local-fs";
-import { FakeObjectStore, LostResponseError, ObjectNotFoundError } from "./fake-object-store";
+import {
+  FakeObjectStore,
+  ImmutableObjectExistsError,
+  LostResponseError,
+  ObjectNotFoundError,
+} from "./fake-object-store";
 import { FakeClock } from "./fake-clock";
 import { FakeEditorEvents } from "./fake-editor-events";
 
@@ -74,5 +79,14 @@ describe("deterministic test fakes", () => {
       LostResponseError,
     );
     expect(decoder.decode(store.get("objects/lost"))).toBe("stored");
+  });
+
+  it("models server-side immutable creation without a HEAD-then-PUT race", () => {
+    const store = new FakeObjectStore();
+    store.putImmutable("objects/same", encoder.encode("first"));
+    expect(() => store.putImmutable("objects/same", encoder.encode("second"))).toThrow(
+      ImmutableObjectExistsError,
+    );
+    expect(decoder.decode(store.get("objects/same"))).toBe("first");
   });
 });

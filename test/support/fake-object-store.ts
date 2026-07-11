@@ -12,6 +12,13 @@ export class LostResponseError extends Error {
   }
 }
 
+export class ImmutableObjectExistsError extends Error {
+  constructor(readonly key: string) {
+    super(`immutable object already exists: ${key}`);
+    this.name = "ImmutableObjectExistsError";
+  }
+}
+
 interface StoredObject {
   body: Uint8Array;
   visibleAt: number;
@@ -29,7 +36,7 @@ export class FakeObjectStore {
   }
 
   putImmutable(key: string, body: Uint8Array, options: { visibleAfter?: number; loseResponse?: boolean } = {}): void {
-    if (this.objects.has(key)) throw new Error(`immutable object already exists: ${key}`);
+    if (this.objects.has(key)) throw new ImmutableObjectExistsError(key);
     this.objects.set(key, {
       body: copy(body),
       visibleAt: this.now + (options.visibleAfter ?? 0),
