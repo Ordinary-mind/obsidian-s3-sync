@@ -38,6 +38,25 @@ function validate(kind: "change" | "bootstrap" | "conflict-resolution" | "parent
   return validateCommitEnvelope(descriptorHash, commit(kind), [chunk(parents)], ["b".repeat(64)]);
 }
 
+function configCommit(kind: "change" | "bootstrap" | "conflict-resolution" | "parent-reduction") {
+  return {
+    ...commit(kind),
+    channel: "config" as const,
+  };
+}
+
+function configChunk(parents: string[]) {
+  return {
+    protocol: 1 as const,
+    repositoryId,
+    descriptorHash,
+    channel: "config" as const,
+    chunkIndex: 0,
+    chunkCount: 1,
+    mutations: [{ parents }],
+  };
+}
+
 describe("v1 protocol semantic envelope", () => {
   it("accepts the four Commit kind parent contracts", () => {
     const parent = "c".repeat(64) + ":0:0";
@@ -47,6 +66,34 @@ describe("v1 protocol semantic envelope", () => {
     expect(validate("change", [parent])).toEqual([]);
     expect(validate("conflict-resolution", [parent])).toEqual([]);
     expect(validate("parent-reduction", [parent, secondParent])).toEqual([]);
+  });
+
+  it("accepts the same four Commit kind parent contracts in the Config channel", () => {
+    const parent = "c".repeat(64) + ":0:0";
+    const secondParent = "d".repeat(64) + ":0:0";
+
+    expect(
+      validateCommitEnvelope(descriptorHash, configCommit("bootstrap"), [configChunk([])], ["b".repeat(64)]),
+    ).toEqual([]);
+    expect(
+      validateCommitEnvelope(descriptorHash, configCommit("change"), [configChunk([parent])], ["b".repeat(64)]),
+    ).toEqual([]);
+    expect(
+      validateCommitEnvelope(
+        descriptorHash,
+        configCommit("conflict-resolution"),
+        [configChunk([parent])],
+        ["b".repeat(64)],
+      ),
+    ).toEqual([]);
+    expect(
+      validateCommitEnvelope(
+        descriptorHash,
+        configCommit("parent-reduction"),
+        [configChunk([parent, secondParent])],
+        ["b".repeat(64)],
+      ),
+    ).toEqual([]);
   });
 
   it("rejects parent-reduction that is not exactly one mutation with two parents", () => {
