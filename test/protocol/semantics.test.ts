@@ -665,6 +665,23 @@ describe("v1 protocol semantic envelope", () => {
     }
   });
 
+  it("replays versioned cross-channel and non-canonical envelope vectors", () => {
+    const vectors = JSON.parse(
+      readFileSync(new URL("../../protocol/vectors/invalid-envelope-semantics.json", import.meta.url), "utf8"),
+    ) as Array<{
+      descriptorHash: string;
+      commit: Parameters<typeof validateCommitEnvelope>[1];
+      chunks: Parameters<typeof validateCommitEnvelope>[2];
+      chunkHashes: string[];
+      violation: string;
+    }>;
+    for (const vector of vectors) {
+      expect(validateCommitEnvelope(vector.descriptorHash, vector.commit, vector.chunks, vector.chunkHashes)).toContain(
+        vector.violation,
+      );
+    }
+  });
+
   it("replays versioned ConfigTree case-alias, prefix and NFC negative vectors", () => {
     const vectors = JSON.parse(
       readFileSync(new URL("../../protocol/vectors/invalid-config-tree-semantics.json", import.meta.url), "utf8"),

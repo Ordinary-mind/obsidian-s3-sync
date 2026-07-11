@@ -1,0 +1,18 @@
+[
+  {
+    "name": "vault-commit-cannot-reference-config-chunk",
+    "descriptorHash": "b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec",
+    "commit": {"protocol":1,"repositoryId":"123e4567-e89b-42d3-a456-426614174000","descriptorHash":"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec","writerId":"123e4567-e89b-42d3-a456-426614174001","sequence":"00000000000000000001","previousCommitHash":null,"createdAt":"2026-07-11T00:00:00.000Z","channel":"vault","kind":"bootstrap","changeChunkHashes":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"clientVersion":"0.1.0"},
+    "chunks": [{"protocol":1,"repositoryId":"123e4567-e89b-42d3-a456-426614174000","descriptorHash":"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec","channel":"config","chunkIndex":0,"chunkCount":1,"mutations":[{"key":"portable","kind":"snapshot","treeHash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","parents":[]}]}],
+    "chunkHashes": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    "violation": "chunk-channel-mismatch"
+  },
+  {
+    "name": "mutation-parents-must-use-utf8-order",
+    "descriptorHash": "b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec",
+    "commit": {"protocol":1,"repositoryId":"123e4567-e89b-42d3-a456-426614174000","descriptorHash":"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec","writerId":"123e4567-e89b-42d3-a456-426614174001","sequence":"00000000000000000001","previousCommitHash":null,"createdAt":"2026-07-11T00:00:00.000Z","channel":"vault","kind":"conflict-resolution","changeChunkHashes":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"clientVersion":"0.1.0"},
+    "chunks": [{"protocol":1,"repositoryId":"123e4567-e89b-42d3-a456-426614174000","descriptorHash":"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec","channel":"vault","chunkIndex":0,"chunkCount":1,"mutations":[{"path":"notes/example.md","kind":"put","blobHash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","size":1,"parents":["ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff:0:0","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0:0"]}] }],
+    "chunkHashes": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    "violation": "parents-not-canonical"
+  }
+]
