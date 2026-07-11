@@ -9,5 +9,6 @@
   {"name":"unsafe-integer","utf8":"{\"a\":9007199254740992}","error":"number-not-safe-integer"},
   {"name":"leading-zero-number","utf8":"{\"a\":01}","error":"invalid-json"},
   {"name":"fractional-number","utf8":"{\"a\":1.5}","error":"number-not-safe-integer"},
-  {"name":"exponent-number","utf8":"{\"a\":1e3}","error":"non-canonical-json"}
+  {"name":"exponent-number","utf8":"{\"a\":1e3}","error":"non-canonical-json"},
+  {"name":"non-canonical-solidus-escape","utf8":"{\"a\":\"\\/\"}","error":"non-canonical-json"}
 ]
