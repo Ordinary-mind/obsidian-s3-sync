@@ -53,6 +53,20 @@ export function validateProtocolCommitEnvelope(
   }
 }
 
+export function parseAndValidateCommitEnvelope(
+  descriptorHash: string,
+  commitBytes: Uint8Array,
+  chunkBytes: Uint8Array[],
+): { commit: ProtocolCommit; chunks: ProtocolChunk[]; chunkHashes: string[] } {
+  const commit = parseAndValidateProtocolObject("commit", commitBytes) as unknown as ProtocolCommit;
+  const chunks = chunkBytes.map(
+    (bytes) => parseAndValidateProtocolObject("change-chunk", bytes) as unknown as ProtocolChunk,
+  );
+  const chunkHashes = chunkBytes.map(sha256Hex);
+  validateProtocolCommitEnvelope(descriptorHash, commit, chunks, chunkHashes);
+  return { commit, chunks, chunkHashes };
+}
+
 export function assertRepositoryBinding(
   object: Record<string, unknown>,
   repositoryId: string,
