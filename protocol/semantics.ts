@@ -125,6 +125,18 @@ export interface WriterCommitForChain {
 
 export type WriterChainViolation = "writer-sequence-gap" | "writer-previous-mismatch" | "writer-sequence-fork";
 
+export interface VersionNodeForGraph {
+  versionId: string;
+  registry: string;
+  parents: string[];
+}
+
+export type VersionGraphViolation =
+  | "version-parent-pending"
+  | "version-parent-cross-registry"
+  | "version-parent-self-reference"
+  | "version-parent-cycle";
+
 export function validateCommitEnvelope(
   descriptorHash: string,
   commit: ProtocolCommit,
@@ -571,5 +583,38 @@ export function validateWriterChain(commits: WriterCommitForChain[]): WriterChai
       }
     }
   }
+  return [...new Set(violations)];
+}
+
+export function validateVersionGraph(nodes: VersionNodeForGraph[]): VersionGraphViolation[] {
+  const violations: VersionGraphViolation[] = [];
+  const byId = new Map(nodes.map((node) => [node.versionId, node]));
+  for (const node of nodes) {
+    for (const parentId of node.parents) {
+      if (parentId === node.versionId) violations.push("version-parent-self-reference");
+      const parent = byId.get(parentId);
+      if (!parent) {
+        violations.push("version-parent-pending");
+      } else if (parent.registry !== node.registry) {
+        violations.push("version-parent-cross-registry");
+      }
+    }
+  }
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (versionId: string): void => {
+    if (visiting.has(versionId)) {
+      violations.push("version-parent-cycle");
+      return;
+    }
+    if (visited.has(versionId)) return;
+    visited.add(versionId);
+    visiting.add(versionId);
+    for (const parentId of byId.get(versionId)?.parents ?? []) {
+      if (byId.has(parentId)) visit(parentId);
+    }
+    visiting.delete(versionId);
+  };
+  for (const node of nodes) visit(node.versionId);
   return [...new Set(violations)];
 }

@@ -14,6 +14,7 @@ import {
   validateRepositoryDescriptor,
   validateParentVersionIds,
   validateWriterChain,
+  validateVersionGraph,
 } from "../../protocol/semantics";
 
 const repositoryId = "123e4567-e89b-42d3-a456-426614174000";
@@ -472,6 +473,27 @@ describe("v1 protocol semantic envelope", () => {
         { sequence: "00000000000000000001", hash: second, previousCommitHash: null },
       ]),
     ).toContain("writer-sequence-fork");
+  });
+
+  it("keeps unresolved parents pending and rejects self, cycles and cross-register edges", () => {
+    expect(
+      validateVersionGraph([{ versionId: "a", registry: "vault:note", parents: ["missing"] }]),
+    ).toEqual(["version-parent-pending"]);
+    expect(
+      validateVersionGraph([
+        { versionId: "a", registry: "vault:note", parents: ["b"] },
+        { versionId: "b", registry: "config:portable", parents: [] },
+      ]),
+    ).toEqual(["version-parent-cross-registry"]);
+    expect(
+      validateVersionGraph([{ versionId: "a", registry: "vault:note", parents: ["a"] }]),
+    ).toEqual(["version-parent-self-reference", "version-parent-cycle"]);
+    expect(
+      validateVersionGraph([
+        { versionId: "a", registry: "vault:note", parents: ["b"] },
+        { versionId: "b", registry: "vault:note", parents: ["a"] },
+      ]),
+    ).toEqual(["version-parent-cycle"]);
   });
 
   it("replays versioned ConfigTree case-alias, prefix and NFC negative vectors", () => {
