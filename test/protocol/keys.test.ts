@@ -96,6 +96,9 @@ describe("v1 object keys", () => {
     const blob = JSON.parse(
       readFileSync(new URL("../../protocol/vectors/blob-basic.json", import.meta.url), "utf8"),
     );
+    const configBootstrap = JSON.parse(
+      readFileSync(new URL("../../protocol/vectors/config-bootstrap.json", import.meta.url), "utf8"),
+    );
 
     expect(descriptorKey("", descriptor.object.repositoryId)).toBe(descriptor.key);
     expect(configTreeKey("", tree.object.repositoryId, tree.sha256)).toBe(tree.key);
@@ -104,5 +107,17 @@ describe("v1 object keys", () => {
       commitKey("", commit.object.repositoryId, commit.object.writerId, commit.object.sequence, commit.sha256),
     ).toBe(commit.key);
     expect(blobKey("", descriptor.object.repositoryId, blob.sha256)).toBe(blob.key);
+    expect(changeChunkKey("", configBootstrap.chunk.object.repositoryId, configBootstrap.chunk.sha256)).toBe(
+      configBootstrap.chunk.key,
+    );
+    expect(
+      commitKey(
+        "",
+        configBootstrap.commit.object.repositoryId,
+        configBootstrap.commit.object.writerId,
+        configBootstrap.commit.object.sequence,
+        configBootstrap.commit.sha256,
+      ),
+    ).toBe(configBootstrap.commit.key);
   });
 });
