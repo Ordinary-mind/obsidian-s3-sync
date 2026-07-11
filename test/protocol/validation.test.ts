@@ -95,6 +95,7 @@ describe("protocol receive validation pipeline", () => {
     );
     expect(result.commit).toEqual(multi.commit.object);
     expect(result.chunkHashes).toEqual(multi.chunks.map((chunk: { sha256: string }) => chunk.sha256));
+    expect(result.commitHash).toBe(multi.commit.sha256);
     expect(() =>
       parseAndValidateCommitEnvelope(
         "b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec",
