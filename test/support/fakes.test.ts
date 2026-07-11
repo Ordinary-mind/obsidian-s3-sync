@@ -12,6 +12,7 @@ import { FakeClock } from "./fake-clock";
 import { FakeEditorEvents } from "./fake-editor-events";
 import { FakeEditBaseline } from "./fake-edit-baseline";
 import { FakeOutbox } from "./fake-outbox";
+import { FakePublisher } from "./fake-publisher";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -105,6 +106,16 @@ describe("deterministic test fakes", () => {
     expect(() => outbox.freeze("commit-1", encoder.encode("replacement"))).toThrow(
       "outbox entry is immutable",
     );
+  });
+
+  it("keeps Commit publication last after immutable dependencies", () => {
+    const publisher = new FakePublisher();
+    publisher.publish("blob");
+    publisher.publish("config-tree");
+    publisher.publish("change-chunk");
+    publisher.publish("commit");
+    expect(publisher.stages).toEqual(["blob", "config-tree", "change-chunk", "commit"]);
+    expect(() => new FakePublisher().publish("commit")).toThrow("publish stage out of order");
   });
 
   it("injects local races and crashes at read, write, rename, delete and state boundaries", () => {
