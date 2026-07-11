@@ -49,6 +49,14 @@ describe("protocol receive validation pipeline", () => {
     );
   });
 
+  it("does not let the receive pipeline bypass closed-object Schema checks", () => {
+    const descriptor = vector("../../protocol/vectors/repository-descriptor-basic.json");
+    const unknownField = { ...descriptor.object, futureField: true };
+    expect(() =>
+      parseAndValidateProtocolObject("descriptor", encoder.encode(canonicalizeProtocolJson(unknownField))),
+    ).toThrow(expect.objectContaining({ code: "schema-invalid" }));
+  });
+
   it("rejects object-local Commit and Change Chunk violations before dependency loading", () => {
     const chunk = vector("../../protocol/vectors/vault-change-chunk-put-delete.json");
     const commit = vector("../../protocol/vectors/vault-bootstrap-commit.json");
