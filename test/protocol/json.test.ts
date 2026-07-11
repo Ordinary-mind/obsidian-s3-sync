@@ -93,4 +93,10 @@ describe("strict v1 protocol JSON", () => {
     expect(canonicalizeProtocolJson({ "😀": 1, "\ufffd": 2 })).toBe('{"😀":1,"�":2}');
     expectCode(encoder.encode('{"�":2,"😀":1}'), "non-canonical-json");
   });
+
+  it("does not canonicalize direct JavaScript strings with unpaired surrogates", () => {
+    expect(() => canonicalizeProtocolJson({ value: "\ud800" })).toThrow(
+      expect.objectContaining({ code: "unpaired-surrogate" }),
+    );
+  });
 });

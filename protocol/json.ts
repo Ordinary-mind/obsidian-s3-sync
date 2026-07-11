@@ -69,7 +69,12 @@ export function parseCanonicalProtocolJson(bytes: Uint8Array, maxBytes: number):
 
 export function canonicalizeProtocolJson(value: unknown): string {
   if (value === null) return "null";
-  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "string") {
+    if (hasUnpairedSurrogate(value)) {
+      throw new ProtocolJsonError("unpaired-surrogate", "protocol strings must contain Unicode scalar values");
+    }
+    return JSON.stringify(value);
+  }
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number") {
     if (!Number.isSafeInteger(value) || Object.is(value, -0)) {
@@ -86,6 +91,20 @@ export function canonicalizeProtocolJson(value: unknown): string {
       .join(",")}}`;
   }
   throw new ProtocolJsonError("invalid-json", "protocol JSON contains an unsupported value");
+}
+
+function hasUnpairedSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
 }
 
 class StrictJsonParser {
