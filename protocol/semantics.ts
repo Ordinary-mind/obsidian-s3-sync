@@ -22,7 +22,7 @@ export interface ProtocolChunk {
   channel: "vault" | "config";
   chunkIndex: number;
   chunkCount: number;
-  mutations: Array<{ path?: string; parents: string[] }>;
+  mutations: Array<{ path?: string; kind?: "put" | "delete" | "snapshot"; blobHash?: string; parents: string[] }>;
 }
 
 export type ProtocolViolation =
@@ -41,6 +41,8 @@ export type ProtocolViolation =
   | "parents-not-canonical"
   | "vault-mutations-not-canonical"
   | "vault-path-invalid"
+  | "vault-put-case-alias"
+  | "vault-put-path-prefix-conflict"
   | "chunk-mutations-exceeded"
   | "mutation-parents-exceeded"
   | "duplicate-vault-path"
@@ -231,6 +233,11 @@ export function validateChangeChunkObject(chunk: ProtocolChunk): ProtocolViolati
     if (chunk.mutations.some((mutation) => !mutation.path || validateProtocolPath(mutation.path).length > 0)) {
       violations.push("vault-path-invalid");
     }
+    const putPaths = chunk.mutations
+      .filter((mutation) => mutation.kind === "put" && mutation.blobHash !== undefined)
+      .map((mutation) => mutation.path!);
+    if (!isCaseFoldUnique(putPaths)) violations.push("vault-put-case-alias");
+    if (hasPathPrefixConflict(putPaths)) violations.push("vault-put-path-prefix-conflict");
   }
   if (chunk.mutations.some((mutation) => mutation.parents.length > 1024)) {
     violations.push("mutation-parents-exceeded");
