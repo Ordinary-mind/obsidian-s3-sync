@@ -1,6 +1,7 @@
 [
   {"name":"utf8-bom","hex":"efbbbf7b7d","error":"utf8-bom"},
   {"name":"invalid-utf8","hex":"c3","error":"invalid-utf8"},
+  {"name":"non-object-root","utf8":"[]","error":"root-not-object"},
   {"name":"duplicate-key","utf8":"{\"a\":1,\"a\":1}","error":"duplicate-key"},
   {"name":"nested-duplicate-key","utf8":"{\"a\":{\"b\":1,\"b\":1}}","error":"duplicate-key"},
   {"name":"unpaired-surrogate","utf8":"{\"a\":\"\\uD800\"}","error":"unpaired-surrogate"},
