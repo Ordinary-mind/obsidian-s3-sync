@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ProtocolJsonError,
+  canonicalizeProtocolJson,
   parseBoundedProtocolJson,
   parseCanonicalProtocolJson,
 } from "../../protocol/json";
@@ -61,5 +62,10 @@ describe("strict v1 protocol JSON", () => {
     expect(
       parseBoundedProtocolJson("commit", encoder.encode('{"a":1}')),
     ).toEqual({ a: 1 });
+  });
+
+  it("uses RFC 8785 member-name ordering independently from protocol array ordering", () => {
+    expect(canonicalizeProtocolJson({ "😀": 1, "\ufffd": 2 })).toBe('{"😀":1,"�":2}');
+    expectCode(encoder.encode('{"�":2,"😀":1}'), "non-canonical-json");
   });
 });
