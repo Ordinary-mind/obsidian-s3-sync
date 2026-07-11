@@ -86,7 +86,7 @@
 - [x] 实现 DirtyRecord 连续编辑合并，但 basisHeads 永远不可变。
 - [x] 定义 localPredecessorVersion：只能引用同一本地因果队列、同路径前一冻结 Outbox 的精确 Version ID；writerId 轮换不改变该引用，后续 generation 用它替代 basisHeads 且不能吸收新 observedHeads。
 - [x] 实现相同最终字节的净变化消除；存在冻结 Outbox 时不得取消已冻结 generation。
-- [ ] 实现冲突解决命令；必须引用操作时已观察的全部头。
+- [x] 实现冲突解决命令；必须引用操作时已观察的全部头。
 - [ ] 实现超过 1,024 头的 parent-reduction 命令链；DirtyRecord 原始 basisHeads 不变，归约不得吸收之后观察的新头。
 - [ ] 实现首次接入命令：相同采用、local-only 根版本、remote-only 投影、不同内容根冲突。
 
