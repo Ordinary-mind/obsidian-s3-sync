@@ -13,6 +13,7 @@ import {
   validateRepositoryDescriptor,
 } from "./semantics";
 import { sha256Hex } from "./hash";
+import { descriptorKey } from "./keys";
 
 type SchemaDefinition = "RepositoryDescriptor" | "ConfigTree" | "ChangeChunk" | "Commit";
 
@@ -111,6 +112,19 @@ export function verifyRepositoryDescriptor(bytes: Uint8Array): {
 } {
   const descriptor = parseAndValidateProtocolObject("descriptor", bytes);
   return { descriptor, descriptorHash: sha256Hex(bytes) };
+}
+
+export function verifyRepositoryDescriptorAtKey(
+  prefix: string,
+  key: string,
+  bytes: Uint8Array,
+): { descriptor: Record<string, unknown>; descriptorHash: string } {
+  const verified = verifyRepositoryDescriptor(bytes);
+  const repositoryId = verified.descriptor.repositoryId;
+  if (typeof repositoryId !== "string" || key !== descriptorKey(prefix, repositoryId)) {
+    throw new ProtocolValidationError("descriptor-key-invalid", "descriptor key does not match descriptor repositoryId");
+  }
+  return verified;
 }
 
 function definitionFor(kind: BoundedProtocolObject): SchemaDefinition {

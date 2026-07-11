@@ -11,6 +11,7 @@ import {
   parseAndValidateBoundObject,
   validateProtocolCommitEnvelope,
   verifyRepositoryDescriptor,
+  verifyRepositoryDescriptorAtKey,
 } from "../../protocol/validation";
 import { canonicalizeProtocolJson } from "../../protocol/json";
 
@@ -147,6 +148,19 @@ describe("protocol receive validation pipeline", () => {
     const verified = verifyRepositoryDescriptor(encoder.encode(descriptor.canonicalJson));
     expect(verified.descriptor).toEqual(descriptor.object);
     expect(verified.descriptorHash).toBe(descriptor.sha256);
+  });
+
+  it("requires format.json key and descriptor repositoryId to match exactly", () => {
+    const descriptor = vector("../../protocol/vectors/repository-descriptor-basic.json");
+    const bytes = encoder.encode(descriptor.canonicalJson);
+    expect(() => verifyRepositoryDescriptorAtKey("", descriptor.key, bytes)).not.toThrow();
+    expect(() =>
+      verifyRepositoryDescriptorAtKey(
+        "",
+        ".obsidian-s3-sync/v1/repositories/123e4567-e89b-42d3-a456-426614174999/format.json",
+        bytes,
+      ),
+    ).toThrow(expect.objectContaining({ code: "descriptor-key-invalid" }));
   });
 
   it("does not let a parsed Tree bypass repository binding", () => {
