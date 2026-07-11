@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import fc from "fast-check";
-import { reduceRegister } from "../../core/register";
+import { groupEquivalentHeads, reduceRegister } from "../../core/register";
 
 describe("core register reduction", () => {
   const base = { repositoryId: "repository", channel: "vault" as const };
@@ -30,5 +30,12 @@ describe("core register reduction", () => {
       }),
       { numRuns: 1000, seed: 20260711 },
     );
+  });
+
+  it("groups equivalent heads without discarding their original Version IDs", () => {
+    expect(groupEquivalentHeads(["b", "a", "delete"], new Map([["a", "blob:abc"], ["b", "blob:abc"], ["delete", "delete"]]))).toEqual([
+      { value: "blob:abc", representative: "a", members: ["a", "b"] },
+      { value: "delete", representative: "delete", members: ["delete"] },
+    ]);
   });
 });

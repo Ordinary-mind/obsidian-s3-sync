@@ -12,6 +12,12 @@ export interface RegisterState {
   invalid: string[];
 }
 
+export interface SemanticHeadGroup {
+  value: string;
+  representative: string;
+  members: string[];
+}
+
 export function reduceRegister(versions: readonly RegisterVersion[]): RegisterState {
   const byId = new Map<string, RegisterVersion>();
   const invalid = new Set<string>();
@@ -59,6 +65,20 @@ export function reduceRegister(versions: readonly RegisterVersion[]): RegisterSt
     pending: [...byId.keys()].filter((id) => !verified.has(id) && !invalid.has(id)).sort(),
     invalid: [...invalid].sort(),
   };
+}
+
+export function groupEquivalentHeads(heads: readonly string[], values: ReadonlyMap<string, string>): SemanticHeadGroup[] {
+  const groups = new Map<string, string[]>();
+  for (const head of heads) {
+    const value = values.get(head);
+    if (value === undefined) throw new Error(`missing semantic value for head: ${head}`);
+    const members = groups.get(value) ?? [];
+    members.push(head);
+    groups.set(value, members);
+  }
+  return [...groups.entries()]
+    .map(([value, members]) => ({ value, members: [...members].sort(), representative: [...members].sort()[0] }))
+    .sort((left, right) => (left.value < right.value ? -1 : left.value > right.value ? 1 : 0));
 }
 
 function sameVersion(left: RegisterVersion, right: RegisterVersion): boolean {
