@@ -109,6 +109,12 @@ export type RepositoryDescriptorViolation =
 
 export type ConfigTreeExcludedPathViolation = "config-item-in-excluded-root";
 
+export interface CommitShapeForVersionId {
+  chunkMutationCounts: number[];
+}
+
+export type VersionIdViolation = "version-id-malformed" | "version-id-parent-unresolved" | "version-id-index-out-of-range";
+
 export function validateCommitEnvelope(
   descriptorHash: string,
   commit: ProtocolCommit,
@@ -483,4 +489,35 @@ export function validateConfigTreeExcludedPaths(
     }
   }
   return [];
+}
+
+export function validateParentVersionIds(
+  parents: string[],
+  resolvedCommitShapes: ReadonlyMap<string, CommitShapeForVersionId>,
+): VersionIdViolation[] {
+  const violations: VersionIdViolation[] = [];
+  for (const parent of parents) {
+    const match = /^([0-9a-f]{64}):(0|[1-9][0-9]*):(0|[1-9][0-9]*)$/.exec(parent);
+    if (!match) {
+      violations.push("version-id-malformed");
+      continue;
+    }
+    const [, commitHash, chunkIndexText, mutationIndexText] = match;
+    const shape = resolvedCommitShapes.get(commitHash);
+    if (!shape) {
+      violations.push("version-id-parent-unresolved");
+      continue;
+    }
+    const chunkIndex = Number(chunkIndexText);
+    const mutationIndex = Number(mutationIndexText);
+    if (
+      !Number.isSafeInteger(chunkIndex) ||
+      !Number.isSafeInteger(mutationIndex) ||
+      chunkIndex >= shape.chunkMutationCounts.length ||
+      mutationIndex >= shape.chunkMutationCounts[chunkIndex]
+    ) {
+      violations.push("version-id-index-out-of-range");
+    }
+  }
+  return [...new Set(violations)];
 }

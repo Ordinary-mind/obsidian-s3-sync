@@ -10,6 +10,7 @@ import {
   validatePluginId,
   validateProtocolPath,
   validateRepositoryDescriptor,
+  validateParentVersionIds,
 } from "../../protocol/semantics";
 
 const repositoryId = "123e4567-e89b-42d3-a456-426614174000";
@@ -408,5 +409,16 @@ describe("v1 protocol semantic envelope", () => {
     expect(
       validateConfigTreeExcludedPaths(".obsidian", [], [{ path: ".obsidian-s3-sync-local/state" }]),
     ).toEqual(["config-item-in-excluded-root"]);
+  });
+
+  it("defers Version ID index validation until the parent Commit shape is available", () => {
+    const hash = "c".repeat(64);
+    const known = new Map([[hash, { chunkMutationCounts: [2, 1] }]]);
+    expect(validateParentVersionIds([`${hash}:1:0`], known)).toEqual([]);
+    expect(validateParentVersionIds([`${hash}:1:1`], known)).toEqual(["version-id-index-out-of-range"]);
+    expect(validateParentVersionIds([`${"d".repeat(64)}:0:0`], known)).toEqual([
+      "version-id-parent-unresolved",
+    ]);
+    expect(validateParentVersionIds(["not-a-version"], known)).toEqual(["version-id-malformed"]);
   });
 });
