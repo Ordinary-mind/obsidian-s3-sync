@@ -66,9 +66,11 @@ export interface ConfigTreeForProfile {
 export type ConfigTreeProfileViolation =
   | "config-array-not-canonical"
   | "config-case-alias"
+  | "base-file-invalid"
   | "plugin-id-invalid"
   | "plugin-scope-not-portable"
   | "config-item-path-duplicate"
+  | "config-item-path-invalid"
   | "config-item-not-profiled";
 
 export type PathViolation =
@@ -242,6 +244,9 @@ export function validateConfigTreeProfile(tree: ConfigTreeForProfile): ConfigTre
   if (profileArrays.some((values) => !isCaseFoldUnique(values))) {
     violations.push("config-case-alias");
   }
+  if (tree.profile.baseFiles.some((baseFile) => !isValidBaseFile(baseFile))) {
+    violations.push("base-file-invalid");
+  }
   if (
     [
       ...tree.profile.portablePluginIds,
@@ -262,6 +267,9 @@ export function validateConfigTreeProfile(tree: ConfigTreeForProfile): ConfigTre
   }
   const paths = tree.items.map((item) => item.path);
   if (!isUtf8SortedUnique(paths)) violations.push("config-item-path-duplicate");
+  if (tree.items.some((item) => validateProtocolPath(item.path).length > 0)) {
+    violations.push("config-item-path-invalid");
+  }
   if (tree.items.some((item) => !isItemCoveredByProfile(item.path, tree.profile))) {
     violations.push("config-item-not-profiled");
   }
@@ -283,11 +291,30 @@ function isItemCoveredByProfile(path: string, profile: ConfigTreeForProfile["pro
   return packageCovered !== dataCovered;
 }
 
+function isValidBaseFile(baseFile: string): boolean {
+  if (validateProtocolPath(baseFile).length > 0 || baseFile.includes("/")) return false;
+  const folded = defaultCaseFold151(baseFile);
+  if (
+    [
+      "community-plugins.json",
+      "core-plugins.json",
+      "plugins",
+      "themes",
+      "snippets",
+      ".obsidian-s3-sync-local",
+    ].includes(folded)
+  ) {
+    return false;
+  }
+  return !(folded.startsWith("workspace") && folded.endsWith(".json"));
+}
+
 export function validateProtocolPath(path: string): PathViolation[] {
   const violations: PathViolation[] = [];
   if (normalizeNfc151(path) !== path) violations.push("path-not-nfc");
   if (utf8ByteLength(path) > 1024) violations.push("path-too-long");
   if (
+    path.length === 0 ||
     /^[\/]|[\\]|\/\/|\/$/.test(path) ||
     path.split("/").some((part) => part === "." || part === "..")
   ) {

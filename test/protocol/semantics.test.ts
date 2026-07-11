@@ -257,6 +257,12 @@ describe("v1 protocol semantic envelope", () => {
       validateConfigTreeProfile({ ...tree, profile: { ...tree.profile, portablePluginIds: ["NUL"] } }),
     ).toContain("plugin-id-invalid");
     expect(
+      validateConfigTreeProfile({ ...tree, profile: { ...tree.profile, baseFiles: ["workspace.json"] } }),
+    ).toContain("base-file-invalid");
+    expect(
+      validateConfigTreeProfile({ ...tree, items: [{ path: "", kind: "put" }] }),
+    ).toContain("config-item-path-invalid");
+    expect(
       validateConfigTreeProfile({
         ...tree,
         items: [{ path: "snippets/disabled.css", kind: "put" }],
@@ -266,6 +272,7 @@ describe("v1 protocol semantic envelope", () => {
 
   it("rejects non-canonical and unsafe protocol paths before object hashing", () => {
     expect(validateProtocolPath("notes/é.md")).toEqual([]);
+    expect(validateProtocolPath("")).toContain("path-invalid-segment");
     expect(validateProtocolPath("notes/e\u0301.md")).toContain("path-not-nfc");
     expect(validateProtocolPath("../notes.md")).toContain("path-invalid-segment");
     expect(validateProtocolPath("notes\\windows.md")).toContain("path-invalid-segment");
