@@ -36,6 +36,9 @@ describe("v1 object keys", () => {
     expect(descriptorKey("/同步/", repositoryId)).toBe(
       `同步/.obsidian-s3-sync/v1/repositories/${repositoryId}/format.json`,
     );
+    expect(descriptorKey("e\u0301", repositoryId)).toBe(
+      `é/.obsidian-s3-sync/v1/repositories/${repositoryId}/format.json`,
+    );
   });
 
   it("rejects invalid prefix segments and enforces the UTF-8 S3 key boundary", () => {
