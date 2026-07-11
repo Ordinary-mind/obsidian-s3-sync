@@ -45,6 +45,9 @@ const invalidSchemaVectors = JSON.parse(
 const reductionVector = JSON.parse(
   readFileSync(new URL("../../protocol/vectors/config-parent-reduction.json", import.meta.url), "utf8"),
 );
+const changeAndResolutionVectors = JSON.parse(
+  readFileSync(new URL("../../protocol/vectors/vault-change-and-resolution.json", import.meta.url), "utf8"),
+);
 
 const ajv = new Ajv2020({ allErrors: true, strict: true });
 ajv.addSchema(schema);
@@ -167,6 +170,29 @@ describe("v1 protocol schema", () => {
     expect(
       validateCommitEnvelope(descriptorVector.sha256, commit.object, [chunk.object], [chunk.sha256]),
     ).toEqual([]);
+  });
+
+  it("accepts fixed Vault change and conflict-resolution envelopes", () => {
+    const validateChunk = validator("ChangeChunk");
+    const validateCommit = validator("Commit");
+    for (const vector of changeAndResolutionVectors.vectors) {
+      expect(validateChunk(vector.chunk.object)).toBe(true);
+      expect(validateCommit(vector.commit.object)).toBe(true);
+      expect(createHash("sha256").update(vector.chunk.canonicalJson, "utf8").digest("hex")).toBe(
+        vector.chunk.sha256,
+      );
+      expect(createHash("sha256").update(vector.commit.canonicalJson, "utf8").digest("hex")).toBe(
+        vector.commit.sha256,
+      );
+      expect(
+        validateCommitEnvelope(
+          descriptorVector.sha256,
+          vector.commit.object,
+          [vector.chunk.object],
+          [vector.chunk.sha256],
+        ),
+      ).toEqual([]);
+    }
   });
 
   it("rejects unknown descriptor fields", () => {

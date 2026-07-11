@@ -1,0 +1,31 @@
+{
+  "name": "vault-change-and-conflict-resolution",
+  "vectors": [
+    {
+      "kind": "change",
+      "chunk": {
+        "object": {"protocol":1,"repositoryId":"123e4567-e89b-42d3-a456-426614174000","descriptorHash":"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec","channel":"vault","chunkIndex":0,"chunkCount":1,"mutations":[{"path":"notes/resolved.md","kind":"put","blobHash":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","size":8,"parents":["cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:0:0"]}]},
+        "canonicalJson": "{\"channel\":\"vault\",\"chunkCount\":1,\"chunkIndex\":0,\"descriptorHash\":\"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec\",\"mutations\":[{\"blobHash\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"kind\":\"put\",\"parents\":[\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:0:0\"],\"path\":\"notes/resolved.md\",\"size\":8}],\"protocol\":1,\"repositoryId\":\"123e4567-e89b-42d3-a456-426614174000\"}",
+        "sha256": "8e83a4d0d7de3123afdbff7a811c9eb9602bba142b13f8ada681ea6f4a31b5ec"
+      },
+      "commit": {
+        "object": {"protocol":1,"repositoryId":"123e4567-e89b-42d3-a456-426614174000","descriptorHash":"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec","writerId":"123e4567-e89b-42d3-a456-426614174004","sequence":"00000000000000000002","previousCommitHash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","createdAt":"2026-07-11T00:00:00.000Z","channel":"vault","kind":"change","changeChunkHashes":["8e83a4d0d7de3123afdbff7a811c9eb9602bba142b13f8ada681ea6f4a31b5ec"],"clientVersion":"0.1.0"},
+        "canonicalJson": "{\"changeChunkHashes\":[\"8e83a4d0d7de3123afdbff7a811c9eb9602bba142b13f8ada681ea6f4a31b5ec\"],\"channel\":\"vault\",\"clientVersion\":\"0.1.0\",\"createdAt\":\"2026-07-11T00:00:00.000Z\",\"descriptorHash\":\"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec\",\"kind\":\"change\",\"previousCommitHash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"protocol\":1,\"repositoryId\":\"123e4567-e89b-42d3-a456-426614174000\",\"sequence\":\"00000000000000000002\",\"writerId\":\"123e4567-e89b-42d3-a456-426614174004\"}",
+        "sha256": "1a6b39a33653cf2061e16b7a4bc583b7fbec85564f17b45e17b0e0b26465983d"
+      }
+    },
+    {
+      "kind": "conflict-resolution",
+      "chunk": {
+        "object": {"protocol":1,"repositoryId":"123e4567-e89b-42d3-a456-426614174000","descriptorHash":"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec","channel":"vault","chunkIndex":0,"chunkCount":1,"mutations":[{"path":"notes/resolved.md","kind":"put","blobHash":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","size":8,"parents":["cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:0:0","dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd:0:0"]}]},
+        "canonicalJson": "{\"channel\":\"vault\",\"chunkCount\":1,\"chunkIndex\":0,\"descriptorHash\":\"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec\",\"mutations\":[{\"blobHash\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"kind\":\"put\",\"parents\":[\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:0:0\",\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd:0:0\"],\"path\":\"notes/resolved.md\",\"size\":8}],\"protocol\":1,\"repositoryId\":\"123e4567-e89b-42d3-a456-426614174000\"}",
+        "sha256": "6abf02318c1315e7fcf10c2be3e2e81395a6011e6fd1a4d06dba735a07721846"
+      },
+      "commit": {
+        "object": {"protocol":1,"repositoryId":"123e4567-e89b-42d3-a456-426614174000","descriptorHash":"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec","writerId":"123e4567-e89b-42d3-a456-426614174004","sequence":"00000000000000000002","previousCommitHash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","createdAt":"2026-07-11T00:00:00.000Z","channel":"vault","kind":"conflict-resolution","changeChunkHashes":["6abf02318c1315e7fcf10c2be3e2e81395a6011e6fd1a4d06dba735a07721846"],"clientVersion":"0.1.0"},
+        "canonicalJson": "{\"changeChunkHashes\":[\"6abf02318c1315e7fcf10c2be3e2e81395a6011e6fd1a4d06dba735a07721846\"],\"channel\":\"vault\",\"clientVersion\":\"0.1.0\",\"createdAt\":\"2026-07-11T00:00:00.000Z\",\"descriptorHash\":\"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec\",\"kind\":\"conflict-resolution\",\"previousCommitHash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"protocol\":1,\"repositoryId\":\"123e4567-e89b-42d3-a456-426614174000\",\"sequence\":\"00000000000000000002\",\"writerId\":\"123e4567-e89b-42d3-a456-426614174004\"}",
+        "sha256": "6291fd4b8d878833c636650f0324f66dac38b487c2513084b28a95b893b41bdb"
+      }
+    }
+  ]
+}
