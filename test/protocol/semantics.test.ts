@@ -542,6 +542,15 @@ describe("v1 protocol semantic envelope", () => {
     ).toContain("writer-sequence-fork");
   });
 
+  it("replays versioned normal, fork and gap writer-chain vectors", () => {
+    const vectors = JSON.parse(
+      readFileSync(new URL("../../protocol/vectors/writer-chain.json", import.meta.url), "utf8"),
+    ) as { normal: Parameters<typeof validateWriterChain>[0]; fork: Parameters<typeof validateWriterChain>[0]; gap: Parameters<typeof validateWriterChain>[0] };
+    expect(validateWriterChain(vectors.normal)).toEqual([]);
+    expect(validateWriterChain(vectors.fork)).toEqual(["writer-sequence-fork"]);
+    expect(validateWriterChain(vectors.gap)).toEqual(["writer-sequence-gap", "writer-previous-mismatch"]);
+  });
+
   it("keeps unresolved parents pending and rejects self, cycles and cross-register edges", () => {
     expect(
       validateVersionGraph([{ versionId: "a", registry: "vault:note", parents: ["missing"] }]),
