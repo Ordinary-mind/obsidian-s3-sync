@@ -254,6 +254,22 @@ describe("v1 protocol semantic envelope", () => {
     ).toEqual(["config-delete-not-managed-by-parent"]);
   });
 
+  it("replays versioned Config delete lineage vectors", () => {
+    const vectors = JSON.parse(
+      readFileSync(new URL("../../protocol/vectors/config-delete-lineage.json", import.meta.url), "utf8"),
+    ) as Array<{
+      parents: string[];
+      tree: Parameters<typeof validateConfigDeleteLineage>[1];
+      resolvedParents: Array<[string, Parameters<typeof validateConfigDeleteLineage>[2] extends ReadonlyMap<string, infer Value> ? Value : never]>;
+      violation: string | null;
+    }>;
+    for (const vector of vectors) {
+      const violations = validateConfigDeleteLineage(vector.parents, vector.tree, new Map(vector.resolvedParents));
+      if (vector.violation) expect(violations).toContain(vector.violation);
+      else expect(violations).toEqual([]);
+    }
+  });
+
   it("requires UTF-8 canonical order for parents and Vault mutations", () => {
     const high = "d".repeat(64) + ":0:0";
     const low = "c".repeat(64) + ":0:0";

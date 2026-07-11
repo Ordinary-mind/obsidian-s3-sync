@@ -1,0 +1,30 @@
+[
+  {
+    "name": "root-config-delete",
+    "parents": [],
+    "tree": {"items":[{"path":"plugins/example/data.json","kind":"delete"}]},
+    "resolvedParents": [],
+    "violation": "root-config-delete"
+  },
+  {
+    "name": "pending-parent-tree",
+    "parents": ["cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:0:0"],
+    "tree": {"items":[{"path":"plugins/example/data.json","kind":"delete"}]},
+    "resolvedParents": [],
+    "violation": "pending-parent-tree"
+  },
+  {
+    "name": "unsupported-delete-path",
+    "parents": ["cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:0:0"],
+    "tree": {"items":[{"path":"plugins/example/data.json","kind":"delete"}]},
+    "resolvedParents": [["cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:0:0",{"items":[]}]],
+    "violation": "config-delete-not-managed-by-parent"
+  },
+  {
+    "name": "parent-tombstone-is-managed",
+    "parents": ["cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:0:0"],
+    "tree": {"items":[{"path":"plugins/example/data.json","kind":"delete"}]},
+    "resolvedParents": [["cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:0:0",{"items":[{"path":"plugins/example/data.json","kind":"delete"}]}]],
+    "violation": null
+  }
+]
