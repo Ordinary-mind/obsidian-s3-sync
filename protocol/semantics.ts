@@ -113,7 +113,7 @@ export function validateCommitEnvelope(
   chunkHashes: string[],
 ): ProtocolViolation[] {
   const violations = validateCommitFields(commit);
-  
+
   if (commit.descriptorHash !== descriptorHash) violations.push("descriptor-hash-mismatch");
   if (chunks.length !== commit.changeChunkHashes.length) violations.push("chunk-count-mismatch");
   if (
