@@ -7,6 +7,7 @@ import {
   assertRepositoryBinding,
   parseAndValidateProtocolObject,
   parseAndValidateCommitEnvelope,
+  parseAndValidateBoundObject,
   validateProtocolCommitEnvelope,
   verifyRepositoryDescriptor,
 } from "../../protocol/validation";
@@ -122,5 +123,21 @@ describe("protocol receive validation pipeline", () => {
     const verified = verifyRepositoryDescriptor(encoder.encode(descriptor.canonicalJson));
     expect(verified.descriptor).toEqual(descriptor.object);
     expect(verified.descriptorHash).toBe(descriptor.sha256);
+  });
+
+  it("does not let a parsed Tree bypass repository binding", () => {
+    const tree = vector("../../protocol/vectors/config-tree-basic.json");
+    const bytes = encoder.encode(tree.canonicalJson);
+    expect(
+      parseAndValidateBoundObject(
+        "config-tree",
+        bytes,
+        tree.object.repositoryId,
+        tree.object.descriptorHash,
+      ),
+    ).toEqual(tree.object);
+    expect(() => parseAndValidateBoundObject("config-tree", bytes, tree.object.repositoryId, "f".repeat(64))).toThrow(
+      expect.objectContaining({ code: "repository-binding-invalid" }),
+    );
   });
 });

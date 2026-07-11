@@ -80,6 +80,17 @@ export function assertRepositoryBinding(
   }
 }
 
+export function parseAndValidateBoundObject(
+  kind: Exclude<BoundedProtocolObject, "descriptor">,
+  bytes: Uint8Array,
+  repositoryId: string,
+  descriptorHash: string,
+): Record<string, unknown> {
+  const object = parseAndValidateProtocolObject(kind, bytes);
+  assertRepositoryBinding(object, repositoryId, descriptorHash);
+  return object;
+}
+
 export function verifyRepositoryDescriptor(bytes: Uint8Array): {
   descriptor: Record<string, unknown>;
   descriptorHash: string;
