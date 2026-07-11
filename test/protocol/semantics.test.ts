@@ -240,6 +240,14 @@ describe("v1 protocol semantic envelope", () => {
     expect(
       validateCommitEnvelope(
         descriptorHash,
+        { ...commit("bootstrap"), createdAt: "0000-01-01T00:00:00.000Z" },
+        [valid],
+        ["b".repeat(64)],
+      ),
+    ).toContain("invalid-created-at");
+    expect(
+      validateCommitEnvelope(
+        descriptorHash,
         { ...commit("bootstrap"), createdAt: "2024-02-29T23:59:59.999Z" },
         [valid],
         ["b".repeat(64)],
