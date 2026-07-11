@@ -75,3 +75,7 @@ export function isWithinCollectionLimit(name: CollectionLimitName, count: number
   }[name];
   return Number.isSafeInteger(count) && count >= 0 && count <= limit;
 }
+
+export function isWithinBlobLimit(size: number): boolean {
+  return Number.isSafeInteger(size) && size >= 0 && size <= protocolLimits.blobBytes;
+}

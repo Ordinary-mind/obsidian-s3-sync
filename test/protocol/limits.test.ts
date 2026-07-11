@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   isValidSequence,
   isWithinCollectionLimit,
+  isWithinBlobLimit,
   protocolLimits,
   utf8ByteLength,
   validateParsedJsonLimits,
@@ -57,5 +58,11 @@ describe("v1 protocol resource limits", () => {
     expect(validateParsedJsonLimits(Array(protocolLimits.jsonArrayItems + 1).fill(null))).toEqual([
       "json-array-items-exceeded",
     ]);
+  });
+
+  it("checks the Blob 5 GB boundary by count without allocating a fixture", () => {
+    expect(isWithinBlobLimit(protocolLimits.blobBytes)).toBe(true);
+    expect(isWithinBlobLimit(protocolLimits.blobBytes + 1)).toBe(false);
+    expect(isWithinBlobLimit(-1)).toBe(false);
   });
 });
