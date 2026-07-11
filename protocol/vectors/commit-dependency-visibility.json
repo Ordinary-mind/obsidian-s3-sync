@@ -1,0 +1,15 @@
+{
+  "name": "commit-visible-before-immutable-chunk-dependency",
+  "source": "vault-bootstrap-multi-chunk.json",
+  "events": [
+    { "object": "change-chunk[0]", "visibleAfter": 1 },
+    { "object": "change-chunk[1]", "visibleAfter": 1 },
+    { "object": "commit", "visibleAfter": 0 }
+  ],
+  "expected": {
+    "firstRead": "pending-dependency",
+    "retryAfterTicks": 1,
+    "retryRead": "verified",
+    "publishedObjects": ["change-chunk[0]", "change-chunk[1]", "commit"]
+  }
+}

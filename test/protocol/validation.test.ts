@@ -15,6 +15,7 @@ import {
   verifyRepositoryDescriptorAtKey,
 } from "../../protocol/validation";
 import { canonicalizeProtocolJson } from "../../protocol/json";
+import { FakeObjectStore, ObjectNotFoundError } from "../support/fake-object-store";
 
 const encoder = new TextEncoder();
 
@@ -114,6 +115,41 @@ describe("protocol receive validation pipeline", () => {
         [encoder.encode(multi.chunks[0].canonicalJson)],
       ),
     ).toThrow(expect.objectContaining({ code: "commit-envelope-invalid" }));
+  });
+
+  it("keeps a Commit pending when it becomes visible before immutable Chunk dependencies", () => {
+    const scenario = vector("../../protocol/vectors/commit-dependency-visibility.json");
+    const source = vector(`../../protocol/vectors/${scenario.source}`);
+    const store = new FakeObjectStore();
+    const commitKey = "commits/writer/commit.json";
+    const chunkKeys: string[] = source.chunks.map((_: unknown, index: number) => `changes/${index}.json`);
+
+    source.chunks.forEach((chunk: { canonicalJson: string }, index: number) => {
+      store.putImmutable(chunkKeys[index], encoder.encode(chunk.canonicalJson), {
+        visibleAfter: scenario.events[index].visibleAfter,
+      });
+    });
+    store.putImmutable(commitKey, encoder.encode(source.commit.canonicalJson), {
+      visibleAfter: scenario.events[2].visibleAfter,
+    });
+
+    const receive = (): string => {
+      try {
+        parseAndValidateCommitEnvelope(
+          source.commit.object.descriptorHash,
+          store.get(commitKey),
+          chunkKeys.map((key) => store.get(key)),
+        );
+        return "verified";
+      } catch (error) {
+        if (error instanceof ObjectNotFoundError) return "pending-dependency";
+        throw error;
+      }
+    };
+
+    expect(receive()).toBe(scenario.expected.firstRead);
+    store.advance(scenario.expected.retryAfterTicks);
+    expect(receive()).toBe(scenario.expected.retryRead);
   });
 
   it("binds a raw Commit envelope to the expected repository identity", () => {
