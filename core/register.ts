@@ -14,8 +14,12 @@ export function reduceRegister(versions: readonly RegisterVersion[]): RegisterSt
   const byId = new Map<string, RegisterVersion>();
   const invalid = new Set<string>();
   for (const version of versions) {
-    if (byId.has(version.versionId)) invalid.add(version.versionId);
-    else byId.set(version.versionId, version);
+    const existing = byId.get(version.versionId);
+    if (!existing) {
+      byId.set(version.versionId, version);
+    } else if (!sameVersion(existing, version)) {
+      invalid.add(version.versionId);
+    }
   }
   for (const version of byId.values()) {
     if (version.parents.includes(version.versionId)) invalid.add(version.versionId);
@@ -45,4 +49,8 @@ export function reduceRegister(versions: readonly RegisterVersion[]): RegisterSt
     pending: [...byId.keys()].filter((id) => !verified.has(id) && !invalid.has(id)).sort(),
     invalid: [...invalid].sort(),
   };
+}
+
+function sameVersion(left: RegisterVersion, right: RegisterVersion): boolean {
+  return left.logicalKey === right.logicalKey && left.parents.length === right.parents.length && left.parents.every((parent, index) => parent === right.parents[index]);
 }
