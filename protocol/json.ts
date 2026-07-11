@@ -90,6 +90,7 @@ export function canonicalizeProtocolJson(value: unknown): string {
 
 class StrictJsonParser {
   private offset = 0;
+  private depth = 0;
 
   constructor(private readonly source: string) {}
 
@@ -116,9 +117,10 @@ class StrictJsonParser {
   private parseObject(): Record<string, unknown> {
     const result: Record<string, unknown> = {};
     const keys = new Set<string>();
+    this.enterContainer();
     this.offset += 1;
     this.skipWhitespace();
-    if (this.consume("}")) return result;
+    if (this.consume("}")) return this.leaveContainer(result);
     while (true) {
       if (this.source[this.offset] !== '"') this.fail("invalid-json", "object key must be a string");
       const key = this.parseString();
@@ -129,7 +131,7 @@ class StrictJsonParser {
       this.skipWhitespace();
       result[key] = this.parseValue();
       this.skipWhitespace();
-      if (this.consume("}")) return result;
+      if (this.consume("}")) return this.leaveContainer(result);
       if (!this.consume(",")) this.fail("invalid-json", "expected ',' or '}' in object");
       this.skipWhitespace();
     }
@@ -137,13 +139,14 @@ class StrictJsonParser {
 
   private parseArray(): unknown[] {
     const result: unknown[] = [];
+    this.enterContainer();
     this.offset += 1;
     this.skipWhitespace();
-    if (this.consume("]")) return result;
+    if (this.consume("]")) return this.leaveContainer(result);
     while (true) {
       result.push(this.parseValue());
       this.skipWhitespace();
-      if (this.consume("]")) return result;
+      if (this.consume("]")) return this.leaveContainer(result);
       if (!this.consume(",")) this.fail("invalid-json", "expected ',' or ']' in array");
       this.skipWhitespace();
     }
@@ -222,6 +225,16 @@ class StrictJsonParser {
 
   private consumeLiteral(value: string): boolean {
     return this.consume(value);
+  }
+
+  private enterContainer(): void {
+    this.depth += 1;
+    if (this.depth > 16) this.fail("json-depth-exceeded", "JSON nesting depth exceeds 16");
+  }
+
+  private leaveContainer<T>(value: T): T {
+    this.depth -= 1;
+    return value;
   }
 
   private fail(code: ProtocolJsonErrorCode, message: string): never {

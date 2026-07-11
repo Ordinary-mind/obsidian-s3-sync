@@ -76,6 +76,12 @@ describe("strict v1 protocol JSON", () => {
     ).toThrow(expect.objectContaining({ code: "json-string-bytes-exceeded" }));
   });
 
+  it("rejects excessive nesting while parsing rather than after building the object graph", () => {
+    let nested = "null";
+    for (let index = 0; index < 16; index += 1) nested = `[${nested}]`;
+    expectCode(encoder.encode(`{"value":${nested}}`), "json-depth-exceeded");
+  });
+
   it("uses RFC 8785 member-name ordering independently from protocol array ordering", () => {
     expect(canonicalizeProtocolJson({ "😀": 1, "\ufffd": 2 })).toBe('{"😀":1,"�":2}');
     expectCode(encoder.encode('{"�":2,"😀":1}'), "non-canonical-json");
