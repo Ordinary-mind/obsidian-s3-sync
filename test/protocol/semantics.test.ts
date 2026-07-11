@@ -265,6 +265,24 @@ describe("v1 protocol semantic envelope", () => {
     expect(
       validateConfigTreeProfile({
         ...tree,
+        items: [
+          { path: "themes/active.css", kind: "put" },
+          { path: "themes/ACTIVE.css", kind: "put" },
+        ],
+      }),
+    ).toContain("config-put-case-alias");
+    expect(
+      validateConfigTreeProfile({
+        ...tree,
+        items: [
+          { path: "themes/active", kind: "put" },
+          { path: "themes/active/nested.css", kind: "put" },
+        ],
+      }),
+    ).toContain("config-put-path-prefix-conflict");
+    expect(
+      validateConfigTreeProfile({
+        ...tree,
         items: [{ path: "snippets/disabled.css", kind: "put" }],
       }),
     ).toContain("config-item-not-profiled");

@@ -71,6 +71,8 @@ export type ConfigTreeProfileViolation =
   | "plugin-scope-not-portable"
   | "config-item-path-duplicate"
   | "config-item-path-invalid"
+  | "config-put-case-alias"
+  | "config-put-path-prefix-conflict"
   | "config-item-not-profiled";
 
 export type PathViolation =
@@ -270,6 +272,9 @@ export function validateConfigTreeProfile(tree: ConfigTreeForProfile): ConfigTre
   if (tree.items.some((item) => validateProtocolPath(item.path).length > 0)) {
     violations.push("config-item-path-invalid");
   }
+  const putPaths = tree.items.filter((item) => item.kind === "put").map((item) => item.path);
+  if (!isCaseFoldUnique(putPaths)) violations.push("config-put-case-alias");
+  if (hasPathPrefixConflict(putPaths)) violations.push("config-put-path-prefix-conflict");
   if (tree.items.some((item) => !isItemCoveredByProfile(item.path, tree.profile))) {
     violations.push("config-item-not-profiled");
   }
@@ -307,6 +312,17 @@ function isValidBaseFile(baseFile: string): boolean {
     return false;
   }
   return !(folded.startsWith("workspace") && folded.endsWith(".json"));
+}
+
+function hasPathPrefixConflict(paths: string[]): boolean {
+  for (let left = 0; left < paths.length; left += 1) {
+    for (let right = left + 1; right < paths.length; right += 1) {
+      if (paths[left].startsWith(`${paths[right]}/`) || paths[right].startsWith(`${paths[left]}/`)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 export function validateProtocolPath(path: string): PathViolation[] {
