@@ -10,13 +10,27 @@
     },
     {
       "name": "Obsidian desktop",
-      "status": "pending-adapter-contract-tests",
+      "status": "pending-runtime-contract-tests",
+      "staticApi": ["vault.configDir", "vault rename event", "workspace editor-change event"],
       "requirements": ["atomic rename/no-clobber proof", "durable state write proof"]
     },
     {
       "name": "Obsidian mobile",
-      "status": "pending-adapter-contract-tests",
+      "status": "pending-runtime-contract-tests",
+      "staticApi": ["vault.configDir", "vault rename event", "workspace editor-change event"],
       "requirements": ["suspend/resume recovery proof", "atomic rename/no-clobber proof", "Unicode table bundle measurement"]
+    }
+  ],
+  "objectStores": [
+    {
+      "name": "AWS S3",
+      "status": "pending-real-contract-tests",
+      "requirements": ["If-None-Match star atomic create", "lost-response body verification", "no DeleteObject normal-sync credential"]
+    },
+    {
+      "name": "MinIO or equivalent S3-compatible storage",
+      "status": "pending-real-contract-tests",
+      "requirements": ["If-None-Match star atomic create", "pagination disorder and late-visibility handling", "no DeleteObject normal-sync credential"]
     }
   ],
   "nonNegotiableProtocolAssets": [

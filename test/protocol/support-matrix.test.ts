@@ -4,12 +4,13 @@ import { statSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("protocol support matrix", () => {
-  it("keeps the Node 22 protocol-test baseline and pending adapter contracts explicit", () => {
+  it("keeps the Node 22 baseline and unverified adapter/provider contracts explicit", () => {
     const matrix = JSON.parse(
       readFileSync(new URL("../../protocol/support-matrix.json", import.meta.url), "utf8"),
     ) as {
       protocol: number;
-      runtimes: Array<{ name: string; version?: string; status: string }>;
+      runtimes: Array<{ name: string; version?: string; status: string; staticApi?: string[] }>;
+      objectStores: Array<{ name: string; status: string }>;
       unicodeRuntimeSourceBytes: { caseFolding: number; nfc: number; total: number };
     };
     expect(matrix.protocol).toBe(1);
@@ -17,8 +18,15 @@ describe("protocol support matrix", () => {
       expect.objectContaining({ name: "Node.js", version: "22.x", status: "supported-for-protocol-tests" }),
     );
     expect(matrix.runtimes.filter((runtime) => runtime.name.startsWith("Obsidian"))).toEqual(
-      expect.arrayContaining([expect.objectContaining({ status: "pending-adapter-contract-tests" })]),
+      expect.arrayContaining([expect.objectContaining({ status: "pending-runtime-contract-tests" })]),
     );
+    expect(matrix.runtimes.filter((runtime) => runtime.name.startsWith("Obsidian"))).toEqual(
+      expect.arrayContaining([expect.objectContaining({ staticApi: expect.arrayContaining(["vault.configDir"]) })]),
+    );
+    expect(matrix.objectStores).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "AWS S3", status: "pending-real-contract-tests" }),
+      expect.objectContaining({ name: "MinIO or equivalent S3-compatible storage", status: "pending-real-contract-tests" }),
+    ]));
     expect(process.versions.node.split(".")[0]).toBe("22");
     const caseFolding = statSync(new URL("../../protocol/unicode/15.1.0/case-folding.ts", import.meta.url)).size;
     const nfc = statSync(new URL("../../protocol/unicode/15.1.0/nfc.ts", import.meta.url)).size;
