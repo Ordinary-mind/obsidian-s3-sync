@@ -5,7 +5,10 @@
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:types": "tsc -p tsconfig.test.json --noEmit"
   },
   "keywords": [
     "obsidian",
@@ -17,11 +20,14 @@
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^24.0.10",
+    "ajv": "^8.20.0",
     "builtin-modules": "^5.0.0",
     "esbuild": "^0.25.6",
+    "fast-check": "^4.9.0",
     "obsidian": "^1.8.7",
     "tslib": "^2.8.1",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.10"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.840.0"

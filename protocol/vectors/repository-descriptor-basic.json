@@ -1,0 +1,15 @@
+{
+  "name": "repository-descriptor-basic",
+  "kind": "RepositoryDescriptor",
+  "object": {
+    "protocol": 1,
+    "repositoryId": "123e4567-e89b-42d3-a456-426614174000",
+    "configDir": ".obsidian",
+    "historicalConfigDirs": [],
+    "hashAlgorithm": "sha256",
+    "canonicalJson": "RFC8785"
+  },
+  "canonicalJson": "{\"canonicalJson\":\"RFC8785\",\"configDir\":\".obsidian\",\"hashAlgorithm\":\"sha256\",\"historicalConfigDirs\":[],\"protocol\":1,\"repositoryId\":\"123e4567-e89b-42d3-a456-426614174000\"}",
+  "sha256": "b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec",
+  "key": ".obsidian-s3-sync/v1/repositories/123e4567-e89b-42d3-a456-426614174000/format.json"
+}

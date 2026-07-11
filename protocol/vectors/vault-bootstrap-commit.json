@@ -1,0 +1,20 @@
+{
+  "name": "vault-bootstrap-commit",
+  "kind": "Commit",
+  "object": {
+    "protocol": 1,
+    "repositoryId": "123e4567-e89b-42d3-a456-426614174000",
+    "descriptorHash": "b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec",
+    "writerId": "123e4567-e89b-42d3-a456-426614174001",
+    "sequence": "00000000000000000001",
+    "previousCommitHash": null,
+    "createdAt": "2026-07-11T00:00:00.000Z",
+    "channel": "vault",
+    "kind": "bootstrap",
+    "changeChunkHashes": ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+    "clientVersion": "0.1.0"
+  },
+  "canonicalJson": "{\"changeChunkHashes\":[\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"],\"channel\":\"vault\",\"clientVersion\":\"0.1.0\",\"createdAt\":\"2026-07-11T00:00:00.000Z\",\"descriptorHash\":\"b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec\",\"kind\":\"bootstrap\",\"previousCommitHash\":null,\"protocol\":1,\"repositoryId\":\"123e4567-e89b-42d3-a456-426614174000\",\"sequence\":\"00000000000000000001\",\"writerId\":\"123e4567-e89b-42d3-a456-426614174001\"}",
+  "sha256": "81c13ac10c6dd8d069c04300e8acaec149f6065f498f5b07b9dffea4dccc5c13",
+  "key": ".obsidian-s3-sync/v1/repositories/123e4567-e89b-42d3-a456-426614174000/commits/123e4567-e89b-42d3-a456-426614174001/00000000000000000001-81c13ac10c6dd8d069c04300e8acaec149f6065f498f5b07b9dffea4dccc5c13.json"
+}

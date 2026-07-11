@@ -1,0 +1,323 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://obsidian-s3-sync.local/protocol/v1.schema.json",
+  "title": "Obsidian S3 Sync v1 protocol objects",
+  "anyOf": [
+    { "$ref": "#/$defs/RepositoryDescriptor" },
+    { "$ref": "#/$defs/ConfigProfile" },
+    { "$ref": "#/$defs/ConfigTree" },
+    { "$ref": "#/$defs/ChangeChunk" },
+    { "$ref": "#/$defs/Commit" }
+  ],
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "uuidV4": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "sequence": {
+      "type": "string",
+      "pattern": "^[0-9]{20}$",
+      "$comment": "The exact 1..18446744073709551615 range is enforced by protocol/limits.ts without Number conversion."
+    },
+    "versionId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}:(0|[1-9][0-9]*):(0|[1-9][0-9]*)$"
+    },
+    "protocolString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "path": {
+      "allOf": [
+        { "$ref": "#/$defs/protocolString" },
+        { "type": "string", "maxLength": 1024, "pattern": "^(?!/)(?!.*//)(?!.*\\\\).+$" }
+      ]
+    },
+    "parents": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/versionId" },
+      "maxItems": 1024,
+      "uniqueItems": true
+    },
+    "RepositoryDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "repositoryId",
+        "configDir",
+        "historicalConfigDirs",
+        "hashAlgorithm",
+        "canonicalJson"
+      ],
+      "properties": {
+        "protocol": { "const": 1 },
+        "repositoryId": { "$ref": "#/$defs/uuidV4" },
+        "configDir": { "$ref": "#/$defs/path" },
+        "historicalConfigDirs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/path" },
+          "maxItems": 100000,
+          "uniqueItems": true
+        },
+        "hashAlgorithm": { "const": "sha256" },
+        "canonicalJson": { "const": "RFC8785" }
+      }
+    },
+    "ConfigProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "baseFiles",
+        "syncThemes",
+        "syncSnippets",
+        "minimumTargetAppVersion",
+        "portablePluginIds",
+        "pluginPackages",
+        "pluginData"
+      ],
+      "properties": {
+        "schema": { "const": 1 },
+        "baseFiles": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/protocolString" },
+          "maxItems": 100000,
+          "uniqueItems": true
+        },
+        "syncThemes": { "type": "boolean" },
+        "syncSnippets": { "type": "boolean" },
+        "minimumTargetAppVersion": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+        },
+        "portablePluginIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/protocolString" },
+          "maxItems": 100000,
+          "uniqueItems": true
+        },
+        "pluginPackages": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/protocolString" },
+          "maxItems": 100000,
+          "uniqueItems": true
+        },
+        "pluginData": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/protocolString" },
+          "maxItems": 100000,
+          "uniqueItems": true
+        }
+      }
+    },
+    "ConfigItemPut": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "kind", "blobHash", "size"],
+      "properties": {
+        "path": { "$ref": "#/$defs/path" },
+        "kind": { "const": "put" },
+        "blobHash": { "$ref": "#/$defs/hash" },
+        "size": { "type": "integer", "minimum": 0, "maximum": 5000000000 }
+      }
+    },
+    "ConfigItemDelete": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "kind"],
+      "properties": {
+        "path": { "$ref": "#/$defs/path" },
+        "kind": { "const": "delete" }
+      }
+    },
+    "ConfigItem": {
+      "oneOf": [
+        { "$ref": "#/$defs/ConfigItemPut" },
+        { "$ref": "#/$defs/ConfigItemDelete" }
+      ]
+    },
+    "ConfigTree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "repositoryId",
+        "descriptorHash",
+        "profile",
+        "enabledCommunityPlugins",
+        "items"
+      ],
+      "properties": {
+        "protocol": { "const": 1 },
+        "repositoryId": { "$ref": "#/$defs/uuidV4" },
+        "descriptorHash": { "$ref": "#/$defs/hash" },
+        "profile": { "$ref": "#/$defs/ConfigProfile" },
+        "enabledCommunityPlugins": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/protocolString" },
+          "maxItems": 100000,
+          "uniqueItems": true
+        },
+        "items": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ConfigItem" },
+          "maxItems": 100000
+        }
+      }
+    },
+    "VaultMutationPut": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "kind", "blobHash", "size", "parents"],
+      "properties": {
+        "path": { "$ref": "#/$defs/path" },
+        "kind": { "const": "put" },
+        "blobHash": { "$ref": "#/$defs/hash" },
+        "size": { "type": "integer", "minimum": 0, "maximum": 5000000000 },
+        "parents": { "$ref": "#/$defs/parents" }
+      }
+    },
+    "VaultMutationDelete": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "kind", "parents"],
+      "properties": {
+        "path": { "$ref": "#/$defs/path" },
+        "kind": { "const": "delete" },
+        "parents": { "$ref": "#/$defs/parents" }
+      }
+    },
+    "VaultMutation": {
+      "oneOf": [
+        { "$ref": "#/$defs/VaultMutationPut" },
+        { "$ref": "#/$defs/VaultMutationDelete" }
+      ]
+    },
+    "ConfigSnapshotMutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "kind", "treeHash", "parents"],
+      "properties": {
+        "key": { "const": "portable" },
+        "kind": { "const": "snapshot" },
+        "treeHash": { "$ref": "#/$defs/hash" },
+        "parents": { "$ref": "#/$defs/parents" }
+      }
+    },
+    "VaultChangeChunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "repositoryId",
+        "descriptorHash",
+        "channel",
+        "chunkIndex",
+        "chunkCount",
+        "mutations"
+      ],
+      "properties": {
+        "protocol": { "const": 1 },
+        "repositoryId": { "$ref": "#/$defs/uuidV4" },
+        "descriptorHash": { "$ref": "#/$defs/hash" },
+        "channel": { "const": "vault" },
+        "chunkIndex": { "type": "integer", "minimum": 0, "maximum": 1023 },
+        "chunkCount": { "type": "integer", "minimum": 1, "maximum": 1024 },
+        "mutations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4096,
+          "items": { "$ref": "#/$defs/VaultMutation" }
+        }
+      }
+    },
+    "ConfigChangeChunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "repositoryId",
+        "descriptorHash",
+        "channel",
+        "chunkIndex",
+        "chunkCount",
+        "mutations"
+      ],
+      "properties": {
+        "protocol": { "const": 1 },
+        "repositoryId": { "$ref": "#/$defs/uuidV4" },
+        "descriptorHash": { "$ref": "#/$defs/hash" },
+        "channel": { "const": "config" },
+        "chunkIndex": { "const": 0 },
+        "chunkCount": { "const": 1 },
+        "mutations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "$ref": "#/$defs/ConfigSnapshotMutation" }
+        }
+      }
+    },
+    "ChangeChunk": {
+      "oneOf": [
+        { "$ref": "#/$defs/VaultChangeChunk" },
+        { "$ref": "#/$defs/ConfigChangeChunk" }
+      ]
+    },
+    "Commit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "repositoryId",
+        "descriptorHash",
+        "writerId",
+        "sequence",
+        "previousCommitHash",
+        "createdAt",
+        "channel",
+        "kind",
+        "changeChunkHashes",
+        "clientVersion"
+      ],
+      "properties": {
+        "protocol": { "const": 1 },
+        "repositoryId": { "$ref": "#/$defs/uuidV4" },
+        "descriptorHash": { "$ref": "#/$defs/hash" },
+        "writerId": { "$ref": "#/$defs/uuidV4" },
+        "sequence": { "$ref": "#/$defs/sequence" },
+        "previousCommitHash": {
+          "anyOf": [
+            { "$ref": "#/$defs/hash" },
+            { "type": "null" }
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+        },
+        "channel": { "enum": ["vault", "config"] },
+        "kind": {
+          "enum": ["change", "bootstrap", "conflict-resolution", "parent-reduction"]
+        },
+        "changeChunkHashes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1024,
+          "items": { "$ref": "#/$defs/hash" },
+          "uniqueItems": true
+        },
+        "clientVersion": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+        }
+      }
+    }
+  }
+}
