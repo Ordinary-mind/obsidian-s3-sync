@@ -259,6 +259,7 @@ describe("v1 protocol semantic envelope", () => {
         portablePluginIds: ["example-plugin"],
         pluginPackages: ["example-plugin"],
         pluginData: ["example-plugin"],
+        minimumTargetAppVersion: "1.5.0",
       },
       enabledCommunityPlugins: ["example-plugin"],
       items: [
@@ -288,6 +289,12 @@ describe("v1 protocol semantic envelope", () => {
     expect(
       validateConfigTreeProfile({ ...tree, profile: { ...tree.profile, baseFiles: ["workspace.json"] } }),
     ).toContain("base-file-invalid");
+    expect(
+      validateConfigTreeProfile({
+        ...tree,
+        profile: { ...tree.profile, minimumTargetAppVersion: "01.5.0" },
+      }),
+    ).toContain("minimum-app-version-invalid");
     expect(
       validateConfigTreeProfile({ ...tree, items: [{ path: "", kind: "put" }] }),
     ).toContain("config-item-path-invalid");

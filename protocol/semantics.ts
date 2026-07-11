@@ -60,6 +60,7 @@ export interface ConfigTreeForProfile {
     portablePluginIds: string[];
     pluginPackages: string[];
     pluginData: string[];
+    minimumTargetAppVersion?: string;
   };
   enabledCommunityPlugins: string[];
   items: Array<{ path: string; kind: "put" | "delete" }>;
@@ -69,6 +70,7 @@ export type ConfigTreeProfileViolation =
   | "config-array-not-canonical"
   | "config-case-alias"
   | "base-file-invalid"
+  | "minimum-app-version-invalid"
   | "plugin-id-invalid"
   | "plugin-scope-not-portable"
   | "config-item-path-duplicate"
@@ -289,6 +291,12 @@ export function validateConfigTreeProfile(tree: ConfigTreeForProfile): ConfigTre
     violations.push("base-file-invalid");
   }
   if (
+    tree.profile.minimumTargetAppVersion !== undefined &&
+    !isValidPlainSemVer(tree.profile.minimumTargetAppVersion)
+  ) {
+    violations.push("minimum-app-version-invalid");
+  }
+  if (
     [
       ...tree.profile.portablePluginIds,
       ...tree.profile.pluginPackages,
@@ -351,6 +359,10 @@ function isValidBaseFile(baseFile: string): boolean {
     return false;
   }
   return !(folded.startsWith("workspace") && folded.endsWith(".json"));
+}
+
+function isValidPlainSemVer(value: string): boolean {
+  return /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(value);
 }
 
 function hasPathPrefixConflict(paths: string[]): boolean {
