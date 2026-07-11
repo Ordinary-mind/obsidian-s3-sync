@@ -28,6 +28,8 @@ export interface ProtocolChunk {
 export type ProtocolViolation =
   | "descriptor-hash-mismatch"
   | "invalid-sequence"
+  | "invalid-created-at"
+  | "invalid-client-version"
   | "previous-commit-chain-shape"
   | "chunk-count-mismatch"
   | "chunk-hash-order-mismatch"
@@ -109,6 +111,8 @@ export function validateCommitEnvelope(
 ): ProtocolViolation[] {
   const violations: ProtocolViolation[] = [];
   if (!isValidSequence(commit.sequence)) violations.push("invalid-sequence");
+  if (!isValidCreatedAt(commit.createdAt)) violations.push("invalid-created-at");
+  if (!isValidClientVersion(commit.clientVersion)) violations.push("invalid-client-version");
   if (
     (commit.sequence === "00000000000000000001" && commit.previousCommitHash !== null) ||
     (commit.sequence !== "00000000000000000001" && commit.previousCommitHash === null)
@@ -178,6 +182,39 @@ export function validateCommitEnvelope(
     }
   }
   return [...new Set(violations)];
+}
+
+function isValidCreatedAt(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3})Z$/.exec(value);
+  if (!match) return false;
+  const [, year, month, day, hour, minute, second] = match;
+  const numericYear = Number(year);
+  const numericMonth = Number(month);
+  const numericDay = Number(day);
+  const numericHour = Number(hour);
+  const numericMinute = Number(minute);
+  const numericSecond = Number(second);
+  if (
+    numericYear < 1 ||
+    numericMonth < 1 ||
+    numericMonth > 12 ||
+    numericHour > 23 ||
+    numericMinute > 59 ||
+    numericSecond > 59
+  ) {
+    return false;
+  }
+  const leapYear = numericYear % 4 === 0 && (numericYear % 100 !== 0 || numericYear % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][
+    numericMonth - 1
+  ];
+  return numericDay >= 1 && numericDay <= daysInMonth;
+}
+
+function isValidClientVersion(value: string): boolean {
+  return /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(
+    value,
+  );
 }
 
 const utf8Encoder = new TextEncoder();
