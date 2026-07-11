@@ -11,6 +11,7 @@ import {
 import { FakeClock } from "./fake-clock";
 import { FakeEditorEvents } from "./fake-editor-events";
 import { FakeEditBaseline } from "./fake-edit-baseline";
+import { FakeOutbox } from "./fake-outbox";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -77,6 +78,17 @@ describe("deterministic test fakes", () => {
       basisHeads: [],
       localPredecessorVersion: "root-put:0:0",
     });
+  });
+
+  it("stores frozen outbox bytes by value for exact retry after active content changes", () => {
+    const outbox = new FakeOutbox();
+    const activeBytes = encoder.encode("frozen commit");
+    outbox.freeze("commit-1", activeBytes);
+    activeBytes[0] = "X".charCodeAt(0);
+    expect(decoder.decode(outbox.replay("commit-1"))).toBe("frozen commit");
+    expect(() => outbox.freeze("commit-1", encoder.encode("replacement"))).toThrow(
+      "outbox entry is immutable",
+    );
   });
 
   it("injects local races and crashes at read, write, rename, delete and state boundaries", () => {
