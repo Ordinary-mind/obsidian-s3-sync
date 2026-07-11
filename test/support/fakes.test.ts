@@ -170,6 +170,10 @@ describe("deterministic test fakes", () => {
     expect(() => store.putImmutableIdempotent("objects/same", encoder.encode("other"))).toThrow(
       ImmutableObjectIntegrityError,
     );
+    store.tamper("objects/same", encoder.encode("corrupt"));
+    expect(() => store.putImmutableIdempotent("objects/same", encoder.encode("body"))).toThrow(
+      ImmutableObjectIntegrityError,
+    );
   });
 
   it("recovers a lost immutable PUT response by retrying the same frozen bytes", () => {
