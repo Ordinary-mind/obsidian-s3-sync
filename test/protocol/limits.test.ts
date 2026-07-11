@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -10,6 +12,15 @@ import {
 } from "../../protocol/limits";
 
 describe("v1 protocol resource limits", () => {
+  it("keeps versioned boundary recipes synchronized with protocol constants", () => {
+    const recipe = JSON.parse(
+      readFileSync(new URL("../../protocol/vectors/resource-boundary-recipes.json", import.meta.url), "utf8"),
+    ) as { limits: Record<string, number>; expectation: { limit: string; limitPlusOne: string } };
+    const { maxSequence: _maxSequence, ...jsonLimits } = protocolLimits;
+    expect(recipe.limits).toEqual({ ...jsonLimits, s3KeyUtf8Bytes: 1024 });
+    expect(recipe.expectation).toEqual({ limit: "accepted", limitPlusOne: "rejected" });
+  });
+
   it("counts UTF-8 bytes rather than JavaScript code units", () => {
     expect(utf8ByteLength("a")).toBe(1);
     expect(utf8ByteLength("é")).toBe(2);

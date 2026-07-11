@@ -64,6 +64,27 @@ describe("strict v1 protocol JSON", () => {
     ).toEqual({ a: 1 });
   });
 
+  it("rejects one byte beyond every object body limit before JSON parsing", () => {
+    const limits = {
+      descriptor: protocolLimits.formatBytes,
+      commit: protocolLimits.commitBytes,
+      "change-chunk": protocolLimits.changeChunkBytes,
+      "config-tree": protocolLimits.configTreeBytes,
+    } as const;
+    for (const [kind, limit] of Object.entries(limits) as Array<
+      [keyof typeof limits, number]
+    >) {
+      const atLimit = encoder.encode(`{}${" ".repeat(limit - 2)}`);
+      expect(atLimit).toHaveLength(limit);
+      expect(() => parseBoundedProtocolJson(kind, atLimit)).toThrow(
+        expect.objectContaining({ code: "non-canonical-json" }),
+      );
+      expect(() => parseBoundedProtocolJson(kind, new Uint8Array(limit + 1))).toThrow(
+        expect.objectContaining({ code: "body-too-large" }),
+      );
+    }
+  });
+
   it("reports the first deterministic parsed-value resource violation", () => {
     let tooDeep: unknown = null;
     for (let index = 0; index < protocolLimits.jsonDepth; index += 1) tooDeep = [tooDeep];

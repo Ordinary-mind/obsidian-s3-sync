@@ -679,4 +679,9 @@ describe("v1 protocol semantic envelope", () => {
     expect(validatePluginId("lpt9")).toContain("plugin-id-reserved-name");
     expect(validatePluginId("COM10")).toEqual([]);
   });
+
+  it("enforces the logical path UTF-8 boundary", () => {
+    expect(validateProtocolPath("a".repeat(1024))).toEqual([]);
+    expect(validateProtocolPath("a".repeat(1025))).toContain("path-too-long");
+  });
 });

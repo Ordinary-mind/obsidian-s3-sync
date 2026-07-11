@@ -1,0 +1,24 @@
+{
+  "name": "v1-resource-boundary-recipes",
+  "strategy": "Generate limit and limit-plus-one inputs from these counts; never store a 5 GB fixture.",
+  "limits": {
+    "formatBytes": 4096,
+    "commitBytes": 262144,
+    "changeChunkBytes": 4194304,
+    "configTreeBytes": 16777216,
+    "mutationParents": 1024,
+    "chunkMutations": 4096,
+    "commitChunks": 1024,
+    "configTreeItems": 100000,
+    "jsonDepth": 16,
+    "jsonArrayItems": 100000,
+    "jsonStringUtf8Bytes": 4096,
+    "logicalPathUtf8Bytes": 1024,
+    "blobBytes": 5000000000,
+    "s3KeyUtf8Bytes": 1024
+  },
+  "expectation": {
+    "limit": "accepted",
+    "limitPlusOne": "rejected"
+  }
+}
