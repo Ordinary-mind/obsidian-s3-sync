@@ -4,6 +4,7 @@ import {
   isUtf8SortedUnique,
   validateCommitEnvelope,
   validateConfigDeleteLineage,
+  validateConfigTreeProfile,
 } from "../../protocol/semantics";
 
 const repositoryId = "123e4567-e89b-42d3-a456-426614174000";
@@ -196,5 +197,45 @@ describe("v1 protocol semantic envelope", () => {
         ["b".repeat(64)],
       ),
     ).toContain("vault-mutations-not-canonical");
+  });
+
+  it("requires ConfigTree profile arrays and items to have one exact management scope", () => {
+    const tree = {
+      profile: {
+        baseFiles: ["app.json"],
+        syncThemes: true,
+        syncSnippets: false,
+        portablePluginIds: ["example-plugin"],
+        pluginPackages: ["example-plugin"],
+        pluginData: ["example-plugin"],
+      },
+      enabledCommunityPlugins: ["example-plugin"],
+      items: [
+        { path: "app.json", kind: "put" as const },
+        { path: "plugins/example-plugin/data.json", kind: "put" as const },
+        { path: "plugins/example-plugin/main.js", kind: "put" as const },
+        { path: "themes/active.css", kind: "put" as const },
+      ],
+    };
+
+    expect(validateConfigTreeProfile(tree)).toEqual([]);
+    expect(
+      validateConfigTreeProfile({
+        ...tree,
+        profile: { ...tree.profile, pluginPackages: ["outside-portable"] },
+      }),
+    ).toContain("plugin-scope-not-portable");
+    expect(
+      validateConfigTreeProfile({ ...tree, profile: { ...tree.profile, baseFiles: ["z", "a"] } }),
+    ).toContain("config-array-not-canonical");
+    expect(
+      validateConfigTreeProfile({ ...tree, profile: { ...tree.profile, portablePluginIds: ["A", "a"] } }),
+    ).toContain("config-case-alias");
+    expect(
+      validateConfigTreeProfile({
+        ...tree,
+        items: [{ path: "snippets/disabled.css", kind: "put" }],
+      }),
+    ).toContain("config-item-not-profiled");
   });
 });
