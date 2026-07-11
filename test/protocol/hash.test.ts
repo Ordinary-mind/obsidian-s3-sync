@@ -9,6 +9,7 @@ import {
   assertObjectBodyHash,
   sha256Hex,
 } from "../../protocol/hash";
+import { blobKey } from "../../protocol/keys";
 
 const encoder = new TextEncoder();
 
@@ -47,5 +48,16 @@ describe("content-addressed protocol objects", () => {
         bytes,
       ),
     ).not.toThrow();
+  });
+
+  it("replays the fixed raw Blob bytes, size, hash and object key", () => {
+    const vector = JSON.parse(
+      readFileSync(new URL("../../protocol/vectors/blob-basic.json", import.meta.url), "utf8"),
+    ) as { bytesHex: string; size: number; sha256: string; key: string };
+    const bytes = Uint8Array.from(Buffer.from(vector.bytesHex, "hex"));
+    expect(bytes.byteLength).toBe(vector.size);
+    expect(sha256Hex(bytes)).toBe(vector.sha256);
+    expect(blobKey("", "123e4567-e89b-42d3-a456-426614174000", vector.sha256)).toBe(vector.key);
+    expect(() => assertContentAddressedObject(vector.key, vector.sha256, bytes)).not.toThrow();
   });
 });
