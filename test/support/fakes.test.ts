@@ -171,4 +171,13 @@ describe("deterministic test fakes", () => {
       ImmutableObjectIntegrityError,
     );
   });
+
+  it("recovers a lost immutable PUT response by retrying the same frozen bytes", () => {
+    const store = new FakeObjectStore();
+    expect(() => store.putImmutable("objects/lost-retry", encoder.encode("frozen"), { loseResponse: true })).toThrow(
+      LostResponseError,
+    );
+    expect(() => store.putImmutableIdempotent("objects/lost-retry", encoder.encode("frozen"))).not.toThrow();
+    expect(decoder.decode(store.get("objects/lost-retry"))).toBe("frozen");
+  });
 });
