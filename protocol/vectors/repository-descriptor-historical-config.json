@@ -1,0 +1,15 @@
+{
+  "name": "repository-descriptor-historical-config",
+  "kind": "RepositoryDescriptor",
+  "object": {
+    "protocol": 1,
+    "repositoryId": "123e4567-e89b-42d3-a456-426614174000",
+    "configDir": ".obsidian",
+    "historicalConfigDirs": [".obsidian-old", ".obsidian-older"],
+    "hashAlgorithm": "sha256",
+    "canonicalJson": "RFC8785"
+  },
+  "canonicalJson": "{\"canonicalJson\":\"RFC8785\",\"configDir\":\".obsidian\",\"hashAlgorithm\":\"sha256\",\"historicalConfigDirs\":[\".obsidian-old\",\".obsidian-older\"],\"protocol\":1,\"repositoryId\":\"123e4567-e89b-42d3-a456-426614174000\"}",
+  "sha256": "71cdb15779ef0e6c70d5bbccffa126c6df58e09ee095fd21c6c508fadfd38f25",
+  "key": ".obsidian-s3-sync/v1/repositories/123e4567-e89b-42d3-a456-426614174000/format.json"
+}

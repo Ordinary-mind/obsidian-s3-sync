@@ -21,6 +21,12 @@ const descriptorVector = JSON.parse(
     "utf8",
   ),
 );
+const historicalDescriptorVector = JSON.parse(
+  readFileSync(
+    new URL("../../protocol/vectors/repository-descriptor-historical-config.json", import.meta.url),
+    "utf8",
+  ),
+);
 const commitVector = JSON.parse(
   readFileSync(
     new URL("../../protocol/vectors/vault-bootstrap-commit.json", import.meta.url),
@@ -88,6 +94,20 @@ describe("v1 protocol schema", () => {
     ).toBe(descriptorVector.sha256);
     expect(descriptorVector.key).toBe(
       `.obsidian-s3-sync/v1/repositories/${descriptorVector.object.repositoryId}/format.json`,
+    );
+  });
+
+  it("accepts the fixed descriptor with canonical historical config roots", () => {
+    const validate = validator("RepositoryDescriptor");
+    expect(validate(historicalDescriptorVector.object)).toBe(true);
+    expectCanonicalVector(
+      "descriptor",
+      historicalDescriptorVector.canonicalJson,
+      historicalDescriptorVector.object,
+    );
+    expect(validateRepositoryDescriptor(historicalDescriptorVector.object)).toEqual([]);
+    expect(createHash("sha256").update(historicalDescriptorVector.canonicalJson, "utf8").digest("hex")).toBe(
+      historicalDescriptorVector.sha256,
     );
   });
 
