@@ -24,6 +24,8 @@ export interface ProtocolChunk {
 
 export type ProtocolViolation =
   | "descriptor-hash-mismatch"
+  | "invalid-sequence"
+  | "previous-commit-chain-shape"
   | "chunk-count-mismatch"
   | "chunk-hash-order-mismatch"
   | "chunk-index-not-contiguous"
@@ -49,6 +51,13 @@ export function validateCommitEnvelope(
   chunkHashes: string[],
 ): ProtocolViolation[] {
   const violations: ProtocolViolation[] = [];
+  if (!isValidSequence(commit.sequence)) violations.push("invalid-sequence");
+  if (
+    (commit.sequence === "00000000000000000001" && commit.previousCommitHash !== null) ||
+    (commit.sequence !== "00000000000000000001" && commit.previousCommitHash === null)
+  ) {
+    violations.push("previous-commit-chain-shape");
+  }
   if (commit.descriptorHash !== descriptorHash) violations.push("descriptor-hash-mismatch");
   if (chunks.length !== commit.changeChunkHashes.length) violations.push("chunk-count-mismatch");
   if (
@@ -128,3 +137,4 @@ export function validateConfigDeleteLineage(
   }
   return [...new Set(violations)];
 }
+import { isValidSequence } from "./limits";

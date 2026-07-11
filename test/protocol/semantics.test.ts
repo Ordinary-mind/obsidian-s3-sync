@@ -80,6 +80,34 @@ describe("v1 protocol semantic envelope", () => {
     ).toContain("chunk-channel-mismatch");
   });
 
+  it("enforces the first Commit previous hash and the exact sequence range", () => {
+    const valid = chunk([]);
+    expect(
+      validateCommitEnvelope(
+        descriptorHash,
+        { ...commit("bootstrap"), previousCommitHash: "c".repeat(64) },
+        [valid],
+        ["b".repeat(64)],
+      ),
+    ).toContain("previous-commit-chain-shape");
+    expect(
+      validateCommitEnvelope(
+        descriptorHash,
+        { ...commit("bootstrap"), sequence: "00000000000000000002" },
+        [valid],
+        ["b".repeat(64)],
+      ),
+    ).toContain("previous-commit-chain-shape");
+    expect(
+      validateCommitEnvelope(
+        descriptorHash,
+        { ...commit("bootstrap"), sequence: "18446744073709551616" },
+        [valid],
+        ["b".repeat(64)],
+      ),
+    ).toContain("invalid-sequence");
+  });
+
   it("requires config deletes to be supported by a complete direct parent Tree", () => {
     const parent = "c".repeat(64) + ":0:0";
     const tree = { items: [{ path: "plugins/example/data.json", kind: "delete" as const }] };
