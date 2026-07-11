@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { captureDirtyIntent, freezeOutboxVersion, mergeDirtyEdit, nextDirtyGeneration, proveEditorWrite } from "../../core/dirty-record";
+import { canElideNetNoop, captureDirtyIntent, freezeOutboxVersion, mergeDirtyEdit, nextDirtyGeneration, proveEditorWrite } from "../../core/dirty-record";
 
 describe("core dirty intent causality", () => {
   it("freezes projected heads and never accepts later observed heads", () => {
@@ -20,5 +20,11 @@ describe("core dirty intent causality", () => {
     const frozen = freezeOutboxVersion(proveEditorWrite(dirty, 1), "local:0:0");
     expect(Object.isFrozen(frozen)).toBe(true);
     expect(nextDirtyGeneration("notes/a.md", 2, frozen).localPredecessorVersion).toBe("local:0:0");
+  });
+  it("elides a net no-op only before any Outbox generation is frozen", () => {
+    const settled = proveEditorWrite(captureDirtyIntent("notes/a.md", []), 1);
+    expect(canElideNetNoop(settled, "same", "same", false)).toBe(true);
+    expect(canElideNetNoop(settled, "same", "same", true)).toBe(false);
+    expect(canElideNetNoop(captureDirtyIntent("notes/a.md", []), "same", "same", false)).toBe(false);
   });
 });

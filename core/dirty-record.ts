@@ -31,6 +31,10 @@ export function freezeOutboxVersion(record: DirtyRecord, versionId: string): Fro
   return Object.freeze({ path: record.path, queueId: record.queueId, versionId });
 }
 
+export function canElideNetNoop(record: DirtyRecord, projectedValueHash: string, currentValueHash: string, hasFrozenOutbox: boolean): boolean {
+  return !record.awaitingLocalWrite && !hasFrozenOutbox && projectedValueHash === currentValueHash;
+}
+
 export function proveEditorWrite(record: DirtyRecord, generation: number): DirtyRecord {
   if (record.generation !== generation) throw new Error("editor generation does not match dirty record");
   return { ...record, awaitingLocalWrite: false };
