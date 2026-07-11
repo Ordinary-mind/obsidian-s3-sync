@@ -12,6 +12,7 @@ import {
   validateConfigTreeProfile,
   validateRepositoryDescriptor,
 } from "./semantics";
+import { sha256Hex } from "./hash";
 
 type SchemaDefinition = "RepositoryDescriptor" | "ConfigTree" | "ChangeChunk" | "Commit";
 
@@ -63,6 +64,14 @@ export function assertRepositoryBinding(
       "object repositoryId or descriptorHash does not match the verified repository",
     );
   }
+}
+
+export function verifyRepositoryDescriptor(bytes: Uint8Array): {
+  descriptor: Record<string, unknown>;
+  descriptorHash: string;
+} {
+  const descriptor = parseAndValidateProtocolObject("descriptor", bytes);
+  return { descriptor, descriptorHash: sha256Hex(bytes) };
 }
 
 function definitionFor(kind: BoundedProtocolObject): SchemaDefinition {

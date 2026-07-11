@@ -7,6 +7,7 @@ import {
   assertRepositoryBinding,
   parseAndValidateProtocolObject,
   validateProtocolCommitEnvelope,
+  verifyRepositoryDescriptor,
 } from "../../protocol/validation";
 import { canonicalizeProtocolJson } from "../../protocol/json";
 
@@ -95,5 +96,12 @@ describe("protocol receive validation pipeline", () => {
     expect(() => assertRepositoryBinding(tree.object, tree.object.repositoryId, "a".repeat(64))).toThrow(
       expect.objectContaining({ code: "repository-binding-invalid" }),
     );
+  });
+
+  it("derives descriptorHash only from validated exact descriptor bytes", () => {
+    const descriptor = vector("../../protocol/vectors/repository-descriptor-basic.json");
+    const verified = verifyRepositoryDescriptor(encoder.encode(descriptor.canonicalJson));
+    expect(verified.descriptor).toEqual(descriptor.object);
+    expect(verified.descriptorHash).toBe(descriptor.sha256);
   });
 });
