@@ -673,4 +673,10 @@ describe("v1 protocol semantic envelope", () => {
       expect(validateConfigTreeProfile(vector.tree)).toContain(vector.violation);
     }
   });
+
+  it("rejects Windows reserved plugin device names", () => {
+    expect(validatePluginId("COM1")).toContain("plugin-id-reserved-name");
+    expect(validatePluginId("lpt9")).toContain("plugin-id-reserved-name");
+    expect(validatePluginId("COM10")).toEqual([]);
+  });
 });

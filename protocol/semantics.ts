@@ -504,7 +504,7 @@ export function validatePluginId(pluginId: string): PluginIdViolation[] {
   const stem = pluginId.split(".", 1)[0].replace(/[a-z]/g, (character) => character.toUpperCase());
   if (
     ["CON", "PRN", "AUX", "NUL", "CLOCK$", "CONIN$", "CONOUT$"].includes(stem) ||
-    /^(COM|LPT)[1-9¹²³]$/.test(stem)
+    /^(COM|LPT)([1-9]|[¹²³])$/.test(stem)
   ) {
     violations.push("plugin-id-reserved-name");
   }
