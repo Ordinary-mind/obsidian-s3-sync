@@ -42,6 +42,9 @@ const invalidSchemaVectors = JSON.parse(
   patch?: Record<string, unknown>;
   delete?: string[];
 }>;
+const reductionVector = JSON.parse(
+  readFileSync(new URL("../../protocol/vectors/config-parent-reduction.json", import.meta.url), "utf8"),
+);
 
 const ajv = new Ajv2020({ allErrors: true, strict: true });
 ajv.addSchema(schema);
@@ -143,6 +146,24 @@ describe("v1 protocol schema", () => {
     );
     expect(chunk.key).toContain(`/changes/sha256/${chunk.sha256.slice(0, 2)}/${chunk.sha256}.json`);
     expect(commit.key).toContain(`/${commit.object.sequence}-${commit.sha256}.json`);
+    expect(
+      validateCommitEnvelope(descriptorVector.sha256, commit.object, [chunk.object], [chunk.sha256]),
+    ).toEqual([]);
+  });
+
+  it("accepts the fixed one-mutation Config parent-reduction envelope", () => {
+    const validateChunk = validator("ChangeChunk");
+    const validateCommit = validator("Commit");
+    const { chunk, commit } = reductionVector;
+
+    expect(validateChunk(chunk.object)).toBe(true);
+    expect(validateCommit(commit.object)).toBe(true);
+    expect(createHash("sha256").update(chunk.canonicalJson, "utf8").digest("hex")).toBe(
+      chunk.sha256,
+    );
+    expect(createHash("sha256").update(commit.canonicalJson, "utf8").digest("hex")).toBe(
+      commit.sha256,
+    );
     expect(
       validateCommitEnvelope(descriptorVector.sha256, commit.object, [chunk.object], [chunk.sha256]),
     ).toEqual([]);
