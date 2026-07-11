@@ -11,6 +11,7 @@ import {
   validateProtocolPath,
   validateRepositoryDescriptor,
   validateParentVersionIds,
+  validateWriterChain,
 } from "../../protocol/semantics";
 
 const repositoryId = "123e4567-e89b-42d3-a456-426614174000";
@@ -420,5 +421,31 @@ describe("v1 protocol semantic envelope", () => {
       "version-id-parent-unresolved",
     ]);
     expect(validateParentVersionIds(["not-a-version"], known)).toEqual(["version-id-malformed"]);
+  });
+
+  it("detects writer gaps, wrong previous hashes and same-sequence forks without choosing a winner", () => {
+    const first = "a".repeat(64);
+    const second = "b".repeat(64);
+    expect(
+      validateWriterChain([
+        { sequence: "00000000000000000001", hash: first, previousCommitHash: null },
+        { sequence: "00000000000000000002", hash: second, previousCommitHash: first },
+      ]),
+    ).toEqual([]);
+    expect(
+      validateWriterChain([{ sequence: "00000000000000000002", hash: second, previousCommitHash: first }]),
+    ).toContain("writer-sequence-gap");
+    expect(
+      validateWriterChain([
+        { sequence: "00000000000000000001", hash: first, previousCommitHash: null },
+        { sequence: "00000000000000000002", hash: second, previousCommitHash: "c".repeat(64) },
+      ]),
+    ).toContain("writer-previous-mismatch");
+    expect(
+      validateWriterChain([
+        { sequence: "00000000000000000001", hash: first, previousCommitHash: null },
+        { sequence: "00000000000000000001", hash: second, previousCommitHash: null },
+      ]),
+    ).toContain("writer-sequence-fork");
   });
 });

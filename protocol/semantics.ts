@@ -115,6 +115,14 @@ export interface CommitShapeForVersionId {
 
 export type VersionIdViolation = "version-id-malformed" | "version-id-parent-unresolved" | "version-id-index-out-of-range";
 
+export interface WriterCommitForChain {
+  sequence: string;
+  hash: string;
+  previousCommitHash: string | null;
+}
+
+export type WriterChainViolation = "writer-sequence-gap" | "writer-previous-mismatch" | "writer-sequence-fork";
+
 export function validateCommitEnvelope(
   descriptorHash: string,
   commit: ProtocolCommit,
@@ -517,6 +525,38 @@ export function validateParentVersionIds(
       mutationIndex >= shape.chunkMutationCounts[chunkIndex]
     ) {
       violations.push("version-id-index-out-of-range");
+    }
+  }
+  return [...new Set(violations)];
+}
+
+export function validateWriterChain(commits: WriterCommitForChain[]): WriterChainViolation[] {
+  const violations: WriterChainViolation[] = [];
+  const bySequence = new Map<string, WriterCommitForChain[]>();
+  for (const commit of commits) {
+    const entries = bySequence.get(commit.sequence) ?? [];
+    entries.push(commit);
+    bySequence.set(commit.sequence, entries);
+  }
+  const sequences = [...bySequence.keys()].sort();
+  for (const sequence of sequences) {
+    const entries = bySequence.get(sequence)!;
+    if (new Set(entries.map((entry) => entry.hash)).size > 1) violations.push("writer-sequence-fork");
+  }
+  for (let index = 0; index < sequences.length; index += 1) {
+    const sequence = sequences[index];
+    const entries = bySequence.get(sequence)!;
+    const expectedSequence = (index + 1).toString().padStart(20, "0");
+    if (sequence !== expectedSequence) violations.push("writer-sequence-gap");
+    const previousHashes = index === 0 ? new Set<string>() : new Set(bySequence.get(sequences[index - 1])!.map((entry) => entry.hash));
+    for (const entry of entries) {
+      const expectedNull = sequence === "00000000000000000001";
+      if (
+        (expectedNull && entry.previousCommitHash !== null) ||
+        (!expectedNull && (entry.previousCommitHash === null || !previousHashes.has(entry.previousCommitHash)))
+      ) {
+        violations.push("writer-previous-mismatch");
+      }
     }
   }
   return [...new Set(violations)];
