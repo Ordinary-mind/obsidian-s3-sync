@@ -17,5 +17,6 @@ describe("protocol support matrix", () => {
     expect(matrix.runtimes.filter((runtime) => runtime.name.startsWith("Obsidian"))).toEqual(
       expect.arrayContaining([expect.objectContaining({ status: "pending-adapter-contract-tests" })]),
     );
+    expect(process.versions.node.split(".")[0]).toBe("22");
   });
 });
