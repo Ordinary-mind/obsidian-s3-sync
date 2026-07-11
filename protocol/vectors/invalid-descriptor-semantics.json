@@ -1,0 +1,17 @@
+[
+  {
+    "name": "historical-root-case-aliases-current",
+    "descriptor": {"configDir":".obsidian","historicalConfigDirs":[".OBSIDIAN"]},
+    "violation": "descriptor-historical-dir-case-alias"
+  },
+  {
+    "name": "historical-roots-unsorted",
+    "descriptor": {"configDir":".obsidian","historicalConfigDirs":["z","a"]},
+    "violation": "descriptor-historical-dirs-not-canonical"
+  },
+  {
+    "name": "historical-root-path-traversal",
+    "descriptor": {"configDir":".obsidian","historicalConfigDirs":["../old"]},
+    "violation": "descriptor-historical-dir-invalid"
+  }
+]

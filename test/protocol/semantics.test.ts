@@ -461,6 +461,15 @@ describe("v1 protocol semantic envelope", () => {
     ).toContain("descriptor-historical-dir-invalid");
   });
 
+  it("replays versioned invalid descriptor config-root vectors", () => {
+    const vectors = JSON.parse(
+      readFileSync(new URL("../../protocol/vectors/invalid-descriptor-semantics.json", import.meta.url), "utf8"),
+    ) as Array<{ descriptor: Parameters<typeof validateRepositoryDescriptor>[0]; violation: string }>;
+    for (const vector of vectors) {
+      expect(validateRepositoryDescriptor(vector.descriptor)).toContain(vector.violation);
+    }
+  });
+
   it("keeps ConfigTree items out of historical and local-only roots", () => {
     expect(
       validateConfigTreeExcludedPaths(".obsidian", [".obsidian-old"], [
