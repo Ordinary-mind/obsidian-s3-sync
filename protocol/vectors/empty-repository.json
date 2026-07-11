@@ -1,0 +1,11 @@
+{
+  "name": "empty-repository",
+  "descriptorVector": "repository-descriptor-basic",
+  "expected": {
+    "commitCount": 0,
+    "writerFrontiers": [],
+    "changeChunks": [],
+    "anchor": "format.json"
+  },
+  "forbidden": ["empty-commit", "empty-change-chunk", "mutable-current-pointer"]
+}
