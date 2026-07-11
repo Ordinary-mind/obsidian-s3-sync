@@ -2,11 +2,42 @@ import { describe, expect, it } from "vitest";
 
 import { FakeCrash, FakeLocalFs } from "./fake-local-fs";
 import { FakeObjectStore, LostResponseError, ObjectNotFoundError } from "./fake-object-store";
+import { FakeClock } from "./fake-clock";
+import { FakeEditorEvents } from "./fake-editor-events";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 describe("deterministic test fakes", () => {
+  it("orders virtual-time callbacks deterministically and permits cancellation", () => {
+    const clock = new FakeClock();
+    const order: string[] = [];
+    clock.schedule(10, () => order.push("late"));
+    const cancelled = clock.schedule(5, () => order.push("cancelled"));
+    clock.schedule(5, () => order.push("first"));
+    clock.schedule(5, () => order.push("second"));
+    clock.cancel(cancelled);
+    clock.advance(5);
+    expect(order).toEqual(["first", "second"]);
+    expect(clock.now()).toBe(5);
+    clock.advance(5);
+    expect(order).toEqual(["first", "second", "late"]);
+  });
+
+  it("assigns monotonic per-path editor generations before any disk event", () => {
+    const editor = new FakeEditorEvents();
+    const received: string[] = [];
+    editor.onChange((change) => received.push(`${change.path}:${change.generation}:${change.content}`));
+    expect(editor.emit("notes/example.md", "first")).toMatchObject({ generation: 1 });
+    expect(editor.emit("notes/other.md", "other")).toMatchObject({ generation: 1 });
+    expect(editor.emit("notes/example.md", "second")).toMatchObject({ generation: 2 });
+    expect(received).toEqual([
+      "notes/example.md:1:first",
+      "notes/other.md:1:other",
+      "notes/example.md:2:second",
+    ]);
+  });
+
   it("injects local races and crashes at read, write, rename, delete and state boundaries", () => {
     const fs = new FakeLocalFs();
     const boundaries: string[] = [];
