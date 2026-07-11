@@ -51,6 +51,20 @@ describe("v1 object keys", () => {
     );
   });
 
+  it("checks the complete generated descriptor Key at the 1,024-byte boundary", () => {
+    const suffix = descriptorKey("", repositoryId);
+    const prefixAtLimit = "a".repeat(1024 - suffix.length - 1);
+    const keyAtLimit = descriptorKey(prefixAtLimit, repositoryId);
+    expect(new TextEncoder().encode(keyAtLimit)).toHaveLength(1024);
+    expect(() => assertS3KeyLength(keyAtLimit)).not.toThrow();
+
+    const keyAboveLimit = descriptorKey(`${prefixAtLimit}a`, repositoryId);
+    expect(new TextEncoder().encode(keyAboveLimit)).toHaveLength(1025);
+    expect(() => assertS3KeyLength(keyAboveLimit)).toThrow(
+      expect.objectContaining({ code: "key-too-long" }),
+    );
+  });
+
   it("binds content-addressed and Commit keys to their claimed identity fields", () => {
     const chunk = changeChunkKey("", repositoryId, hash);
     expect(() => assertContentAddressedKey(chunk, hash, ".json")).not.toThrow();
