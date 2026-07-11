@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { blobKey, changeChunkKey, commitKey, configTreeKey, descriptorKey } from "../../protocol/keys";
+import {
+  ProtocolKeyError,
+  assertS3KeyLength,
+  blobKey,
+  changeChunkKey,
+  commitKey,
+  configTreeKey,
+  descriptorKey,
+  normalizeProtocolPrefix,
+} from "../../protocol/keys";
 
 const repositoryId = "123e4567-e89b-42d3-a456-426614174000";
 const writerId = "123e4567-e89b-42d3-a456-426614174001";
@@ -24,6 +33,19 @@ describe("v1 object keys", () => {
   it("joins a normalized non-empty prefix exactly once", () => {
     expect(descriptorKey("/同步/", repositoryId)).toBe(
       `同步/.obsidian-s3-sync/v1/repositories/${repositoryId}/format.json`,
+    );
+  });
+
+  it("rejects invalid prefix segments and enforces the UTF-8 S3 key boundary", () => {
+    expect(normalizeProtocolPrefix("/同步/")).toBe("同步");
+    expect(() => normalizeProtocolPrefix("notes//nested")).toThrow(
+      expect.objectContaining({ code: "prefix-invalid" }),
+    );
+    expect(() => normalizeProtocolPrefix("notes/../nested")).toThrow(ProtocolKeyError);
+    expect(() => normalizeProtocolPrefix("notes\\nested")).toThrow(ProtocolKeyError);
+    assertS3KeyLength("a".repeat(1024));
+    expect(() => assertS3KeyLength("a".repeat(1025))).toThrow(
+      expect.objectContaining({ code: "key-too-long" }),
     );
   });
 });

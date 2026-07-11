@@ -1,9 +1,37 @@
+import { utf8ByteLength } from "./limits";
+import { normalizeNfc151 } from "./unicode";
+
 const namespace = ".obsidian-s3-sync/v1/repositories";
 
+export class ProtocolKeyError extends Error {
+  constructor(readonly code: "prefix-invalid" | "key-too-long", message: string) {
+    super(message);
+    this.name = "ProtocolKeyError";
+  }
+}
+
+export function normalizeProtocolPrefix(prefix: string): string {
+  const normalized = normalizeNfc151(prefix).replace(/^\/+|\/+$/g, "");
+  if (normalized.length === 0) return normalized;
+  if (
+    /[\\\u0000-\u001f\u007f]/.test(normalized) ||
+    normalized.split("/").some((part) => part.length === 0 || part === "." || part === "..")
+  ) {
+    throw new ProtocolKeyError("prefix-invalid", "protocol prefix contains an invalid segment");
+  }
+  return normalized;
+}
+
 export function protocolRoot(prefix: string, repositoryId: string): string {
-  const normalizedPrefix = prefix.replace(/^\/+|\/+$/g, "");
+  const normalizedPrefix = normalizeProtocolPrefix(prefix);
   const parts = [normalizedPrefix, namespace, repositoryId].filter(Boolean);
   return parts.join("/");
+}
+
+export function assertS3KeyLength(key: string): void {
+  if (utf8ByteLength(key) > 1024) {
+    throw new ProtocolKeyError("key-too-long", "S3 object key exceeds 1,024 UTF-8 bytes");
+  }
 }
 
 export function descriptorKey(prefix: string, repositoryId: string): string {
