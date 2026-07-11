@@ -1,0 +1,5 @@
+[
+  {"input":"Straße/Note.md","nfc":"Straße/Note.md","caseFoldKey":"strasse/note.md"},
+  {"input":"é/NOTE.md","nfc":"é/NOTE.md","caseFoldKey":"é/note.md"},
+  {"input":"Kelvin/İ.md","nfc":"Kelvin/İ.md","caseFoldKey":"kelvin/i̇.md"}
+]

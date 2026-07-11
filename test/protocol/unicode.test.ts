@@ -36,4 +36,14 @@ describe("Unicode 15.1 Default Case Folding", () => {
       "171030da502141efc3029039642d07fd2b8fd650d3923edd060a59e55aa13c55",
     );
   });
+
+  it("replays Unicode 15.1 NFC and case-fold path alias vectors", () => {
+    const vectors = JSON.parse(
+      readFileSync(new URL("../../protocol/vectors/unicode-path-aliases.json", import.meta.url), "utf8"),
+    ) as Array<{ input: string; nfc: string; caseFoldKey: string }>;
+    for (const vector of vectors) {
+      expect(normalizeNfc151(vector.input)).toBe(vector.nfc);
+      expect(defaultCaseFold151(normalizeNfc151(vector.input))).toBe(vector.caseFoldKey);
+    }
+  });
 });
