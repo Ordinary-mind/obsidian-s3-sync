@@ -1,0 +1,27 @@
+{
+  "protocol": 1,
+  "status": "task-0-test-baseline",
+  "runtimes": [
+    {
+      "name": "Node.js",
+      "version": "22.x",
+      "status": "supported-for-protocol-tests",
+      "requirements": ["TextEncoder", "TextDecoder fatal UTF-8", "BigInt", "SHA-256"]
+    },
+    {
+      "name": "Obsidian desktop",
+      "status": "pending-adapter-contract-tests",
+      "requirements": ["atomic rename/no-clobber proof", "durable state write proof"]
+    },
+    {
+      "name": "Obsidian mobile",
+      "status": "pending-adapter-contract-tests",
+      "requirements": ["suspend/resume recovery proof", "atomic rename/no-clobber proof", "Unicode table bundle measurement"]
+    }
+  ],
+  "nonNegotiableProtocolAssets": [
+    "Unicode 15.1.0 NFC and Default Case Folding tables",
+    "RFC 8785 canonical UTF-8 JSON validation",
+    "SHA-256 immutable object hashes"
+  ]
+}
