@@ -158,7 +158,7 @@ class StrictJsonParser {
     this.offset += 1;
     while (this.offset < this.source.length) {
       const current = this.source[this.offset++];
-      if (current === '"') return result;
+      if (current === '"') return this.finishString(result);
       if (current < " ") this.fail("invalid-json", "control character in JSON string");
       if (current !== "\\") {
         result += current;
@@ -192,6 +192,13 @@ class StrictJsonParser {
       this.fail("unpaired-surrogate", "low surrogate must follow a high surrogate");
     }
     return String.fromCharCode(codePoint);
+  }
+
+  private finishString(value: string): string {
+    if (new TextEncoder().encode(value).byteLength > 4 * 1024) {
+      this.fail("json-string-bytes-exceeded", "JSON string exceeds 4 KiB UTF-8 bytes");
+    }
+    return value;
   }
 
   private readEscapedCodeUnit(): number {
