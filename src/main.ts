@@ -54,12 +54,6 @@ export default class S3SyncPlugin extends Plugin {
       callback: () => new ConflictModal(this).open(),
     });
 
-    this.addCommand({
-      id: "s3-sync-rebuild-remote-from-local",
-      name: "S3 Sync：用本地重建远端",
-      callback: () => void this.confirmRebuildRemoteFromLocal(),
-    });
-
     this.registerVaultEvents();
     this.addSettingTab(new S3SyncSettingTab(this.app, this));
 
@@ -110,27 +104,6 @@ export default class S3SyncPlugin extends Plugin {
     } catch (error) {
       new Notice(`S3 Sync 连接失败：${this.errorMessage(error)}`);
       console.error(error);
-    }
-  }
-
-  async confirmRebuildRemoteFromLocal(): Promise<void> {
-    const confirmed = window.confirm(
-      "这会删除当前 Prefix 下的 S3 远端同步数据，并用本地 Vault 重新上传。确认继续？",
-    );
-    if (!confirmed) {
-      return;
-    }
-
-    const engine = this.engineOrThrow();
-    try {
-      const summary = await engine.rebuildRemoteFromLocal();
-      await this.saveSyncData();
-      this.showSummary(summary);
-    } catch (error) {
-      new Notice(`S3 Sync 重建远端失败：${this.errorMessage(error)}`);
-      console.error(error);
-    } finally {
-      this.updateStatus();
     }
   }
 

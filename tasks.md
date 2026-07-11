@@ -29,7 +29,7 @@
 - [x] 冻结普通同步所需 S3 权限；DeleteObject 只属于可选 probe 清理或维护能力。
 - [ ] 确定桌面、移动端和 S3 供应商支持矩阵，至少包含 AWS S3 和一个 MinIO 类实现；核对 Obsidian `editor-change`、`vault.configDir`、rename/no-clobber 能力并据此冻结 manifest.minAppVersion、isDesktopOnly 或移动端保守模式。
 - [x] 三份指导文档已将现有 `src/sync-engine.ts`、`src/s3-remote.ts` 及“本地重建远端”标记为 legacy prototype。
-- [ ] 在任何真实 Bucket 测试前，从可用 UI 禁用旧版“本地重建远端”，防止文档冻结期误用 legacy 协议。
+- [x] 在任何真实 Bucket 测试前，从可用 UI 禁用旧版“本地重建远端”，防止文档冻结期误用 legacy 协议。
 
 ### 测试工具
 

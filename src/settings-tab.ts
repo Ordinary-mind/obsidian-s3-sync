@@ -161,14 +161,5 @@ export class S3SyncSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
-      .setName("用本地重建远端")
-      .setDesc("危险操作：删除当前 Prefix 下的远端同步数据，并以本地 Vault 为准重新上传。")
-      .addButton((button) => button
-        .setButtonText("重建远端")
-        .setWarning()
-        .onClick(async () => {
-          await this.plugin.confirmRebuildRemoteFromLocal();
-        }));
   }
 }
