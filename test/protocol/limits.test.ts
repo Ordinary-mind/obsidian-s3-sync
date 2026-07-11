@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { isValidSequence, protocolLimits, utf8ByteLength, validateParsedJsonLimits } from "../../protocol/limits";
+import {
+  isValidSequence,
+  isWithinCollectionLimit,
+  protocolLimits,
+  utf8ByteLength,
+  validateParsedJsonLimits,
+} from "../../protocol/limits";
 
 describe("v1 protocol resource limits", () => {
   it("counts UTF-8 bytes rather than JavaScript code units", () => {
@@ -33,6 +39,23 @@ describe("v1 protocol resource limits", () => {
     expect(validateParsedJsonLimits(1.5)).toEqual(["json-number-not-safe-integer"]);
     expect(validateParsedJsonLimits(Number.MAX_SAFE_INTEGER + 1)).toEqual([
       "json-number-not-safe-integer",
+    ]);
+  });
+
+  it("checks collection boundaries from deterministic counts instead of huge fixtures", () => {
+    const cases = [
+      ["parents", protocolLimits.mutationParents],
+      ["chunk-mutations", protocolLimits.chunkMutations],
+      ["commit-chunks", protocolLimits.commitChunks],
+      ["config-tree-items", protocolLimits.configTreeItems],
+    ] as const;
+    for (const [name, limit] of cases) {
+      expect(isWithinCollectionLimit(name, limit)).toBe(true);
+      expect(isWithinCollectionLimit(name, limit + 1)).toBe(false);
+    }
+    expect(validateParsedJsonLimits(Array(protocolLimits.jsonArrayItems).fill(null))).toEqual([]);
+    expect(validateParsedJsonLimits(Array(protocolLimits.jsonArrayItems + 1).fill(null))).toEqual([
+      "json-array-items-exceeded",
     ]);
   });
 });

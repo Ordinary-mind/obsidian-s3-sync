@@ -21,6 +21,8 @@ export type StructureLimitViolation =
   | "json-string-bytes-exceeded"
   | "json-number-not-safe-integer";
 
+export type CollectionLimitName = "parents" | "chunk-mutations" | "commit-chunks" | "config-tree-items";
+
 const encoder = new TextEncoder();
 
 export function utf8ByteLength(value: string): number {
@@ -62,4 +64,14 @@ export function isValidSequence(sequence: string): boolean {
     sequence !== "00000000000000000000" &&
     BigInt(sequence) <= protocolLimits.maxSequence
   );
+}
+
+export function isWithinCollectionLimit(name: CollectionLimitName, count: number): boolean {
+  const limit = {
+    parents: protocolLimits.mutationParents,
+    "chunk-mutations": protocolLimits.chunkMutations,
+    "commit-chunks": protocolLimits.commitChunks,
+    "config-tree-items": protocolLimits.configTreeItems,
+  }[name];
+  return Number.isSafeInteger(count) && count >= 0 && count <= limit;
 }
