@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "generate:unicode": "node scripts/generate-unicode-case-folding.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:types": "tsc -p tsconfig.test.json --noEmit"
@@ -20,6 +21,7 @@
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^24.0.10",
+    "@unicode/unicode-15.1.0": "^1.6.17",
     "ajv": "^8.20.0",
     "builtin-modules": "^5.0.0",
     "esbuild": "^0.25.6",
