@@ -61,9 +61,7 @@ describe("v1 object keys", () => {
     expect(new TextEncoder().encode(keyAtLimit)).toHaveLength(1024);
     expect(() => assertS3KeyLength(keyAtLimit)).not.toThrow();
 
-    const keyAboveLimit = descriptorKey(`${prefixAtLimit}a`, repositoryId);
-    expect(new TextEncoder().encode(keyAboveLimit)).toHaveLength(1025);
-    expect(() => assertS3KeyLength(keyAboveLimit)).toThrow(
+    expect(() => descriptorKey(`${prefixAtLimit}a`, repositoryId)).toThrow(
       expect.objectContaining({ code: "key-too-long" }),
     );
   });

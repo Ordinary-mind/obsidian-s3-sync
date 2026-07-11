@@ -51,19 +51,19 @@ export function assertS3KeyLength(key: string): void {
 }
 
 export function descriptorKey(prefix: string, repositoryId: string): string {
-  return `${protocolRoot(prefix, repositoryId)}/format.json`;
+  return finishKey(`${protocolRoot(prefix, repositoryId)}/format.json`);
 }
 
 export function blobKey(prefix: string, repositoryId: string, hash: string): string {
-  return `${protocolRoot(prefix, repositoryId)}/blobs/sha256/${hash.slice(0, 2)}/${hash}`;
+  return finishKey(`${protocolRoot(prefix, repositoryId)}/blobs/sha256/${hash.slice(0, 2)}/${hash}`);
 }
 
 export function configTreeKey(prefix: string, repositoryId: string, hash: string): string {
-  return `${protocolRoot(prefix, repositoryId)}/config-trees/sha256/${hash.slice(0, 2)}/${hash}.json`;
+  return finishKey(`${protocolRoot(prefix, repositoryId)}/config-trees/sha256/${hash.slice(0, 2)}/${hash}.json`);
 }
 
 export function changeChunkKey(prefix: string, repositoryId: string, hash: string): string {
-  return `${protocolRoot(prefix, repositoryId)}/changes/sha256/${hash.slice(0, 2)}/${hash}.json`;
+  return finishKey(`${protocolRoot(prefix, repositoryId)}/changes/sha256/${hash.slice(0, 2)}/${hash}.json`);
 }
 
 export function commitKey(
@@ -73,5 +73,10 @@ export function commitKey(
   sequence: string,
   hash: string,
 ): string {
-  return `${protocolRoot(prefix, repositoryId)}/commits/${writerId}/${sequence}-${hash}.json`;
+  return finishKey(`${protocolRoot(prefix, repositoryId)}/commits/${writerId}/${sequence}-${hash}.json`);
+}
+
+function finishKey(key: string): string {
+  assertS3KeyLength(key);
+  return key;
 }
