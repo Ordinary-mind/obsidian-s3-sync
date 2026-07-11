@@ -8,6 +8,7 @@ import {
   parseAndValidateProtocolObject,
   parseAndValidateCommitEnvelope,
   parseAndValidateBoundCommitEnvelope,
+  parseAndValidateKeyedCommitEnvelope,
   parseAndValidateBoundObject,
   validateProtocolCommitEnvelope,
   verifyRepositoryDescriptor,
@@ -127,6 +128,34 @@ describe("protocol receive validation pipeline", () => {
         chunkBytes,
       ),
     ).toThrow(expect.objectContaining({ code: "repository-binding-invalid" }));
+  });
+
+  it("binds every raw envelope body to its physical Chunk and Commit keys", () => {
+    const multi = vector("../../protocol/vectors/vault-bootstrap-multi-chunk.json");
+    const root = ".obsidian-s3-sync/v1/repositories/123e4567-e89b-42d3-a456-426614174000";
+    const commitKey = `${root}/commits/${multi.commit.object.writerId}/${multi.commit.object.sequence}-${multi.commit.sha256}.json`;
+    const chunkKeys = multi.chunks.map(
+      (chunk: { sha256: string }) => `${root}/changes/sha256/${chunk.sha256.slice(0, 2)}/${chunk.sha256}.json`,
+    );
+    const args = [
+      "123e4567-e89b-42d3-a456-426614174000",
+      "b0856a1538902f1fbd1d71fe7fc56223ac05b14e635ba0951ae1c63f7e2896ec",
+      commitKey,
+      encoder.encode(multi.commit.canonicalJson),
+      chunkKeys,
+      multi.chunks.map((chunk: { canonicalJson: string }) => encoder.encode(chunk.canonicalJson)),
+    ] as const;
+    expect(() => parseAndValidateKeyedCommitEnvelope(...args)).not.toThrow();
+    expect(() =>
+      parseAndValidateKeyedCommitEnvelope(
+        args[0],
+        args[1],
+        args[2],
+        args[3],
+        [chunkKeys[0].replace("/e2/", "/00/"), chunkKeys[1]],
+        args[5],
+      ),
+    ).toThrow(expect.objectContaining({ code: "key-body-hash-mismatch" }));
   });
 
   it("binds non-descriptor objects to the verified repository descriptor", () => {

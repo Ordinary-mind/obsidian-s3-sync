@@ -13,7 +13,7 @@ import {
   validateRepositoryDescriptor,
 } from "./semantics";
 import { sha256Hex } from "./hash";
-import { descriptorKey } from "./keys";
+import { assertCommitKey, assertContentAddressedKey, descriptorKey } from "./keys";
 
 type SchemaDefinition = "RepositoryDescriptor" | "ConfigTree" | "ChangeChunk" | "Commit";
 
@@ -79,6 +79,30 @@ export function parseAndValidateBoundCommitEnvelope(
   for (const chunk of envelope.chunks) {
     assertRepositoryBinding(chunk as unknown as Record<string, unknown>, repositoryId, descriptorHash);
   }
+  return envelope;
+}
+
+export function parseAndValidateKeyedCommitEnvelope(
+  repositoryId: string,
+  descriptorHash: string,
+  commitKey: string,
+  commitBytes: Uint8Array,
+  chunkKeys: string[],
+  chunkBytes: Uint8Array[],
+): { commit: ProtocolCommit; chunks: ProtocolChunk[]; chunkHashes: string[]; commitHash: string } {
+  const envelope = parseAndValidateBoundCommitEnvelope(repositoryId, descriptorHash, commitBytes, chunkBytes);
+  if (chunkKeys.length !== envelope.chunkHashes.length) {
+    throw new ProtocolValidationError("chunk-key-count-invalid", "chunk key count does not match Chunk body count");
+  }
+  for (let index = 0; index < chunkKeys.length; index += 1) {
+    assertContentAddressedKey(chunkKeys[index], envelope.chunkHashes[index], ".json");
+  }
+  assertCommitKey(
+    commitKey,
+    envelope.commit.writerId,
+    envelope.commit.sequence,
+    envelope.commitHash,
+  );
   return envelope;
 }
 
