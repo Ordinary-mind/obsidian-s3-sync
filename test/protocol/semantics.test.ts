@@ -163,6 +163,18 @@ describe("v1 protocol semantic envelope", () => {
     ).toContain("invalid-sequence");
   });
 
+  it("rejects duplicate Chunk hashes even if a caller supplied repeated Chunk bytes", () => {
+    const repeatedHash = "b".repeat(64);
+    expect(
+      validateCommitEnvelope(
+        descriptorHash,
+        { ...commit("bootstrap"), changeChunkHashes: [repeatedHash, repeatedHash] },
+        [chunk([]), { ...chunk([]), chunkIndex: 1, chunkCount: 2 }],
+        [repeatedHash, repeatedHash],
+      ),
+    ).toContain("duplicate-chunk-hash");
+  });
+
   it("requires config deletes to be supported by a complete direct parent Tree", () => {
     const parent = "c".repeat(64) + ":0:0";
     const tree = { items: [{ path: "plugins/example/data.json", kind: "delete" as const }] };

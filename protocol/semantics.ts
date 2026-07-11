@@ -31,6 +31,7 @@ export type ProtocolViolation =
   | "previous-commit-chain-shape"
   | "chunk-count-mismatch"
   | "chunk-hash-order-mismatch"
+  | "duplicate-chunk-hash"
   | "chunk-index-not-contiguous"
   | "chunk-channel-mismatch"
   | "chunk-repository-mismatch"
@@ -115,6 +116,9 @@ export function validateCommitEnvelope(
     chunkHashes.some((hash, index) => hash !== commit.changeChunkHashes[index])
   ) {
     violations.push("chunk-hash-order-mismatch");
+  }
+  if (new Set(commit.changeChunkHashes).size !== commit.changeChunkHashes.length) {
+    violations.push("duplicate-chunk-hash");
   }
 
   const seenPaths = new Set<string>();
