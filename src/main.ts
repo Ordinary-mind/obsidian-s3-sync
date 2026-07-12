@@ -3,6 +3,7 @@ import { ConflictModal } from "./conflict-modal";
 import { createDefaultData, DEFAULT_SETTINGS } from "./defaults";
 import { S3SyncSettingTab } from "./settings-tab";
 import { runDesktopRuntimeContract } from "./runtime-contract";
+import { RuntimeContractModal } from "./runtime-contract-modal";
 import type { SyncEngine } from "./sync-engine";
 import { V1RepositoryService } from "./v1-service";
 import type { S3SyncData, S3SyncSettings, SyncSummary } from "./types";
@@ -111,7 +112,7 @@ export default class S3SyncPlugin extends Plugin {
   private async runDesktopRuntimeContract(): Promise<void> {
     try {
       const result = await runDesktopRuntimeContract(this.app.vault.adapter, this.app.vault.configDir, this.manifest.id);
-      new Notice(`S3 Sync v1 runtime contract: write/read=${result.writeReadback}, rename=${result.rename}, rename no-clobber=${result.renameRejectsExistingTarget}, copy no-clobber=${result.copyRejectsExistingTarget}`);
+      new RuntimeContractModal(this.app, result).open();
     } catch (error) {
       new Notice(`S3 Sync v1 runtime contract failed: ${this.errorMessage(error)}`);
       console.error(error);
