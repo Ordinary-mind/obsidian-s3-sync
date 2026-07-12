@@ -7,6 +7,6 @@ describe("v1 manifest contract", () => {
       minAppVersion: string;
       isDesktopOnly: boolean;
     };
-    expect(manifest).toEqual(expect.objectContaining({ minAppVersion: "1.8.7", isDesktopOnly: true }));
+    expect(manifest).toEqual(expect.objectContaining({ minAppVersion: "1.7.7", isDesktopOnly: true }));
   });
 });

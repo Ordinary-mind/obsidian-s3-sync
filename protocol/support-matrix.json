@@ -10,9 +10,10 @@
     },
     {
       "name": "Obsidian desktop",
-      "status": "pending-runtime-contract-tests",
+      "status": "partially-verified-real-contract-tests",
       "staticApi": ["vault.configDir", "vault rename event", "workspace editor-change event"],
-      "requirements": ["atomic rename/no-clobber proof", "durable state write proof"]
+      "verified": ["vault.configDir", "isolated write/readback", "rename", "copy rejects an existing target"],
+      "requirements": ["workspace editor-change event proof", "atomic rename/no-clobber proof", "durable state write proof"]
     },
     {
       "name": "Obsidian mobile",
