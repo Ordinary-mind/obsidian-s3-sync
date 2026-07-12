@@ -8,3 +8,8 @@ export * from "./apply-journal";
 export * from "./object-store";
 export * from "./ingest";
 export * from "./receive-repository";
+export * from "./repository-state";
+export * from "./resolution";
+export * from "./parent-reduction";
+export * from "./path";
+export * from "./scope";
