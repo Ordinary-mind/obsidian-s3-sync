@@ -27,28 +27,6 @@ export default class S3SyncPlugin extends Plugin {
     this.statusEl = this.addStatusBarItem();
     this.updateStatus();
 
-    this.addRibbonIcon("refresh-cw", "S3 Sync：同步", () => {
-      void this.smartSync();
-    });
-
-    this.addCommand({
-      id: "s3-sync-smart",
-      name: "S3 Sync：同步",
-      callback: () => void this.smartSync(),
-    });
-
-    this.addCommand({
-      id: "s3-sync-queued",
-      name: "S3 Sync：仅同步事件队列",
-      callback: () => void this.syncNow(),
-    });
-
-    this.addCommand({
-      id: "s3-sync-all-known-files",
-      name: "S3 Sync：完整扫描并同步",
-      callback: () => void this.syncAllKnownFiles(),
-    });
-
     this.addCommand({
       id: "s3-sync-open-conflicts",
       name: "S3 Sync：打开冲突列表",
@@ -64,9 +42,6 @@ export default class S3SyncPlugin extends Plugin {
     this.registerVaultEvents();
     this.addSettingTab(new S3SyncSettingTab(this.app, this));
 
-    if (this.settings.syncOnStartup) {
-      window.setTimeout(() => void this.syncAllKnownFiles(), 5000);
-    }
   }
 
   onunload(): void {
