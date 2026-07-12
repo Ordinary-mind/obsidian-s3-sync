@@ -13,3 +13,4 @@ export * from "./resolution";
 export * from "./parent-reduction";
 export * from "./path";
 export * from "./scope";
+export * from "./writer-history";
