@@ -8,3 +8,8 @@ export function isVaultPathExcluded(path: string, configDir: string, historicalC
     return key === rootKey || key.startsWith(`${rootKey}/`);
   });
 }
+
+export function isConfigPathExcluded(path: string): boolean {
+  const key = vaultPathCaseFoldKey(path);
+  return [".obsidian-s3-sync-local", "plugins/obsidian-s3-sync"].some((root) => key === root || key.startsWith(`${root}/`));
+}
