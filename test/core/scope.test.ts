@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isConfigPathExcluded, isVaultPathExcluded } from "../../core/scope";
+import { isConfigPathExcluded, isHistoricalConfigCompatible, isVaultPathExcluded } from "../../core/scope";
 
 describe("Vault protocol scope", () => {
   it("permanently excludes current and historical config roots", () => {
@@ -11,5 +11,9 @@ describe("Vault protocol scope", () => {
     expect(isConfigPathExcluded("plugins/obsidian-s3-sync/data.json")).toBe(true);
     expect(isConfigPathExcluded(".obsidian-s3-sync-local/repository/state.json")).toBe(true);
     expect(isConfigPathExcluded("plugins/other/manifest.json")).toBe(false);
+  });
+  it("blocks joining when local historical roots are absent from the Descriptor", () => {
+    expect(isHistoricalConfigCompatible(["old"], ["old", "older"])).toBe(true);
+    expect(isHistoricalConfigCompatible(["local-only"], ["old"])).toBe(false);
   });
 });

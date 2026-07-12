@@ -13,3 +13,8 @@ export function isConfigPathExcluded(path: string): boolean {
   const key = vaultPathCaseFoldKey(path);
   return [".obsidian-s3-sync-local", "plugins/obsidian-s3-sync"].some((root) => key === root || key.startsWith(`${root}/`));
 }
+
+export function isHistoricalConfigCompatible(localHistoricalConfigDirs: readonly string[], descriptorHistoricalConfigDirs: readonly string[]): boolean {
+  const descriptor = new Set(descriptorHistoricalConfigDirs.map(vaultPathCaseFoldKey));
+  return localHistoricalConfigDirs.every((path) => descriptor.has(vaultPathCaseFoldKey(path)));
+}
