@@ -96,8 +96,8 @@ export default class S3SyncPlugin extends Plugin {
         new Notice(`S3 Sync v1：发现 ${repositories.length} 个已验证仓库；多仓库需显式选择`);
         return;
       }
-      const repository = await new V1RepositoryService(this.settings).pullAllCommits(repositories[0].repositoryId, repositories[0].descriptorHash);
-      new Notice(`S3 Sync v1：已只读验证并重建 ${repository.allRegisters(repositories[0].repositoryId).size} 个寄存器`);
+      const summary = await new V1RepositoryService(this.settings).inspect(repositories[0].repositoryId, repositories[0].descriptorHash);
+      new Notice(`S3 Sync v1：已只读验证 ${summary.registers} 个寄存器；冲突 ${summary.concurrent}，等待依赖 ${summary.pending}，无效 ${summary.invalid}`);
     } catch (error) {
       new Notice(`S3 Sync v1 仓库发现失败：${this.errorMessage(error)}`);
       console.error(error);

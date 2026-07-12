@@ -30,6 +30,17 @@ export class V1RepositoryService {
     for (const key of await this.listCommitKeys(repositoryId)) await this.pullCommit(repositoryId, descriptorHash, key, repository);
     return repository;
   }
+  async inspect(repositoryId: string, descriptorHash: string): Promise<{ registers: number; resolved: number; concurrent: number; pending: number; invalid: number }> {
+    const repository = await this.pullAllCommits(repositoryId, descriptorHash);
+    const states = [...repository.allRegisters(repositoryId).values()];
+    return {
+      registers: states.length,
+      resolved: states.filter((state) => state.disposition === "resolved").length,
+      concurrent: states.filter((state) => state.disposition === "concurrent").length,
+      pending: states.filter((state) => state.disposition === "pending").length,
+      invalid: states.filter((state) => state.disposition === "invalid").length,
+    };
+  }
   private store(): S3ObjectStore {
     return new S3ObjectStore({ endpoint: this.settings.endpoint, region: this.settings.region, bucket: this.settings.bucket, forcePathStyle: this.settings.forcePathStyle, credentials: { accessKeyId: this.settings.accessKeyId, secretAccessKey: this.settings.secretAccessKey } });
   }
