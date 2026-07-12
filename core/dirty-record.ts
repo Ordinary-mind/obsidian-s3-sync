@@ -13,6 +13,10 @@ export interface FrozenOutboxVersion {
   readonly versionId: string;
 }
 
+export function canFreezeDeleteAfterRootPut(rootPut: FrozenOutboxVersion, publishedVersionIds: ReadonlySet<string>): boolean {
+  return publishedVersionIds.has(rootPut.versionId);
+}
+
 export function captureDirtyIntent(path: string, projectedHeads: readonly string[], generation = 1): DirtyRecord {
   return { path, queueId: path, generation, basisHeads: [...projectedHeads], awaitingLocalWrite: true };
 }

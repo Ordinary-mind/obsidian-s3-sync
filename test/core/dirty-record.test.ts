@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canElideNetNoop, captureDirtyIntent, freezeOutboxVersion, mergeDirtyEdit, nextDirtyGeneration, proveEditorWrite } from "../../core/dirty-record";
+import { canElideNetNoop, canFreezeDeleteAfterRootPut, captureDirtyIntent, freezeOutboxVersion, mergeDirtyEdit, nextDirtyGeneration, proveEditorWrite } from "../../core/dirty-record";
 
 describe("core dirty intent causality", () => {
   it("freezes projected heads and never accepts later observed heads", () => {
@@ -26,5 +26,10 @@ describe("core dirty intent causality", () => {
     expect(canElideNetNoop(settled, "same", "same", false)).toBe(true);
     expect(canElideNetNoop(settled, "same", "same", true)).toBe(false);
     expect(canElideNetNoop(captureDirtyIntent("notes/a.md", []), "same", "same", false)).toBe(false);
+  });
+  it("does not freeze a root delete until its root put is confirmed published", () => {
+    const put = freezeOutboxVersion(proveEditorWrite(captureDirtyIntent("notes/new.md", []), 1), "put:0:0");
+    expect(canFreezeDeleteAfterRootPut(put, new Set())).toBe(false);
+    expect(canFreezeDeleteAfterRootPut(put, new Set(["put:0:0"]))).toBe(true);
   });
 });
