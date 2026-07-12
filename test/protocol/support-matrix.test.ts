@@ -25,7 +25,8 @@ describe("protocol support matrix", () => {
     );
     expect(matrix.objectStores).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: "AWS S3", status: "pending-real-contract-tests" }),
-      expect.objectContaining({ name: "MinIO or equivalent S3-compatible storage", status: "pending-real-contract-tests" }),
+      expect.objectContaining({ name: "MinIO or equivalent S3-compatible storage", status: "partially-verified-real-contract-tests" }),
+      expect.objectContaining({ name: "Baidu Cloud BOS S3-compatible storage", status: "partially-verified-real-contract-tests" }),
     ]));
     expect(process.versions.node.split(".")[0]).toBe("22");
     const caseFolding = statSync(new URL("../../protocol/unicode/15.1.0/case-folding.ts", import.meta.url)).size;

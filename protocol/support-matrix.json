@@ -29,8 +29,15 @@
     },
     {
       "name": "MinIO or equivalent S3-compatible storage",
-      "status": "pending-real-contract-tests",
-      "requirements": ["If-None-Match star atomic create", "pagination disorder and late-visibility handling", "no DeleteObject normal-sync credential"]
+      "status": "partially-verified-real-contract-tests",
+      "verified": ["If-None-Match star atomic create", "GetObject/HeadObject/ListObjectsV2 round trip", "no DeleteObject normal-sync credential"],
+      "requirements": ["pagination disorder and late-visibility handling"]
+    },
+    {
+      "name": "Baidu Cloud BOS S3-compatible storage",
+      "status": "partially-verified-real-contract-tests",
+      "verified": ["If-None-Match star atomic create", "GetObject/HeadObject/ListObjectsV2 round trip", "no DeleteObject normal-sync credential"],
+      "requirements": ["pagination disorder and late-visibility handling"]
     }
   ],
   "nonNegotiableProtocolAssets": [
