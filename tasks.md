@@ -88,7 +88,7 @@
 - [x] 实现相同最终字节的净变化消除；存在冻结 Outbox 时不得取消已冻结 generation。
 - [x] 实现冲突解决命令；必须引用操作时已观察的全部头。
 - [x] 实现超过 1,024 头的 parent-reduction 命令链；DirtyRecord 原始 basisHeads 不变，归约不得吸收之后观察的新头。
-- [ ] 实现首次接入命令：相同采用、local-only 根版本、remote-only 投影、不同内容根冲突。
+- [x] 实现首次接入命令：相同采用、local-only 根版本、remote-only 投影、不同内容根冲突。
 
 ### 测试
 
