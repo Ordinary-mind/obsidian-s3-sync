@@ -1,5 +1,6 @@
 import { classifyRegisterState, type RegisterDisposition } from "./conflict-state";
 import { reduceRegister, type RegisterState, type RegisterVersion } from "./register";
+import { captureConflictResolution, type ConflictResolutionIntent } from "./resolution";
 
 export interface RepositoryRegisterSnapshot extends RegisterState {
   disposition: RegisterDisposition;
@@ -24,5 +25,11 @@ export class InMemoryRepositoryCore {
       const logicalKey = rest.join(":");
       return [key, this.register(repositoryId, channel as "vault" | "config", logicalKey)];
     }));
+  }
+
+  beginResolution(repositoryId: string, channel: "vault" | "config", logicalKey: string, selectedValueHash: string): ConflictResolutionIntent {
+    const snapshot = this.register(repositoryId, channel, logicalKey);
+    if (snapshot.disposition !== "concurrent") throw new Error("resolution requires concurrent register heads");
+    return captureConflictResolution(logicalKey, snapshot.heads, selectedValueHash);
   }
 }
