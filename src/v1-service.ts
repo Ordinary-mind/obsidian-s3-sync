@@ -25,6 +25,11 @@ export class V1RepositoryService {
     } while (token);
     return [...new Set(keys)].sort();
   }
+  async pullAllCommits(repositoryId: string, descriptorHash: string): Promise<InMemoryRepositoryCore> {
+    const repository = new InMemoryRepositoryCore();
+    for (const key of await this.listCommitKeys(repositoryId)) await this.pullCommit(repositoryId, descriptorHash, key, repository);
+    return repository;
+  }
   private store(): S3ObjectStore {
     return new S3ObjectStore({ endpoint: this.settings.endpoint, region: this.settings.region, bucket: this.settings.bucket, forcePathStyle: this.settings.forcePathStyle, credentials: { accessKeyId: this.settings.accessKeyId, secretAccessKey: this.settings.secretAccessKey } });
   }
