@@ -1,6 +1,7 @@
 import { canonicalizeProtocolJson } from "../protocol/json";
 import { sha256Hex } from "../protocol/hash";
 import { changeChunkKey, commitKey } from "../protocol/keys";
+import { parseAndValidateBoundCommitEnvelope } from "../protocol/validation";
 import type { ImmutableObject } from "./immutable-object";
 import type { CommitKind, VaultMutation } from "./types";
 
@@ -13,5 +14,6 @@ export function buildVaultChangeEnvelope(input: { prefix: string; repositoryId: 
   const commitObject = { protocol: 1, repositoryId: input.repositoryId, descriptorHash: input.descriptorHash, writerId: input.writerId, sequence: input.sequence, previousCommitHash: input.previousCommitHash, createdAt: input.createdAt, channel: "vault", kind: input.kind, changeChunkHashes: [chunkHash], clientVersion: input.clientVersion };
   const commitBytes = encoder.encode(canonicalizeProtocolJson(commitObject));
   const commitHash = sha256Hex(commitBytes);
+  parseAndValidateBoundCommitEnvelope(input.repositoryId, input.descriptorHash, commitBytes, [chunkBytes]);
   return { chunk: { key: changeChunkKey(input.prefix, input.repositoryId, chunkHash), hash: chunkHash, bytes: chunkBytes }, commit: { key: commitKey(input.prefix, input.repositoryId, input.writerId, input.sequence, commitHash), hash: commitHash, bytes: commitBytes } };
 }
