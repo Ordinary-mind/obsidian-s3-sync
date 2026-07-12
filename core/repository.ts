@@ -13,6 +13,15 @@ export class InMemoryRepositoryCore {
     this.versions.push({ ...version, parents: [...version.parents] });
   }
 
+  snapshotVersions(): RegisterVersion[] {
+    return this.versions.map((version) => ({ ...version, parents: [...version.parents] }));
+  }
+
+  restoreVersions(versions: readonly RegisterVersion[]): void {
+    this.versions.length = 0;
+    for (const version of versions) this.ingest(version);
+  }
+
   register(repositoryId: string, channel: "vault" | "config", logicalKey: string): RepositoryRegisterSnapshot {
     const state = reduceRegister(this.versions.filter((version) => version.repositoryId === repositoryId && version.channel === channel && version.logicalKey === logicalKey));
     return { ...state, disposition: classifyRegisterState(state.heads, state.pending, state.invalid) };

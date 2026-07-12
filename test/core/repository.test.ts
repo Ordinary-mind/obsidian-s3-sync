@@ -16,5 +16,8 @@ describe("v1 in-memory repository core", () => {
     repository.ingest({ repositoryId: "repo", channel: "config", logicalKey: "portable", versionId: "tree", parents: [] });
     expect(repository.allRegisters("repo").get("config:portable")?.heads).toEqual(["tree"]);
     expect(repository.beginResolution("repo", "vault", "notes/a.md", "merged").parents).toEqual(["child", "peer"]);
+    const restored = new InMemoryRepositoryCore();
+    restored.restoreVersions(repository.snapshotVersions());
+    expect(restored.register("repo", "vault", "notes/a.md").heads).toEqual(["child", "peer"]);
   });
 });
