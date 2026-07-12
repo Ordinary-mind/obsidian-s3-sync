@@ -10,6 +10,8 @@ export interface RuntimeContractAdapter {
 
 export interface DesktopRuntimeContractResult {
   configDir: string;
+  durableWriteReadback: boolean;
+  durableAcrossPluginReload: boolean | null;
   writeReadback: boolean;
   rename: boolean;
   renameRejectsExistingTarget: boolean;
@@ -20,6 +22,7 @@ export async function runDesktopRuntimeContract(
   adapter: RuntimeContractAdapter,
   configDir: string,
   pluginId: string,
+  sessionId: string,
   runId = Date.now().toString(36),
 ): Promise<DesktopRuntimeContractResult> {
   if (!configDir) throw new Error("Vault configDir is empty");
@@ -28,9 +31,18 @@ export async function runDesktopRuntimeContract(
   const source = `${root}/source.txt`;
   const renamed = `${root}/renamed.txt`;
   const existing = `${root}/existing.txt`;
+  const durableMarker = `${configDir.replace(/\/+$/, "")}/plugins/${pluginId}/runtime-contract-durable.json`;
   const body = `runtime-contract:${runId}`;
 
   try {
+    let durableAcrossPluginReload: boolean | null = null;
+    if (await adapter.exists(durableMarker)) {
+      const previous = JSON.parse(await adapter.read(durableMarker)) as { sessionId?: unknown };
+      durableAcrossPluginReload = typeof previous.sessionId === "string" && previous.sessionId !== sessionId;
+    }
+    await adapter.write(durableMarker, JSON.stringify({ sessionId }));
+    const durableWriteReadback = (JSON.parse(await adapter.read(durableMarker)) as { sessionId?: unknown }).sessionId === sessionId;
+
     await adapter.mkdir(root);
     await adapter.write(source, body);
     const writeReadback = await adapter.read(source) === body;
@@ -58,7 +70,15 @@ export async function runDesktopRuntimeContract(
       copyRejectsExistingTarget = true;
     }
 
-    return { configDir, writeReadback, rename, renameRejectsExistingTarget, copyRejectsExistingTarget };
+    return {
+      configDir,
+      durableWriteReadback,
+      durableAcrossPluginReload,
+      writeReadback,
+      rename,
+      renameRejectsExistingTarget,
+      copyRejectsExistingTarget,
+    };
   } finally {
     if (await adapter.exists(root)) await adapter.rmdir(root, true);
   }

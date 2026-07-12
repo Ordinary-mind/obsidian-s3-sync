@@ -45,12 +45,18 @@ class FakeAdapter implements RuntimeContractAdapter {
 describe("desktop runtime contract", () => {
   it("validates write/read, rename, and no-clobber copy in an isolated plugin directory", async () => {
     const adapter = new FakeAdapter();
-    await expect(runDesktopRuntimeContract(adapter, ".obsidian", "obsidian-s3-sync", "test-run")).resolves.toEqual({
+    await expect(runDesktopRuntimeContract(adapter, ".obsidian", "obsidian-s3-sync", "session-one", "test-run")).resolves.toEqual({
       configDir: ".obsidian",
+      durableWriteReadback: true,
+      durableAcrossPluginReload: null,
       writeReadback: true,
       rename: true,
       renameRejectsExistingTarget: true,
       copyRejectsExistingTarget: true,
+    });
+    await expect(runDesktopRuntimeContract(adapter, ".obsidian", "obsidian-s3-sync", "session-two", "second-run")).resolves.toMatchObject({
+      durableWriteReadback: true,
+      durableAcrossPluginReload: true,
     });
     await expect(adapter.exists(".obsidian/plugins/obsidian-s3-sync/runtime-contract-test-run")).resolves.toBe(false);
   });

@@ -21,6 +21,7 @@ export default class S3SyncPlugin extends Plugin {
   private engine: SyncEngine | null = null;
   private syncTimer: number | null = null;
   private statusEl: HTMLElement | null = null;
+  private readonly runtimeContractSessionId = crypto.randomUUID();
 
   async onload(): Promise<void> {
     await this.loadPluginData();
@@ -111,7 +112,7 @@ export default class S3SyncPlugin extends Plugin {
 
   private async runDesktopRuntimeContract(): Promise<void> {
     try {
-      const result = await runDesktopRuntimeContract(this.app.vault.adapter, this.app.vault.configDir, this.manifest.id);
+      const result = await runDesktopRuntimeContract(this.app.vault.adapter, this.app.vault.configDir, this.manifest.id, this.runtimeContractSessionId);
       new RuntimeContractModal(this.app, result).open();
     } catch (error) {
       new Notice(`S3 Sync v1 runtime contract failed: ${this.errorMessage(error)}`);
