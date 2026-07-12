@@ -14,6 +14,7 @@ describe("S3 ObjectStore contract", () => {
     credentials: {
       accessKeyId: process.env.S3_ACCESS_KEY_ID!,
       secretAccessKey: process.env.S3_SECRET_ACCESS_KEY!,
+      sessionToken: process.env.S3_SESSION_TOKEN || undefined,
     },
   });
   const prefix = `contract/${randomUUID()}/`;
