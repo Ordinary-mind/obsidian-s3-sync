@@ -21,6 +21,7 @@
   },
   "include": [
     "src/**/*.ts",
-    "core/**/*.ts"
+    "core/**/*.ts",
+    "adapters/**/*.ts"
   ]
 }
