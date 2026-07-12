@@ -15,3 +15,4 @@ export * from "./path";
 export * from "./scope";
 export * from "./writer-history";
 export * from "./remote-pull";
+export * from "./discovery";
