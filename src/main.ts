@@ -3,6 +3,7 @@ import { ConflictModal } from "./conflict-modal";
 import { createDefaultData, DEFAULT_SETTINGS } from "./defaults";
 import { S3SyncSettingTab } from "./settings-tab";
 import { SyncEngine } from "./sync-engine";
+import { V1RepositoryService } from "./v1-service";
 import type { S3SyncData, S3SyncSettings, SyncSummary } from "./types";
 import { getTFile, resolveEffectivePrefix } from "./utils";
 
@@ -54,6 +55,12 @@ export default class S3SyncPlugin extends Plugin {
       callback: () => new ConflictModal(this).open(),
     });
 
+    this.addCommand({
+      id: "s3-sync-v1-discover-repositories",
+      name: "S3 Sync：发现 v1 仓库（只读）",
+      callback: () => void this.discoverV1Repositories(),
+    });
+
     this.registerVaultEvents();
     this.addSettingTab(new S3SyncSettingTab(this.app, this));
 
@@ -103,6 +110,16 @@ export default class S3SyncPlugin extends Plugin {
       new Notice(`S3 Sync 连接成功，当前 Prefix：${this.getEffectivePrefix()}`);
     } catch (error) {
       new Notice(`S3 Sync 连接失败：${this.errorMessage(error)}`);
+      console.error(error);
+    }
+  }
+
+  async discoverV1Repositories(): Promise<void> {
+    try {
+      const repositories = await new V1RepositoryService(this.settings).discover();
+      new Notice(`S3 Sync v1：发现 ${repositories.length} 个已验证仓库`);
+    } catch (error) {
+      new Notice(`S3 Sync v1 仓库发现失败：${this.errorMessage(error)}`);
       console.error(error);
     }
   }
