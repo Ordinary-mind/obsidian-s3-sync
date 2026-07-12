@@ -2,9 +2,9 @@
   "id": "obsidian-s3-sync",
   "name": "S3 Sync",
   "version": "0.1.0",
-  "minAppVersion": "1.5.0",
+  "minAppVersion": "1.8.7",
   "description": "基于 S3 Compatible Storage 和内容 Hash 的简单同步插件。",
   "author": "",
   "authorUrl": "",
-  "isDesktopOnly": false
+  "isDesktopOnly": true
 }

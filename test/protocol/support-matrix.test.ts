@@ -17,9 +17,10 @@ describe("protocol support matrix", () => {
     expect(matrix.runtimes).toContainEqual(
       expect.objectContaining({ name: "Node.js", version: "22.x", status: "supported-for-protocol-tests" }),
     );
-    expect(matrix.runtimes.filter((runtime) => runtime.name.startsWith("Obsidian"))).toEqual(
-      expect.arrayContaining([expect.objectContaining({ status: "pending-runtime-contract-tests" })]),
-    );
+    expect(matrix.runtimes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "Obsidian desktop", status: "pending-runtime-contract-tests" }),
+      expect.objectContaining({ name: "Obsidian mobile", status: "not-supported-in-v1-desktop-only" }),
+    ]));
     expect(matrix.runtimes.filter((runtime) => runtime.name.startsWith("Obsidian"))).toEqual(
       expect.arrayContaining([expect.objectContaining({ staticApi: expect.arrayContaining(["vault.configDir"]) })]),
     );

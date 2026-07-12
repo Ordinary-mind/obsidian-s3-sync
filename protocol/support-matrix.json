@@ -16,9 +16,9 @@
     },
     {
       "name": "Obsidian mobile",
-      "status": "pending-runtime-contract-tests",
+      "status": "not-supported-in-v1-desktop-only",
       "staticApi": ["vault.configDir", "vault rename event", "workspace editor-change event"],
-      "requirements": ["suspend/resume recovery proof", "atomic rename/no-clobber proof", "Unicode table bundle measurement"]
+      "requirements": ["mobile support requires a separate runtime-contract and bundle-size validation"]
     }
   ],
   "objectStores": [
