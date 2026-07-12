@@ -138,7 +138,7 @@
 - [ ] 实现防抖稳定读取：第一次边复制到临时不可变暂存边计算 size/Hash，安静窗口后第二次完整读取活动路径；类型、size、Hash 全相同才接受第一份字节。
 - [ ] 两次读取之间或期间发生变化、读取失败、文件类型变化时保留 dirtyIntent 并重试，不发布撕裂字节。
 - [ ] 暂存写入完成后重新 Hash，不能只保存活动文件路径。
-- [ ] 实现 `present`、`confirmed-absent`、`unknown/error` 和 `out-of-scope` 四态观察。
+- [x] 实现 `present`、`confirmed-absent`、`unknown/error` 和 `out-of-scope` 四态观察。
 - [ ] 文件逻辑路径上出现目录、symlink、reparse point 或不可安全枚举节点时返回 unknown，不返回 confirmed-absent。
 - [ ] delete/rename 事件必须排除本插件 ApplyJournal 对应操作。
 - [ ] 审计缺失只有在整轮成功、未取消、范围版本不变且直接复查仍缺失时才能成为 DeletionEvidence。
