@@ -14,6 +14,17 @@ export class V1RepositoryService {
     await pullCommitIntoRepository(this.store(), repository, this.settings.prefix, repositoryId, descriptorHash, commitKey);
     return repository;
   }
+  async listCommitKeys(repositoryId: string): Promise<string[]> {
+    const root = [this.settings.prefix.replace(/\/$/, ""), `.obsidian-s3-sync/v1/repositories/${repositoryId}/commits/`].filter(Boolean).join("/");
+    const keys: string[] = [];
+    let token: string | undefined;
+    do {
+      const page = await this.store().list(root, token);
+      keys.push(...page.keys.filter((key) => key.startsWith(root) && key.endsWith(".json")));
+      token = page.continuationToken;
+    } while (token);
+    return [...new Set(keys)].sort();
+  }
   private store(): S3ObjectStore {
     return new S3ObjectStore({ endpoint: this.settings.endpoint, region: this.settings.region, bucket: this.settings.bucket, forcePathStyle: this.settings.forcePathStyle, credentials: { accessKeyId: this.settings.accessKeyId, secretAccessKey: this.settings.secretAccessKey } });
   }
