@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeVaultPath, vaultPathCaseFoldKey } from "../../core/path";
+import { normalizeVaultPath, validatePortablePath, vaultPathCaseFoldKey } from "../../core/path";
 
 describe("Vault path normalization", () => {
   it("uses frozen NFC and rejects unsafe relative-path shapes", () => {
@@ -8,5 +8,9 @@ describe("Vault path normalization", () => {
   });
   it("uses frozen default case folding for aliases", () => {
     expect(vaultPathCaseFoldKey("Notes/STRASSE.md")).toBe(vaultPathCaseFoldKey("notes/straße.md"));
+  });
+  it("rejects portable paths Windows cannot represent", () => {
+    expect(validatePortablePath("notes/COM1.md")).toContain("windows-reserved-name");
+    expect(validatePortablePath("notes/trailing. ")).toContain("windows-trailing-dot-or-space");
   });
 });

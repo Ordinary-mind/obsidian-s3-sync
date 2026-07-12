@@ -10,3 +10,14 @@ export function normalizeVaultPath(path: string): string {
 export function vaultPathCaseFoldKey(path: string): string {
   return defaultCaseFold151(normalizeVaultPath(path));
 }
+
+export function validatePortablePath(path: string): string[] {
+  const normalized = normalizeVaultPath(path);
+  const violations: string[] = [];
+  for (const segment of normalized.split("/")) {
+    const stem = segment.split(".", 1)[0].toUpperCase();
+    if (["CON", "PRN", "AUX", "NUL", "CLOCK$", "CONIN$", "CONOUT$"].includes(stem) || /^(COM|LPT)([1-9]|[¹²³])$/.test(stem)) violations.push("windows-reserved-name");
+    if (/[. ]$/.test(segment)) violations.push("windows-trailing-dot-or-space");
+  }
+  return [...new Set(violations)];
+}
