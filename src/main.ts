@@ -22,7 +22,6 @@ export default class S3SyncPlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadPluginData();
-    this.rebuildEngine();
 
     this.statusEl = this.addStatusBarItem();
     this.updateStatus();
@@ -39,7 +38,6 @@ export default class S3SyncPlugin extends Plugin {
       callback: () => void this.discoverV1Repositories(),
     });
 
-    this.registerVaultEvents();
     this.addSettingTab(new S3SyncSettingTab(this.app, this));
 
   }
@@ -53,7 +51,6 @@ export default class S3SyncPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.savePluginData();
-    this.rebuildEngine();
   }
 
   async saveSyncData(): Promise<void> {
@@ -81,7 +78,7 @@ export default class S3SyncPlugin extends Plugin {
 
   async testS3Connection(): Promise<void> {
     try {
-      await this.engineOrThrow().testConnection();
+      await new V1RepositoryService(this.settings).discover();
       new Notice(`S3 Sync 连接成功，当前 Prefix：${this.getEffectivePrefix()}`);
     } catch (error) {
       new Notice(`S3 Sync 连接失败：${this.errorMessage(error)}`);
