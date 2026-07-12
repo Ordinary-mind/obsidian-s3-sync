@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasPackageManifestAnchor, isConfigItemCovered } from "../../core/config-profile";
+import { hasPackageManifestAnchor, isConfigItemCovered, isPortablePluginIdAllowed } from "../../core/config-profile";
 import { mergeEnabledPortablePlugins } from "../../core/plugin-enable";
 
 const profile = { baseFiles: ["app.json"], syncThemes: true, syncSnippets: false, portablePluginIds: ["plugin"], pluginPackages: ["plugin"], pluginData: ["plugin"] };
@@ -15,5 +15,10 @@ describe("ConfigTree profile coverage", () => {
     expect(hasPackageManifestAnchor([{ path: "plugins/plugin/main.js", kind: "put" }], profile)).toBe(false);
     expect(hasPackageManifestAnchor([{ path: "plugins/plugin/main.js", kind: "put" }, { path: "plugins/plugin/manifest.json", kind: "put" }], profile)).toBe(true);
     expect(mergeEnabledPortablePlugins(["plugin"], ["local"], "obsidian-s3-sync")).toEqual(["local", "obsidian-s3-sync", "plugin"]);
+  });
+  it("rejects the sync plugin and invalid portable plugin IDs", () => {
+    expect(isPortablePluginIdAllowed("other", "obsidian-s3-sync")).toBe(true);
+    expect(isPortablePluginIdAllowed("obsidian-s3-sync", "obsidian-s3-sync")).toBe(false);
+    expect(isPortablePluginIdAllowed("bad/name", "obsidian-s3-sync")).toBe(false);
   });
 });

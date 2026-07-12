@@ -14,3 +14,7 @@ export function hasPackageManifestAnchor(items: ReadonlyArray<{ path: string; ki
   const puts = new Set(items.filter((item) => item.kind === "put").map((item) => item.path));
   return profile.pluginPackages.every((pluginId) => ![...puts].some((path) => path.startsWith(`plugins/${pluginId}/`)) || puts.has(`plugins/${pluginId}/manifest.json`));
 }
+
+export function isPortablePluginIdAllowed(pluginId: string, syncPluginId: string): boolean {
+  return pluginId !== syncPluginId && pluginId.length > 0 && new TextEncoder().encode(pluginId).byteLength <= 255 && !/[<>:"/\\|?*]/.test(pluginId) && !/[. ]$/.test(pluginId);
+}
