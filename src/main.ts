@@ -2,7 +2,8 @@ import { Notice, Plugin, TFile, normalizePath } from "obsidian";
 import { ConflictModal } from "./conflict-modal";
 import { createDefaultData, DEFAULT_SETTINGS } from "./defaults";
 import { S3SyncSettingTab } from "./settings-tab";
-import { SyncEngine } from "./sync-engine";
+import { runDesktopRuntimeContract } from "./runtime-contract";
+import type { SyncEngine } from "./sync-engine";
 import { V1RepositoryService } from "./v1-service";
 import type { S3SyncData, S3SyncSettings, SyncSummary } from "./types";
 import { getTFile, resolveEffectivePrefix } from "./utils";
@@ -36,6 +37,12 @@ export default class S3SyncPlugin extends Plugin {
       id: "s3-sync-v1-discover-repositories",
       name: "S3 Sync：发现 v1 仓库（只读）",
       callback: () => void this.discoverV1Repositories(),
+    });
+
+    this.addCommand({
+      id: "s3-sync-v1-run-desktop-runtime-contract",
+      name: "S3 Sync v1: run desktop runtime contract",
+      callback: () => void this.runDesktopRuntimeContract(),
     });
 
     this.addSettingTab(new S3SyncSettingTab(this.app, this));
@@ -97,6 +104,16 @@ export default class S3SyncPlugin extends Plugin {
       new Notice(`S3 Sync v1：已只读验证 ${summary.registers} 个寄存器；冲突 ${summary.concurrent}，等待依赖 ${summary.pending}，无效 ${summary.invalid}`);
     } catch (error) {
       new Notice(`S3 Sync v1 仓库发现失败：${this.errorMessage(error)}`);
+      console.error(error);
+    }
+  }
+
+  private async runDesktopRuntimeContract(): Promise<void> {
+    try {
+      const result = await runDesktopRuntimeContract(this.app.vault.adapter, this.app.vault.configDir, this.manifest.id);
+      new Notice(`S3 Sync v1 runtime contract: write/read=${result.writeReadback}, rename=${result.rename}, copy no-clobber=${result.copyRejectsExistingTarget}`);
+    } catch (error) {
+      new Notice(`S3 Sync v1 runtime contract failed: ${this.errorMessage(error)}`);
       console.error(error);
     }
   }
@@ -231,12 +248,7 @@ export default class S3SyncPlugin extends Plugin {
   }
 
   private rebuildEngine(): void {
-    this.engine = new SyncEngine({
-      vault: this.app.vault,
-      settings: this.settings,
-      data: this.data,
-      saveData: () => this.saveSyncData(),
-    });
+    throw new Error("Legacy sync engine is disabled for v1");
   }
 
   private engineOrThrow(): SyncEngine {
