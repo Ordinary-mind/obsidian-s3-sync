@@ -7,3 +7,4 @@ export * from "./apply-plan";
 export * from "./apply-journal";
 export * from "./object-store";
 export * from "./ingest";
+export * from "./receive-repository";
