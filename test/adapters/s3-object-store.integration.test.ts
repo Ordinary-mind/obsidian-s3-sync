@@ -19,13 +19,20 @@ describe("S3 ObjectStore contract", () => {
   });
   const prefix = `contract/${randomUUID()}/`;
   const key = `${prefix}immutable.json`;
-  const bytes = text.encode('{"source":"minio-contract"}');
+  const firstBytes = text.encode('{"source":"first-writer"}');
+  const secondBytes = text.encode('{"source":"second-writer"}');
 
-  it("writes immutable bytes, reads them back, lists the key, and rejects a duplicate write", async () => {
-    await store.putImmutable(key, bytes);
-    await expect(store.head(key)).resolves.toEqual({ size: bytes.byteLength });
-    await expect(store.get(key)).resolves.toSatisfy((value: Uint8Array) => decode.decode(value) === decode.decode(bytes));
+  it("allows exactly one concurrent immutable write and preserves its bytes", async () => {
+    const writes = await Promise.allSettled([
+      store.putImmutable(key, firstBytes),
+      store.putImmutable(key, secondBytes),
+    ]);
+    expect(writes.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+
+    const stored = await store.get(key);
+    const storedText = decode.decode(stored);
+    expect([decode.decode(firstBytes), decode.decode(secondBytes)]).toContain(storedText);
+    await expect(store.head(key)).resolves.toEqual({ size: stored.byteLength });
     await expect(store.list(prefix)).resolves.toMatchObject({ keys: [key] });
-    await expect(store.putImmutable(key, text.encode("different bytes"))).rejects.toBeDefined();
   });
 });
