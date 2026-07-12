@@ -32,6 +32,14 @@ describe("core register reduction", () => {
     );
   });
 
+  it("does not revive a superseded version after redundant parent delivery", () => {
+    const versions = [
+      { ...base, versionId: "root", logicalKey: "a", parents: [] },
+      { ...base, versionId: "next", logicalKey: "a", parents: ["root"] },
+    ];
+    expect(reduceRegister([...versions, versions[0]])).toEqual({ heads: ["next"], pending: [], invalid: [] });
+  });
+
   it("groups equivalent heads without discarding their original Version IDs", () => {
     expect(groupEquivalentHeads(["b", "a", "delete"], new Map([["a", "blob:abc"], ["b", "blob:abc"], ["delete", "delete"]]))).toEqual([
       { value: "blob:abc", representative: "a", members: ["a", "b"] },
