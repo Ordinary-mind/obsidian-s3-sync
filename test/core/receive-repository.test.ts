@@ -15,6 +15,6 @@ describe("end-to-end verified repository receive", () => {
     const vector = JSON.parse(readFileSync(new URL("../../protocol/vectors/vault-bootstrap-multi-chunk.json", import.meta.url), "utf8"));
     const root = `.obsidian-s3-sync/v1/repositories/${vector.commit.object.repositoryId}`;
     const repository = new InMemoryRepositoryCore();
-    expect(() => receiveKeyedCommitBytes(repository, vector.commit.object.repositoryId, vector.commit.object.descriptorHash, `${root}/commits/${vector.commit.object.writerId}/${vector.commit.object.sequence}-${vector.commit.sha256}.json`, new TextEncoder().encode(vector.commit.canonicalJson), vector.chunks.map((chunk: { sha256: string }) => `${root}/changes/sha256/00/${chunk.sha256}.json`), vector.chunks.map((chunk: { canonicalJson: string }) => new TextEncoder().encode(chunk.canonicalJson)))).toThrow("key-body-hash-mismatch");
+    expect(() => receiveKeyedCommitBytes(repository, vector.commit.object.repositoryId, vector.commit.object.descriptorHash, `${root}/commits/${vector.commit.object.writerId}/${vector.commit.object.sequence}-${vector.commit.sha256}.json`, new TextEncoder().encode(vector.commit.canonicalJson), vector.chunks.map((chunk: { sha256: string }) => `${root}/changes/sha256/00/${chunk.sha256}.json`), vector.chunks.map((chunk: { canonicalJson: string }) => new TextEncoder().encode(chunk.canonicalJson)))).toThrow("object key does not bind");
   });
 });
