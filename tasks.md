@@ -76,7 +76,7 @@
 - [ ] ConfigSnapshotMutation 按直接父 Tree 验证每个 delete path 的既有管理依据；根 delete 和无父依据 delete 隔离为无效版本，缺任一父/Tree 时保持 pending。
 - [x] 实现相同 Blob Hash、相同 delete、相同 ConfigTree Hash 的语义折叠。
 - [ ] 实现 put/put、put/delete、多方并发、配置快照并发和并发解决判定。
-- [ ] 实现跨寄存器文件/目录前缀结构冲突；保留全部头且不按本地平台选择可物化版本。
+- [x] 实现跨寄存器文件/目录前缀结构冲突；保留全部头且不按本地平台选择可物化版本。
 - [ ] 实现 writer sequence 连续链、缺口、重复 Commit 和同 sequence 分叉判定。
 
 ### 本地因果命令
