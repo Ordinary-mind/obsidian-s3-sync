@@ -2,10 +2,15 @@ import { S3ObjectStore } from "../adapters/s3-object-store";
 import { discoverRepositoryDescriptors } from "../core/discovery";
 import { InMemoryRepositoryCore } from "../core/repository";
 import { pullCommitIntoRepository } from "../core/remote-pull";
+import { validateRepositoryEndpoint } from "../core/locator";
 import type { S3SyncSettings } from "./types";
 
 export class V1RepositoryService {
-  constructor(private readonly settings: S3SyncSettings) {}
+  constructor(private readonly settings: S3SyncSettings) {
+    if (!validateRepositoryEndpoint({ endpoint: settings.endpoint, region: settings.region, bucket: settings.bucket, forcePathStyle: settings.forcePathStyle }, settings.endpoint.startsWith("http://127.0.0.1") || settings.endpoint.startsWith("http://localhost"))) {
+      throw new Error("invalid v1 repository endpoint settings");
+    }
+  }
   async discover(): Promise<Array<{ key: string; repositoryId: string; descriptorHash: string }>> {
     const store = this.store();
     return discoverRepositoryDescriptors(store, this.settings.prefix);
