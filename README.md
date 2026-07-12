@@ -17,7 +17,7 @@
 
 现有 `src/sync-engine.ts` 和 `src/s3-remote.ts` 是早期 legacy prototype，仍使用共享 `.s3-sync/manifest.json` 和路径直写对象。它们只可作为 Obsidian API、设置页和 UI 参考，不能作为新同步核心继续扩展。
 
-任务 0 的机器可读协议基础已经可在无 Obsidian、无 AWS、无网络的 Node 22 测试环境运行；这不代表同步核心或真实 Bucket 已可用。也不要对真实 Bucket 使用旧版“本地重建远端”流程。
+任务 0 的机器可读协议基础已经可在无 Obsidian、无 AWS、无网络的 Node 22 测试环境运行。插件当前已提供 v1 仓库的只读发现、对象验证和寄存器重建摘要；它不会发布或应用远端内容。legacy 同步、自动调度和“本地重建远端”入口均已禁用，直到 v1 发布与安全应用闭环完成。
 
 ## v1 协议概览
 
