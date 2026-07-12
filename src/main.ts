@@ -111,7 +111,7 @@ export default class S3SyncPlugin extends Plugin {
   private async runDesktopRuntimeContract(): Promise<void> {
     try {
       const result = await runDesktopRuntimeContract(this.app.vault.adapter, this.app.vault.configDir, this.manifest.id);
-      new Notice(`S3 Sync v1 runtime contract: write/read=${result.writeReadback}, rename=${result.rename}, copy no-clobber=${result.copyRejectsExistingTarget}`);
+      new Notice(`S3 Sync v1 runtime contract: write/read=${result.writeReadback}, rename=${result.rename}, rename no-clobber=${result.renameRejectsExistingTarget}, copy no-clobber=${result.copyRejectsExistingTarget}`);
     } catch (error) {
       new Notice(`S3 Sync v1 runtime contract failed: ${this.errorMessage(error)}`);
       console.error(error);

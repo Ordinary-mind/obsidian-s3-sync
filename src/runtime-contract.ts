@@ -12,6 +12,7 @@ export interface DesktopRuntimeContractResult {
   configDir: string;
   writeReadback: boolean;
   rename: boolean;
+  renameRejectsExistingTarget: boolean;
   copyRejectsExistingTarget: boolean;
 }
 
@@ -38,6 +39,18 @@ export async function runDesktopRuntimeContract(
     const rename = await adapter.exists(renamed) && await adapter.read(renamed) === body;
 
     await adapter.write(existing, "existing");
+    let renameRejectsExistingTarget = false;
+    try {
+      await adapter.rename(renamed, existing);
+    } catch {
+      renameRejectsExistingTarget = true;
+    }
+
+    if (!renameRejectsExistingTarget) {
+      await adapter.write(renamed, body);
+      await adapter.write(existing, "existing");
+    }
+
     let copyRejectsExistingTarget = false;
     try {
       await adapter.copy(renamed, existing);
@@ -45,7 +58,7 @@ export async function runDesktopRuntimeContract(
       copyRejectsExistingTarget = true;
     }
 
-    return { configDir, writeReadback, rename, copyRejectsExistingTarget };
+    return { configDir, writeReadback, rename, renameRejectsExistingTarget, copyRejectsExistingTarget };
   } finally {
     if (await adapter.exists(root)) await adapter.rmdir(root, true);
   }

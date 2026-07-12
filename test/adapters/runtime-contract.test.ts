@@ -25,6 +25,7 @@ class FakeAdapter implements RuntimeContractAdapter {
   }
 
   async rename(from: string, to: string): Promise<void> {
+    if (this.files.has(to)) throw new Error("target exists");
     const value = await this.read(from);
     this.files.delete(from);
     this.files.set(to, value);
@@ -48,6 +49,7 @@ describe("desktop runtime contract", () => {
       configDir: ".obsidian",
       writeReadback: true,
       rename: true,
+      renameRejectsExistingTarget: true,
       copyRejectsExistingTarget: true,
     });
     await expect(adapter.exists(".obsidian/plugins/obsidian-s3-sync/runtime-contract-test-run")).resolves.toBe(false);
