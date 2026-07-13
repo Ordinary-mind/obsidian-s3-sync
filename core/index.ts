@@ -21,3 +21,4 @@ export * from "./commit-builder";
 export * from "./repository-bootstrap";
 export * from "./connection-probe";
 export * from "./stable-capture";
+export * from "./blob";
