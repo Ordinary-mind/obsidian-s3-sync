@@ -45,6 +45,12 @@ export default class S3SyncPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "s3-sync-v1-inspect-repository",
+      name: "S3 Sync v1: inspect repository",
+      callback: () => void this.discoverV1Repositories(),
+    });
+
+    this.addCommand({
       id: "s3-sync-v1-create-repository",
       name: "S3 Sync v1: create repository",
       callback: () => void this.createV1Repository(),
