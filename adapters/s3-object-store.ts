@@ -26,6 +26,25 @@ export class S3ObjectStore implements ObjectStore {
     return { size: result.ContentLength };
   }
   async putImmutable(key: string, bytes: Uint8Array): Promise<void> {
-    await this.client.send(new PutObjectCommand({ Bucket: this.options.bucket, Key: key, Body: bytes, IfNoneMatch: "*" }));
+    try {
+      await this.client.send(new PutObjectCommand({ Bucket: this.options.bucket, Key: key, Body: bytes, IfNoneMatch: "*" }));
+    } catch (error) {
+      if (!isPreconditionFailure(error)) throw error;
+    }
+
+    const stored = await this.get(key);
+    if (!equalBytes(stored, bytes)) throw new Error(`S3 immutable object differs for key: ${key}`);
   }
+}
+
+function isPreconditionFailure(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const value = error as { name?: unknown; $metadata?: { httpStatusCode?: unknown } };
+  return value.name === "PreconditionFailed" || value.$metadata?.httpStatusCode === 412;
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index += 1) if (left[index] !== right[index]) return false;
+  return true;
 }

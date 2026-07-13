@@ -34,5 +34,7 @@ describe("S3 ObjectStore contract", () => {
     expect([decode.decode(firstBytes), decode.decode(secondBytes)]).toContain(storedText);
     await expect(store.head(key)).resolves.toEqual({ size: stored.byteLength });
     await expect(store.list(prefix)).resolves.toMatchObject({ keys: [key] });
+    await expect(store.putImmutable(key, stored)).resolves.toBeUndefined();
+    await expect(store.putImmutable(key, text.encode('{"source":"different"}'))).rejects.toThrow("S3 immutable object differs");
   });
 });

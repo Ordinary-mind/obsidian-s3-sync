@@ -80,6 +80,30 @@ Prefix 可以根据 Vault 名称提出建议，但确认后不会随 Vault 改�
 
 普通同步只要求 List、Head/Get 和 Put 权限，但 Put 必须支持 `If-None-Match: *` 或等价原子“仅不存在时创建”；不支持的存储只能只读诊断。DeleteObject 不是 v1 正常同步的最低权限；旧世代删除和维护使用独立权限或供应商控制台。
 
+## 真实 S3 合同测试
+
+真实存储服务验证只用于确认 S3 adapter 的能力，不会同步 Vault，也不会创建或应用 v1 仓库。请使用专用测试 Bucket，或将 IAM 权限限制到 `contract/*` 前缀。测试会创建不可变对象，默认不执行 `DeleteObject`。
+
+不要将 Access Key、Secret Key 或 Session Token 写入 `test/setup-minio-contract.ts`、插件设置、`.env` 或任何提交文件。仅在当前 PowerShell 会话设置环境变量：
+
+```powershell
+$env:S3_ENDPOINT = "https://s3.<region>.amazonaws.com"
+$env:S3_REGION = "<region>"
+$env:S3_BUCKET = "<专用测试桶>"
+$env:S3_ACCESS_KEY_ID = "<AWS access key>"
+$env:S3_SECRET_ACCESS_KEY = "<AWS secret>"
+$env:S3_FORCE_PATH_STYLE = "false"
+
+# 仅临时 AWS 凭证需要：
+# $env:S3_SESSION_TOKEN = "<AWS session token>"
+
+npm run test:s3-aws
+```
+
+标准 AWS endpoint 形如 `https://s3.ap-southeast-1.amazonaws.com`；中国区 endpoint 形如 `https://s3.cn-north-1.amazonaws.com.cn`。测试成功时会报告一个通过的用例，并验证同 Key 的两个并发条件写恰有一次成功，且后续 `GET`、`HEAD`、`LIST` 读取一致。
+
+测试 IAM 最小权限为 Bucket 上的 `s3:ListBucket`，以及 `contract/*` 对象上的 `s3:GetObject` 和 `s3:PutObject`。不要授予 `s3:DeleteObject`。可测试 MinIO 时运行 `npm run test:s3-minio`；它使用 Docker Compose 的本地默认凭证，不需要任何云端密钥。
+
 ## 设计与实施
 
 - [design.md](design.md)：v1 协议、安全不变量、状态机和验收场景。
