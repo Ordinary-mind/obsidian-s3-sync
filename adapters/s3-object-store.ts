@@ -40,6 +40,27 @@ export class S3ObjectStore implements ObjectStore {
 
 async function bodyToBytes(body: unknown): Promise<Uint8Array> {
   if (body instanceof Uint8Array) return body;
+  if (isNodeReadable(body)) {
+    return new Promise<Uint8Array>((resolve, reject) => {
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      body.on("data", (chunk: Uint8Array | ArrayBuffer) => {
+        const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+        chunks.push(bytes);
+        size += bytes.byteLength;
+      });
+      body.on("end", () => {
+        const merged = new Uint8Array(size);
+        let offset = 0;
+        for (const chunk of chunks) {
+          merged.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        resolve(merged);
+      });
+      body.on("error", reject);
+    });
+  }
   if (isAsyncIterable(body)) {
     const chunks: Uint8Array[] = [];
     let size = 0;
@@ -59,6 +80,10 @@ async function bodyToBytes(body: unknown): Promise<Uint8Array> {
   const stream = body as { transformToByteArray?: () => Promise<Uint8Array> };
   if (typeof stream.transformToByteArray === "function") return stream.transformToByteArray();
   throw new Error("S3 GetObject response body is not readable");
+}
+
+function isNodeReadable(value: unknown): value is { on(event: "data", listener: (chunk: Uint8Array | ArrayBuffer) => void): void; on(event: "end" | "error", listener: (() => void) | ((error: unknown) => void)): void } {
+  return !!value && typeof value === "object" && "on" in value && typeof (value as { on?: unknown }).on === "function";
 }
 
 function isAsyncIterable(value: unknown): value is AsyncIterable<Uint8Array | ArrayBuffer> {
