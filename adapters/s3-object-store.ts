@@ -1,4 +1,5 @@
 import { GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 import type { ObjectStore } from "../core/object-store";
 import type { RepositoryEndpoint } from "../core/locator";
 
@@ -9,7 +10,7 @@ export interface S3ObjectStoreOptions extends RepositoryEndpoint {
 export class S3ObjectStore implements ObjectStore {
   private readonly client: S3Client;
   constructor(private readonly options: S3ObjectStoreOptions) {
-    this.client = new S3Client({ endpoint: options.endpoint, region: options.region, forcePathStyle: options.forcePathStyle, credentials: options.credentials });
+    this.client = new S3Client({ endpoint: options.endpoint, region: options.region, forcePathStyle: options.forcePathStyle, credentials: options.credentials, requestHandler: new NodeHttpHandler() });
   }
   async list(prefix: string, continuationToken?: string): Promise<{ keys: string[]; continuationToken?: string }> {
     const result = await this.client.send(new ListObjectsV2Command({ Bucket: this.options.bucket, Prefix: prefix, ContinuationToken: continuationToken }));
