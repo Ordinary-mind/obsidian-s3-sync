@@ -7,6 +7,7 @@ export interface RegisterVersion {
   logicalKey: string;
   parents: string[];
   configTree?: ConfigTreeForLineage;
+  blob?: { hash: string; size: number };
 }
 
 export interface RegisterState {
@@ -122,7 +123,9 @@ function sameVersion(left: RegisterVersion, right: RegisterVersion): boolean {
     && left.logicalKey === right.logicalKey
     && left.parents.length === right.parents.length
     && left.parents.every((parent, index) => parent === right.parents[index])
-    && sameConfigTree(left.configTree, right.configTree);
+    && sameConfigTree(left.configTree, right.configTree)
+    && left.blob?.hash === right.blob?.hash
+    && left.blob?.size === right.blob?.size;
 }
 
 function configDeleteLineage(version: RegisterVersion, byId: ReadonlyMap<string, RegisterVersion>): "valid" | "pending" | "invalid" {

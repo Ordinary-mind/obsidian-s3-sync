@@ -22,7 +22,7 @@ export interface ProtocolChunk {
   channel: "vault" | "config";
   chunkIndex: number;
   chunkCount: number;
-  mutations: Array<{ path?: string; kind?: "put" | "delete" | "snapshot"; blobHash?: string; treeHash?: string; parents: string[] }>;
+  mutations: Array<{ path?: string; kind?: "put" | "delete" | "snapshot"; blobHash?: string; size?: number; treeHash?: string; parents: string[] }>;
 }
 
 export type ProtocolViolation =

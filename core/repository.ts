@@ -27,6 +27,11 @@ export class InMemoryRepositoryCore {
     return { ...state, disposition: classifyRegisterState(state.heads, state.pending, state.invalid) };
   }
 
+  version(versionId: string): RegisterVersion | undefined {
+    const version = this.versions.find((candidate) => candidate.versionId === versionId);
+    return version ? { ...version, parents: [...version.parents], blob: version.blob ? { ...version.blob } : undefined } : undefined;
+  }
+
   allRegisters(repositoryId: string): Map<string, RepositoryRegisterSnapshot> {
     const keys = new Set(this.versions.filter((version) => version.repositoryId === repositoryId).map((version) => `${version.channel}:${version.logicalKey}`));
     return new Map([...keys].map((key) => {

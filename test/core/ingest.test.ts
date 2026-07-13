@@ -8,4 +8,8 @@ describe("verified envelope ingestion", () => {
     const chunks = [{ mutations: [{ parents: [] }] }] as any;
     expect(registerVersionsFromEnvelope(hash, commit, chunks)).toEqual([{ repositoryId: "repo", channel: "config", logicalKey: "portable", versionId: `${hash}:0:0`, parents: [] }]);
   });
+  it("retains the verified Vault Blob reference needed by a receiver", () => {
+    const versions = registerVersionsFromEnvelope("a".repeat(64), { repositoryId: "repo", channel: "vault" } as any, [{ mutations: [{ path: "notes/a.md", kind: "put", blobHash: "b".repeat(64), size: 3, parents: [] }] }] as any);
+    expect(versions[0].blob).toEqual({ hash: "b".repeat(64), size: 3 });
+  });
 });

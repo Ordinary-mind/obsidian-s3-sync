@@ -17,6 +17,7 @@ export function registerVersionsFromEnvelope(
     versionId: createVersionId(commitHash, chunkIndex, mutationIndex),
     parents: [...mutation.parents],
     ...(configTree ? { configTree } : {}),
+    ...(mutation.kind === "put" && mutation.blobHash && mutation.size !== undefined ? { blob: { hash: mutation.blobHash, size: mutation.size } } : {}),
   };
   }));
 }
