@@ -225,6 +225,8 @@ export default class S3SyncPlugin extends Plugin {
       const remote = await service.resolvedVaultPut(state.repositoryId, state.descriptorHash, file.path);
       const projectedHash = this.data.files[file.path]?.hash;
       if (projectedHash && projectedHash !== capture.hash && remote && remote.hash !== projectedHash) {
+        this.recordV1Conflict(file.path, projectedHash, capture.hash, remote.hash);
+        await this.saveSyncData();
         throw new Error("local and remote content both changed; resolve the conflict before publishing");
       }
       const parents = remote?.heads ?? [];
@@ -264,6 +266,7 @@ export default class S3SyncPlugin extends Plugin {
         const capture = existing ? await captureStableVaultFile(this.app.vault, remote.path) : undefined;
         const decision = decideResolvedRemotePut({ localExists: !!existing, projectedHash: this.data.files[remote.path]?.hash, currentHash: capture?.hash, remoteHash: remote.hash });
         if (decision === "conflict") {
+          this.recordV1Conflict(remote.path, this.data.files[remote.path]?.hash ?? null, capture?.hash ?? null, remote.hash);
           skipped += 1;
           continue;
         }
@@ -509,6 +512,21 @@ export default class S3SyncPlugin extends Plugin {
       settings: this.settings,
       syncData: this.data,
     });
+  }
+
+  private recordV1Conflict(path: string, baseHash: string | null, localHash: string | null, remoteHash: string): void {
+    const id = `v1:${path}:${baseHash ?? "none"}:${localHash ?? "none"}:${remoteHash}`;
+    this.data.conflicts[id] = {
+      id,
+      path,
+      baseHash,
+      localHash,
+      remoteHash,
+      remoteVersion: 0,
+      localDeviceId: this.data.v1?.writerId,
+      detectedAt: new Date().toISOString(),
+      resolved: false,
+    };
   }
 
   private errorMessage(error: unknown): string {
