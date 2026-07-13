@@ -19,7 +19,7 @@ export class S3ObjectStore implements ObjectStore {
   async get(key: string): Promise<Uint8Array> {
     const result = await this.client.send(new GetObjectCommand({ Bucket: this.options.bucket, Key: key }));
     if (!result.Body) throw new Error("S3 GetObject response has no body");
-    return result.Body.transformToByteArray();
+    return bodyToBytes(result.Body);
   }
   async head(key: string): Promise<{ size: number }> {
     const result = await this.client.send(new HeadObjectCommand({ Bucket: this.options.bucket, Key: key }));
@@ -36,6 +36,33 @@ export class S3ObjectStore implements ObjectStore {
     const stored = await this.get(key);
     if (!equalBytes(stored, bytes)) throw new Error(`S3 immutable object differs for key: ${key}`);
   }
+}
+
+async function bodyToBytes(body: unknown): Promise<Uint8Array> {
+  if (body instanceof Uint8Array) return body;
+  if (isAsyncIterable(body)) {
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for await (const chunk of body) {
+      const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+      chunks.push(bytes);
+      size += bytes.byteLength;
+    }
+    const merged = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return merged;
+  }
+  const stream = body as { transformToByteArray?: () => Promise<Uint8Array> };
+  if (typeof stream.transformToByteArray === "function") return stream.transformToByteArray();
+  throw new Error("S3 GetObject response body is not readable");
+}
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<Uint8Array | ArrayBuffer> {
+  return !!value && typeof value === "object" && Symbol.asyncIterator in value;
 }
 
 function isPreconditionFailure(error: unknown): boolean {
