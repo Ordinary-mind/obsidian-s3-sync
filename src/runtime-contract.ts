@@ -16,6 +16,7 @@ export interface DesktopRuntimeContractResult {
   writeReadback: boolean;
   rename: boolean;
   renameRejectsExistingTarget: boolean;
+  renameNoClobberPreservesBytes: boolean;
   copyRejectsExistingTarget: boolean;
 }
 
@@ -60,7 +61,11 @@ export async function runDesktopRuntimeContract(
       renameRejectsExistingTarget = true;
     }
 
-    if (!renameRejectsExistingTarget) {
+    const renameNoClobberPreservesBytes = renameRejectsExistingTarget
+      && await adapter.read(renamed) === body
+      && await adapter.read(existing) === "existing";
+
+    if (!renameNoClobberPreservesBytes) {
       await adapter.write(renamed, body);
       await adapter.write(existing, "existing");
     }
@@ -80,6 +85,7 @@ export async function runDesktopRuntimeContract(
       writeReadback,
       rename,
       renameRejectsExistingTarget,
+      renameNoClobberPreservesBytes,
       copyRejectsExistingTarget,
     };
   } finally {

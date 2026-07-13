@@ -53,6 +53,7 @@ describe("desktop runtime contract", () => {
       writeReadback: true,
       rename: true,
       renameRejectsExistingTarget: true,
+      renameNoClobberPreservesBytes: true,
       copyRejectsExistingTarget: true,
     });
     await expect(runDesktopRuntimeContract(adapter, ".obsidian", "obsidian-s3-sync", "session-two", true, "second-run")).resolves.toMatchObject({

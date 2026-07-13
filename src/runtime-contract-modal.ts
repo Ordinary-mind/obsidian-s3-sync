@@ -17,6 +17,7 @@ export class RuntimeContractModal extends Modal {
       `write/read=${this.result.writeReadback}`,
       `rename=${this.result.rename}`,
       `rename no-clobber=${this.result.renameRejectsExistingTarget}`,
+      `rename no-clobber preserves bytes=${this.result.renameNoClobberPreservesBytes}`,
       `copy no-clobber=${this.result.copyRejectsExistingTarget}`,
     ].join("\n");
 
