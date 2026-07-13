@@ -538,6 +538,18 @@ export default class S3SyncPlugin extends Plugin {
 
   private recordV1Conflict(path: string, baseHash: string | null, localHash: string | null, remoteHash: string, remoteHeads: string[] = []): string {
     const id = conflictId(this.data.v1?.repositoryId ?? "unknown", "vault", [path], [baseHash ?? "none", localHash ?? "none", remoteHash]);
+    for (const [existingId, existing] of Object.entries(this.data.conflicts)) {
+      if (
+        existingId !== id
+        && !existing.resolved
+        && existing.path === path
+        && existing.baseHash === baseHash
+        && existing.localHash === localHash
+        && existing.remoteHash === remoteHash
+      ) {
+        delete this.data.conflicts[existingId];
+      }
+    }
     this.data.conflicts[id] = {
       id,
       path,
