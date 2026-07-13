@@ -12,6 +12,7 @@
     "test:types": "tsc -p tsconfig.test.json --noEmit",
     "test:s3-contract": "vitest run --config vitest.minio.config.ts",
     "test:s3-aws": "vitest run --config vitest.aws.config.ts",
+    "test:s3-baidu": "vitest run --config vitest.baidu.config.ts",
     "test:s3-minio": "npm run test:s3-contract",
     "test:ci": "npm test && npm run test:types && npm run build && git diff --exit-code -- main.js"
   },

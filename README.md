@@ -104,6 +104,21 @@ npm run test:s3-aws
 
 测试 IAM 最小权限为 Bucket 上的 `s3:ListBucket`，以及 `contract/*` 对象上的 `s3:GetObject` 和 `s3:PutObject`。不要授予 `s3:DeleteObject`。可测试 MinIO 时运行 `npm run test:s3-minio`；它使用 Docker Compose 的本地默认凭证，不需要任何云端密钥。
 
+百度云 BOS 使用相同的合同，但必须使用专用入口，避免误用 MinIO 默认值或 AWS endpoint：
+
+```powershell
+$env:S3_ENDPOINT = "https://s3.gz.bcebos.com"
+$env:S3_REGION = "gz"
+$env:S3_BUCKET = "<专用测试桶>"
+$env:S3_ACCESS_KEY_ID = "<Baidu access key>"
+$env:S3_SECRET_ACCESS_KEY = "<Baidu secret key>"
+$env:S3_FORCE_PATH_STYLE = "true"
+
+npm run test:s3-baidu
+```
+
+成功输出必须显示 `Baidu Cloud BOS ObjectStore contract`。请在轮换旧密钥后使用新的受限凭证，且绝不把它们写入仓库文件。
+
 ## 设计与实施
 
 - [design.md](design.md)：v1 协议、安全不变量、状态机和验收场景。
