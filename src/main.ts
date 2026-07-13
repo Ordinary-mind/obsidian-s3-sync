@@ -209,7 +209,9 @@ export default class S3SyncPlugin extends Plugin {
         if (this.app.vault.getAbstractFileByPath(remote.path)) continue;
         await ensureParentFolder(this.app.vault, remote.path);
         if (this.app.vault.getAbstractFileByPath(remote.path)) continue;
-        await this.app.vault.createBinary(remote.path, remote.bytes.buffer.slice(remote.bytes.byteOffset, remote.bytes.byteOffset + remote.bytes.byteLength));
+        const binary = new Uint8Array(remote.bytes.byteLength);
+        binary.set(remote.bytes);
+        await this.app.vault.createBinary(remote.path, binary.buffer);
         this.data.files[remote.path] = { hash: remote.hash, size: remote.size, updatedAt: new Date().toISOString() };
         created += 1;
       }
