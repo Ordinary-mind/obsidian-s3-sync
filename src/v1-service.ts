@@ -40,8 +40,10 @@ export class V1RepositoryService {
     path: string;
     parents: string[];
     capture: StableCapture;
-  }): Promise<void> {
-    await publishEnvelope(this.store(), buildVaultPutPublishEnvelope({ ...input, prefix: this.prefix }));
+  }): Promise<string> {
+    const envelope = buildVaultPutPublishEnvelope({ ...input, prefix: this.prefix });
+    await publishEnvelope(this.store(), envelope);
+    return envelope.commit.hash;
   }
   async resolvedVaultHeads(repositoryId: string, descriptorHash: string, path: string): Promise<string[]> {
     const repository = await this.pullAllCommits(repositoryId, descriptorHash);

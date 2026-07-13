@@ -8,6 +8,8 @@ import type { SyncEngine } from "./sync-engine";
 import { V1RepositoryService } from "./v1-service";
 import type { S3SyncData, S3SyncSettings, SyncSummary } from "./types";
 import { getTFile, resolveEffectivePrefix } from "./utils";
+import { captureStableVaultFile } from "./vault-stable-capture";
+import { recordPublishedWriterCommit, reserveWriterCommit } from "../core/writer-session";
 
 interface PersistedPluginData {
   settings?: Partial<S3SyncSettings>;
@@ -46,6 +48,12 @@ export default class S3SyncPlugin extends Plugin {
       id: "s3-sync-v1-create-repository",
       name: "S3 Sync v1: create repository",
       callback: () => void this.createV1Repository(),
+    });
+
+    this.addCommand({
+      id: "s3-sync-v1-publish-active-file",
+      name: "S3 Sync v1: publish active file",
+      callback: () => void this.publishActiveFileV1(),
     });
 
     this.addCommand({
@@ -140,6 +148,41 @@ export default class S3SyncPlugin extends Plugin {
       new Notice(`S3 Sync v1 repository created: ${result.repositoryId}`);
     } catch (error) {
       new Notice(`S3 Sync v1 repository creation failed: ${this.errorMessage(error)}`);
+      console.error(error);
+    }
+  }
+
+  private async publishActiveFileV1(): Promise<void> {
+    try {
+      const state = this.data.v1;
+      if (!state || state.prefix !== this.getEffectivePrefix()) {
+        throw new Error("create or select a v1 repository for the current Prefix first");
+      }
+      const file = this.app.workspace.getActiveFile();
+      if (!file) throw new Error("no active file to publish");
+      const capture = await captureStableVaultFile(this.app.vault, file.path);
+      if (!capture) throw new Error("active file changed during capture or is not a regular file");
+      const service = new V1RepositoryService(this.settings, state.prefix);
+      const parents = await service.resolvedVaultHeads(state.repositoryId, state.descriptorHash, file.path);
+      const reservation = reserveWriterCommit(state);
+      const commitHash = await service.publishVaultPut({
+        repositoryId: state.repositoryId,
+        descriptorHash: state.descriptorHash,
+        writerId: state.writerId,
+        sequence: reservation.sequence,
+        previousCommitHash: reservation.previousCommitHash,
+        createdAt: new Date().toISOString(),
+        clientVersion: this.manifest.version,
+        path: file.path,
+        parents,
+        capture,
+      });
+      this.data.v1 = { ...state, ...recordPublishedWriterCommit(state, commitHash) };
+      this.data.files[file.path] = { hash: capture.hash, size: capture.size, updatedAt: new Date().toISOString() };
+      await this.saveSyncData();
+      new Notice(`S3 Sync v1 published: ${file.path}`);
+    } catch (error) {
+      new Notice(`S3 Sync v1 publish failed: ${this.errorMessage(error)}`);
       console.error(error);
     }
   }
