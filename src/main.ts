@@ -128,6 +128,15 @@ export default class S3SyncPlugin extends Plugin {
         crypto.randomUUID(),
         this.app.vault.configDir,
       );
+      this.data.v1 = {
+        prefix: this.getEffectivePrefix(),
+        repositoryId: result.repositoryId,
+        descriptorHash: result.descriptorHash,
+        writerId: crypto.randomUUID(),
+        nextSequence: "00000000000000000001",
+        previousCommitHash: null,
+      };
+      await this.saveSyncData();
       new Notice(`S3 Sync v1 repository created: ${result.repositoryId}`);
     } catch (error) {
       new Notice(`S3 Sync v1 repository creation failed: ${this.errorMessage(error)}`);

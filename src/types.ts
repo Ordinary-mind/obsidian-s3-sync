@@ -36,6 +36,14 @@ export interface S3SyncData {
   lastSyncedVersion: number;
   files: Record<string, LocalFileState>;
   conflicts: Record<string, ConflictRecord>;
+  v1?: {
+    prefix: string;
+    repositoryId: string;
+    descriptorHash: string;
+    writerId: string;
+    nextSequence: string;
+    previousCommitHash: string | null;
+  };
 }
 
 export interface RemoteManifest {
