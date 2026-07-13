@@ -1,5 +1,4 @@
 import { GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { NodeHttpHandler } from "@smithy/node-http-handler";
 import type { ObjectStore } from "../core/object-store";
 import type { RepositoryEndpoint } from "../core/locator";
 
@@ -10,7 +9,7 @@ export interface S3ObjectStoreOptions extends RepositoryEndpoint {
 export class S3ObjectStore implements ObjectStore {
   private readonly client: S3Client;
   constructor(private readonly options: S3ObjectStoreOptions) {
-    this.client = new S3Client({ endpoint: options.endpoint, region: options.region, forcePathStyle: options.forcePathStyle, credentials: options.credentials, requestHandler: new NodeHttpHandler(), streamCollector: bodyToBytes });
+    this.client = new S3Client({ endpoint: options.endpoint, region: options.region, forcePathStyle: options.forcePathStyle, credentials: options.credentials });
   }
   async list(prefix: string, continuationToken?: string): Promise<{ keys: string[]; continuationToken?: string }> {
     const result = await this.client.send(new ListObjectsV2Command({ Bucket: this.options.bucket, Prefix: prefix, ContinuationToken: continuationToken }));
@@ -38,57 +37,6 @@ export class S3ObjectStore implements ObjectStore {
   }
 }
 
-async function bodyToBytes(body: unknown): Promise<Uint8Array> {
-  if (body instanceof Uint8Array) return body;
-  if (isNodeReadable(body)) {
-    return new Promise<Uint8Array>((resolve, reject) => {
-      const chunks: Uint8Array[] = [];
-      let size = 0;
-      body.on("data", (chunk: Uint8Array | ArrayBuffer) => {
-        const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
-        chunks.push(bytes);
-        size += bytes.byteLength;
-      });
-      body.on("end", () => {
-        const merged = new Uint8Array(size);
-        let offset = 0;
-        for (const chunk of chunks) {
-          merged.set(chunk, offset);
-          offset += chunk.byteLength;
-        }
-        resolve(merged);
-      });
-      body.on("error", reject);
-    });
-  }
-  if (isAsyncIterable(body)) {
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    for await (const chunk of body) {
-      const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
-      chunks.push(bytes);
-      size += bytes.byteLength;
-    }
-    const merged = new Uint8Array(size);
-    let offset = 0;
-    for (const chunk of chunks) {
-      merged.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return merged;
-  }
-  const stream = body as { transformToByteArray?: () => Promise<Uint8Array> };
-  if (typeof stream.transformToByteArray === "function") return stream.transformToByteArray();
-  throw new Error("S3 GetObject response body is not readable");
-}
-
-function isNodeReadable(value: unknown): value is { on(event: "data", listener: (chunk: Uint8Array | ArrayBuffer) => void): void; on(event: "end" | "error", listener: (() => void) | ((error: unknown) => void)): void } {
-  return !!value && typeof value === "object" && "on" in value && typeof (value as { on?: unknown }).on === "function";
-}
-
-function isAsyncIterable(value: unknown): value is AsyncIterable<Uint8Array | ArrayBuffer> {
-  return !!value && typeof value === "object" && Symbol.asyncIterator in value;
-}
 
 function isPreconditionFailure(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
