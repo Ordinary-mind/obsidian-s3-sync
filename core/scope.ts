@@ -61,3 +61,27 @@ export function isHistoricalConfigCompatible(localHistoricalConfigDirs: readonly
   const descriptor = new Set(descriptorHistoricalConfigDirs.map(vaultPathCaseFoldKey));
   return localHistoricalConfigDirs.every((path) => descriptor.has(vaultPathCaseFoldKey(path)));
 }
+
+export type ConfigDirBindingPlan =
+  | { status: "match" }
+  | { status: "requires-new-generation"; configDir: string; historicalConfigDirs: string[] };
+
+export function planConfigDirBinding(input: {
+  descriptorConfigDir: string;
+  descriptorHistoricalConfigDirs: readonly string[];
+  actualConfigDir: string;
+  localHistoricalConfigDirs: readonly string[];
+}): ConfigDirBindingPlan {
+  const currentMatches = vaultPathCaseFoldKey(input.descriptorConfigDir) === vaultPathCaseFoldKey(input.actualConfigDir);
+  const historiesMatch = isHistoricalConfigCompatible(input.localHistoricalConfigDirs, input.descriptorHistoricalConfigDirs);
+  if (currentMatches && historiesMatch) return { status: "match" };
+  const historicalConfigDirs: string[] = [];
+  const seen = new Set<string>();
+  for (const path of [input.descriptorConfigDir, ...input.descriptorHistoricalConfigDirs, ...input.localHistoricalConfigDirs]) {
+    const key = vaultPathCaseFoldKey(path);
+    if (key === vaultPathCaseFoldKey(input.actualConfigDir) || seen.has(key)) continue;
+    seen.add(key);
+    historicalConfigDirs.push(path);
+  }
+  return { status: "requires-new-generation", configDir: input.actualConfigDir, historicalConfigDirs };
+}

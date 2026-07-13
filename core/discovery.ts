@@ -1,22 +1,66 @@
-import type { ObjectStore } from "./object-store";
+import { readObjectBytes, type ObjectStore } from "./object-store";
 import { verifyRepositoryDescriptorAtKey } from "../protocol/validation";
 
-export async function discoverRepositoryDescriptors(store: ObjectStore, prefix: string): Promise<Array<{ key: string; repositoryId: string; descriptorHash: string }>> {
+export interface DiscoveredRepositoryDescriptor {
+  key: string;
+  repositoryId: string;
+  descriptorHash: string;
+  configDir: string;
+  historicalConfigDirs: string[];
+}
+
+export interface RepositoryDiscoveryDiagnostic {
+  key: string;
+  stage: "candidate" | "read-or-verify";
+}
+
+export interface RepositoryDiscoveryResult {
+  repositories: DiscoveredRepositoryDescriptor[];
+  diagnostics: RepositoryDiscoveryDiagnostic[];
+}
+
+export async function discoverRepositoryDescriptors(store: ObjectStore, prefix: string): Promise<DiscoveredRepositoryDescriptor[]> {
+  return (await discoverRepositoryDescriptorsWithDiagnostics(store, prefix)).repositories;
+}
+
+export async function discoverRepositoryDescriptorsWithDiagnostics(store: ObjectStore, prefix: string): Promise<RepositoryDiscoveryResult> {
   const root = [prefix.replace(/\/$/, ""), ".obsidian-s3-sync/v1/repositories"].filter(Boolean).join("/");
-  const candidates: string[] = [];
+  const exactCandidate = new RegExp(`^${escapeRegExp(root)}/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/format\\.json$`);
+  const candidates = new Set<string>();
+  const diagnostics: RepositoryDiscoveryDiagnostic[] = [];
   let token: string | undefined;
   const seenTokens = new Set<string>();
   do {
     const page = await store.list(`${root}/`, token);
-    candidates.push(...page.keys.filter((key) => new RegExp(`^${escapeRegExp(root)}/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}/format\\.json$`).test(key)));
+    for (const key of page.keys) {
+      if (exactCandidate.test(key)) candidates.add(key);
+      else if (key.endsWith("/format.json")) diagnostics.push({ key, stage: "candidate" });
+    }
     token = page.continuationToken;
-    if (token && (seenTokens.has(token) || (seenTokens.add(token), false))) throw new Error("ObjectStore returned a repeated continuation token");
+    if (token && (seenTokens.has(token) || (seenTokens.add(token), false))) {
+      throw new Error("ObjectStore returned a repeated continuation token");
+    }
   } while (token);
-  const descriptors = await Promise.all([...new Set(candidates)].sort().map(async (key) => {
-    const verified = verifyRepositoryDescriptorAtKey(prefix, key, await store.get(key));
-    return { key, repositoryId: verified.descriptor.repositoryId as string, descriptorHash: verified.descriptorHash };
-  }));
-  return descriptors;
+
+  const repositories: DiscoveredRepositoryDescriptor[] = [];
+  for (const key of [...candidates].sort()) {
+    try {
+      const verified = verifyRepositoryDescriptorAtKey(prefix, key, await readObjectBytes(store, key, { maximumBytes: 4 * 1024 }));
+      repositories.push({
+        key,
+        repositoryId: verified.descriptor.repositoryId as string,
+        descriptorHash: verified.descriptorHash,
+        configDir: verified.descriptor.configDir as string,
+        historicalConfigDirs: [...verified.descriptor.historicalConfigDirs as string[]],
+      });
+    } catch {
+      diagnostics.push({ key, stage: "read-or-verify" });
+    }
+  }
+  return {
+    repositories,
+    diagnostics: diagnostics.sort((left, right) => left.key.localeCompare(right.key) || left.stage.localeCompare(right.stage)),
+  };
 }
 
 function escapeRegExp(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }

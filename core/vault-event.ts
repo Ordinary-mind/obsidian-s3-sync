@@ -7,6 +7,7 @@ export interface VaultEventIntent {
   path: string;
   generation: number;
   basisHeads: string[];
+  localPredecessorVersion?: string;
 }
 
 export function recordVaultEvent(
@@ -56,6 +57,17 @@ export function latestVaultEvent(events: readonly VaultEventIntent[], path: stri
 
 export function clearVaultEventsThroughGeneration(events: readonly VaultEventIntent[], path: string, generation: number): VaultEventIntent[] {
   return events.filter((event) => event.path !== path || event.generation > generation).map(copyEvent);
+}
+
+export function bindRootDeletePredecessor(
+  events: readonly VaultEventIntent[],
+  path: string,
+  afterGeneration: number,
+  localPredecessorVersion: string,
+): VaultEventIntent[] {
+  return events.map((event) => event.path === path && event.kind === "delete" && event.generation > afterGeneration
+    ? { ...copyEvent(event), basisHeads: [], localPredecessorVersion }
+    : copyEvent(event));
 }
 
 function copyEvent(event: VaultEventIntent): VaultEventIntent {

@@ -54,6 +54,8 @@ export interface S3SyncData {
     writerId: string;
     nextSequence: string;
     previousCommitHash: string | null;
+    configDir?: string;
+    historicalConfigDirs?: string[];
   };
 }
 

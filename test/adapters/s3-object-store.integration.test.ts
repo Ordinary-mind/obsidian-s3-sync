@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { S3ObjectStore } from "../../adapters/s3-object-store";
+import { readObjectBytes } from "../../core/object-store";
 
 const text = new TextEncoder();
 const decode = new TextDecoder();
@@ -29,12 +30,13 @@ describe(`${process.env.S3_TEST_PROVIDER ?? "S3"} ObjectStore contract`, () => {
     ]);
     expect(writes.filter((result) => result.status === "fulfilled")).toHaveLength(1);
 
-    const stored = await store.get(key);
+    const stored = await readObjectBytes(store, key);
     const storedText = decode.decode(stored);
     expect([decode.decode(firstBytes), decode.decode(secondBytes)]).toContain(storedText);
     await expect(store.head(key)).resolves.toEqual({ size: stored.byteLength });
     await expect(store.list(prefix)).resolves.toMatchObject({ keys: [key] });
     await expect(store.putImmutable(key, stored)).resolves.toBeUndefined();
-    await expect(store.putImmutable(key, text.encode('{"source":"different"}'))).rejects.toThrow("S3 immutable object differs");
+    await expect(store.putImmutable(key, text.encode('{"source":"different"}')))
+      .rejects.toMatchObject({ kind: "integrity", operation: "put" });
   });
 });

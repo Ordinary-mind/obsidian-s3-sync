@@ -8,16 +8,21 @@ import { buildVaultPutPublishEnvelope } from "../core/vault-publish-envelope";
 import { publishEnvelope } from "../core/remote-publish";
 import { downloadVerifiedBlob } from "../core/remote-blob";
 import type { StableCapture } from "../core/stable-capture";
-import { validateRepositoryEndpoint } from "../core/locator";
+import { createRepositoryLocator, type RepositoryLocator } from "../core/locator";
 import type { S3SyncSettings } from "./types";
 
 export class V1RepositoryService {
-  constructor(private readonly settings: S3SyncSettings, private readonly prefix = settings.prefix) {
-    if (!validateRepositoryEndpoint({ endpoint: settings.endpoint, region: settings.region, bucket: settings.bucket, forcePathStyle: settings.forcePathStyle }, settings.endpoint.startsWith("http://127.0.0.1") || settings.endpoint.startsWith("http://localhost"))) {
-      throw new Error("invalid v1 repository endpoint settings");
-    }
+  private readonly locator: Readonly<RepositoryLocator>;
+  private readonly prefix: string;
+
+  constructor(private readonly settings: S3SyncSettings, prefix = settings.prefix) {
+    this.locator = createRepositoryLocator(
+      { endpoint: settings.endpoint, region: settings.region, bucket: settings.bucket, forcePathStyle: settings.forcePathStyle, prefix },
+      settings.endpoint.startsWith("http://127.0.0.1") || settings.endpoint.startsWith("http://localhost"),
+    );
+    this.prefix = this.locator.normalizedPrefix;
   }
-  async discover(): Promise<Array<{ key: string; repositoryId: string; descriptorHash: string }>> {
+  async discover(): Promise<Array<{ key: string; repositoryId: string; descriptorHash: string; configDir: string; historicalConfigDirs: string[] }>> {
     const store = this.store();
     return discoverRepositoryDescriptors(store, this.prefix);
   }
@@ -28,7 +33,7 @@ export class V1RepositoryService {
   }
   async probeWritableConnection(probeId: string): Promise<void> {
     const key = [this.prefix.replace(/\/$/, ""), ".obsidian-s3-sync/v1/probes", `${probeId}.bin`].filter(Boolean).join("/");
-    await probeWritableObjectStore(this.store(), key, new TextEncoder().encode(probeId));
+    await probeWritableObjectStore(this.store(), key, new TextEncoder().encode(probeId), this.store());
   }
   async publishVaultPut(input: {
     repositoryId: string;
@@ -104,6 +109,6 @@ export class V1RepositoryService {
     };
   }
   private store(): S3ObjectStore {
-    return new S3ObjectStore({ endpoint: this.settings.endpoint, region: this.settings.region, bucket: this.settings.bucket, forcePathStyle: this.settings.forcePathStyle, credentials: { accessKeyId: this.settings.accessKeyId, secretAccessKey: this.settings.secretAccessKey } });
+    return new S3ObjectStore({ endpoint: this.locator.endpoint, region: this.locator.region, bucket: this.locator.bucket, forcePathStyle: this.locator.forcePathStyle, credentials: { accessKeyId: this.settings.accessKeyId, secretAccessKey: this.settings.secretAccessKey } });
   }
 }

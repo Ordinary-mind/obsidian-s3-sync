@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clearVaultEventsThroughGeneration, latestVaultEvent, recordVaultEvent, recordVaultRename } from "../../core/vault-event";
+import { bindRootDeletePredecessor, clearVaultEventsThroughGeneration, latestVaultEvent, recordVaultEvent, recordVaultRename } from "../../core/vault-event";
 import { decideResolvedRemotePut } from "../../core/pull-decision";
 
 describe("v1 Vault causal events", () => {
@@ -44,5 +44,11 @@ describe("v1 Vault causal events", () => {
     expect(decideResolvedRemotePut({ localExists: true, projectedHash: "old", currentHash: "local", remoteHash: "remote" })).toBe("conflict");
     const delayed = recordVaultEvent([], { id: "late", kind: "upsert", path: "a.md", projectedHeads: ["old-head"] });
     expect(latestVaultEvent(delayed, "a.md")?.basisHeads).toEqual(["old-head"]);
+  });
+  it("binds a delete after a frozen root put to that exact local predecessor", () => {
+    const put = recordVaultEvent([], { id: "put", kind: "upsert", path: "new.md", projectedHeads: [] });
+    const deleted = recordVaultEvent(put, { id: "delete", kind: "delete", path: "new.md", projectedHeads: ["remote-later"] });
+    const bound = bindRootDeletePredecessor(deleted, "new.md", 1, "commit:0:0");
+    expect(latestVaultEvent(bound, "new.md")).toMatchObject({ basisHeads: [], localPredecessorVersion: "commit:0:0" });
   });
 });

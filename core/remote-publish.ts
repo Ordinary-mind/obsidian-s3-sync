@@ -1,4 +1,4 @@
-import type { ObjectStore } from "./object-store";
+import { readObjectBytes, type ObjectStore } from "./object-store";
 import { verifyImmutableObject, type ImmutableObject } from "./immutable-object";
 
 export interface PublishEnvelope {
@@ -16,7 +16,7 @@ export async function putVerifiedImmutable(store: ObjectStore, object: Immutable
   try {
     await store.putImmutable(object.key, object.bytes);
   } catch (error) {
-    const existing = { ...object, bytes: await store.get(object.key) };
+    const existing = { ...object, bytes: await readObjectBytes(store, object.key, { maximumBytes: object.bytes.byteLength }) };
     verifyImmutableObject(existing, object);
     return;
   }

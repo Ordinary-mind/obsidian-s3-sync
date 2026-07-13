@@ -15,6 +15,16 @@ export interface EditorDirtyIntent extends EditorLatch {
   basisHeads: string[];
   projectedValueHash: string | undefined;
   localCandidates: EditorLocalCandidate[];
+  editorContents: Array<{ generation: number; hash: string }>;
+}
+
+export interface EditorLocalConcurrentRecord {
+  path: string;
+  basisHeads: string[];
+  editorGeneration: number;
+  editorContentHash: string;
+  externalCandidate: EditorLocalCandidate;
+  sourceEvidenceId: string;
 }
 
 export function captureEditorChange(input: {
@@ -26,6 +36,7 @@ export function captureEditorChange(input: {
 }): EditorDirtyIntent {
   if (input.existing && input.existing.path !== input.path) throw new Error("editor intent path mismatch");
   if (input.existing) {
+    const editorContents = input.existing.editorContents ?? [{ generation: input.existing.editorGeneration, hash: input.existing.expectedContentHash }];
     return {
       ...input.existing,
       generation: input.existing.generation + 1,
@@ -33,6 +44,10 @@ export function captureEditorChange(input: {
       expectedContentHash: input.editorContentHash,
       basisHeads: [...input.existing.basisHeads],
       localCandidates: input.existing.localCandidates.map(copyCandidate),
+      editorContents: [...editorContents.map((content) => ({ ...content })), {
+        generation: input.existing.editorGeneration + 1,
+        hash: input.editorContentHash,
+      }],
       awaitingLocalWrite: true,
     };
   }
@@ -44,6 +59,7 @@ export function captureEditorChange(input: {
     basisHeads: [...new Set(input.projectedHeads)].sort(),
     projectedValueHash: input.projectedValueHash,
     localCandidates: [],
+    editorContents: [{ generation: 1, hash: input.editorContentHash }],
     awaitingLocalWrite: true,
   };
 }
@@ -52,7 +68,7 @@ export function observeEditorDisk(
   intent: EditorDirtyIntent,
   candidate: EditorLocalCandidate,
   sourceProvesExternalChange: boolean,
-): { intent: EditorDirtyIntent; decision: "keep-waiting" | "editor-write-proven" | "local-concurrent" } {
+): { intent: EditorDirtyIntent; decision: "keep-waiting" | "editor-autosave" | "editor-write-proven" | "local-concurrent" } {
   const candidateKey = `${candidate.kind}:${candidate.hash ?? ""}`;
   const candidates = intent.localCandidates.some((value) => `${value.kind}:${value.hash ?? ""}` === candidateKey)
     ? intent.localCandidates.map(copyCandidate)
@@ -63,9 +79,29 @@ export function observeEditorDisk(
   if (candidate.kind === "put" && candidate.hash === intent.projectedValueHash) {
     return { intent: { ...intent, localCandidates: intent.localCandidates.map(copyCandidate) }, decision: "keep-waiting" };
   }
+  const editorContents = intent.editorContents ?? [{ generation: intent.editorGeneration, hash: intent.expectedContentHash }];
+  if (candidate.kind === "put" && editorContents.some((content) => content.hash === candidate.hash)) {
+    return { intent: { ...intent, localCandidates: candidates }, decision: "editor-autosave" };
+  }
   return {
     intent: { ...intent, localCandidates: candidates },
     decision: sourceProvesExternalChange ? "local-concurrent" : "keep-waiting",
+  };
+}
+
+export function createEditorLocalConcurrentRecord(input: {
+  intent: EditorDirtyIntent;
+  externalCandidate: EditorLocalCandidate;
+  sourceEvidenceId?: string;
+}): EditorLocalConcurrentRecord {
+  if (!input.sourceEvidenceId) throw new Error("external source evidence is required");
+  return {
+    path: input.intent.path,
+    basisHeads: [...input.intent.basisHeads],
+    editorGeneration: input.intent.editorGeneration,
+    editorContentHash: input.intent.expectedContentHash,
+    externalCandidate: copyCandidate(input.externalCandidate),
+    sourceEvidenceId: input.sourceEvidenceId,
   };
 }
 

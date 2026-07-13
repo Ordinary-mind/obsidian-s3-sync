@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isConfigPathExcluded, isConfigPathExcludedForRepository, isHistoricalConfigCompatible, isVaultPathExcluded, localStateRoot, sensitivePathExclusions } from "../../core/scope";
+import { isConfigPathExcluded, isConfigPathExcludedForRepository, isHistoricalConfigCompatible, isVaultPathExcluded, localStateRoot, planConfigDirBinding, sensitivePathExclusions } from "../../core/scope";
 
 const repositoryId = "123e4567-e89b-42d3-a456-426614174000";
 
@@ -41,5 +41,13 @@ describe("Vault protocol scope", () => {
       ".older",
       ".s3-sync-conflicts",
     ]);
+  });
+  it("requires a new repository generation when configDir identity changes", () => {
+    expect(planConfigDirBinding({ descriptorConfigDir: ".old", descriptorHistoricalConfigDirs: [".older"], actualConfigDir: ".new", localHistoricalConfigDirs: [".local-old"] })).toEqual({
+      status: "requires-new-generation",
+      configDir: ".new",
+      historicalConfigDirs: [".old", ".older", ".local-old"],
+    });
+    expect(planConfigDirBinding({ descriptorConfigDir: ".obsidian", descriptorHistoricalConfigDirs: [".old"], actualConfigDir: ".obsidian", localHistoricalConfigDirs: [".old"] })).toEqual({ status: "match" });
   });
 });

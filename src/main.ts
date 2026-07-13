@@ -15,7 +15,7 @@ import { conflictId } from "../core/conflict-id";
 import { remoteConflictCopyPath } from "../core/conflict-copy";
 import { captureEditorChange, mayApplyRemoteWithEditorIntent, observeEditorDisk } from "../core/editor-latch";
 import { sha256Hex } from "../protocol/hash";
-import { clearVaultEventsThroughGeneration, latestVaultEvent, recordVaultEvent, recordVaultRename } from "../core/vault-event";
+import { bindRootDeletePredecessor, clearVaultEventsThroughGeneration, latestVaultEvent, recordVaultEvent, recordVaultRename } from "../core/vault-event";
 import { isVaultPathExcluded } from "../core/scope";
 import { advanceApplyJournal, type ApplyJournal } from "../core/apply-journal";
 import { isOwnApplyEvent } from "../core/apply-operation";
@@ -108,14 +108,13 @@ export default class S3SyncPlugin extends Plugin {
       this.queueCausalStatePersistence();
     }));
     this.registerV1VaultEvents();
+    this.registerDomEvent(document, "visibilitychange", () => {
+      if (document.visibilityState === "hidden") this.stopSchedulingAndFlush();
+    });
   }
 
   onunload(): void {
-    if (this.syncTimer !== null) {
-      window.clearTimeout(this.syncTimer);
-      this.syncTimer = null;
-    }
-    void this.savePluginData().catch((error) => console.error("S3 Sync failed to flush v1 causal state during unload", error));
+    this.stopSchedulingAndFlush();
   }
 
   async saveSettings(): Promise<void> {
@@ -167,6 +166,8 @@ export default class S3SyncPlugin extends Plugin {
             writerId: crypto.randomUUID(),
             nextSequence: "00000000000000000001",
             previousCommitHash: null,
+            configDir: repositories[0].configDir,
+            historicalConfigDirs: [...repositories[0].historicalConfigDirs],
           };
         await this.saveSyncData();
         new Notice(`S3 Sync connected and selected repository: ${repositories[0].repositoryId}`);
@@ -209,6 +210,8 @@ export default class S3SyncPlugin extends Plugin {
         writerId: crypto.randomUUID(),
         nextSequence: "00000000000000000001",
         previousCommitHash: null,
+        configDir: this.app.vault.configDir,
+        historicalConfigDirs: [],
       };
       await this.saveSyncData();
       new Notice(`S3 Sync v1 repository created: ${result.repositoryId}`);
@@ -230,6 +233,8 @@ export default class S3SyncPlugin extends Plugin {
         writerId: crypto.randomUUID(),
         nextSequence: "00000000000000000001",
         previousCommitHash: null,
+        configDir: repositories[0].configDir,
+        historicalConfigDirs: [...repositories[0].historicalConfigDirs],
       };
       await this.saveSyncData();
       new Notice(`S3 Sync v1 repository selected: ${repositories[0].repositoryId}`);
@@ -245,6 +250,7 @@ export default class S3SyncPlugin extends Plugin {
       if (!state || state.prefix !== this.getEffectivePrefix()) {
         throw new Error("create or select a v1 repository for the current Prefix first");
       }
+      this.assertV1ConfigDirBinding(state);
       const file = this.app.workspace.getActiveFile();
       if (!file) throw new Error("no active file to publish");
       const dirtyIntent = this.data.v1DirtyIntents[file.path];
@@ -292,6 +298,9 @@ export default class S3SyncPlugin extends Plugin {
       if (vaultEvent) {
         this.data.v1VaultEvents = clearVaultEventsThroughGeneration(this.data.v1VaultEvents, file.path, vaultEvent.generation);
       }
+      if (parents.length === 0) {
+        this.data.v1VaultEvents = bindRootDeletePredecessor(this.data.v1VaultEvents, file.path, vaultEvent?.generation ?? 0, `${commitHash}:0:0`);
+      }
       await this.saveSyncData();
       new Notice(`S3 Sync v1 published: ${file.path}`);
     } catch (error) {
@@ -304,6 +313,7 @@ export default class S3SyncPlugin extends Plugin {
     try {
       const state = this.data.v1;
       if (!state || state.prefix !== this.getEffectivePrefix()) throw new Error("select a v1 repository for the current Prefix first");
+      this.assertV1ConfigDirBinding(state);
       const files = await new V1RepositoryService(this.settings, state.prefix).listResolvedVaultPuts(state.repositoryId, state.descriptorHash);
       let created = 0;
       let updated = 0;
@@ -375,6 +385,12 @@ export default class S3SyncPlugin extends Plugin {
     } catch (error) {
       new Notice(`S3 Sync v1 runtime contract failed: ${this.errorMessage(error)}`);
       console.error(error);
+    }
+  }
+
+  private assertV1ConfigDirBinding(state: NonNullable<S3SyncData["v1"]>): void {
+    if (state.configDir && state.configDir !== this.app.vault.configDir) {
+      throw new Error("vault.configDir changed; create a new repository generation before publishing or applying");
     }
   }
 
@@ -464,6 +480,14 @@ export default class S3SyncPlugin extends Plugin {
     this.causalStatePersistence = this.causalStatePersistence
       .then(() => this.savePluginData())
       .catch((error) => console.error("S3 Sync failed to persist v1 causal state", error));
+  }
+
+  private stopSchedulingAndFlush(): void {
+    if (this.syncTimer !== null) {
+      window.clearTimeout(this.syncTimer);
+      this.syncTimer = null;
+    }
+    this.queueCausalStatePersistence();
   }
 
   private async withV1ApplyPath<T>(path: string, targetHash: string | undefined, operation: () => Promise<T>): Promise<T> {

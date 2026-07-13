@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { captureEditorChange, mayApplyRemoteWithEditorIntent, observeEditorDisk, observeStableDisk } from "../../core/editor-latch";
+import { captureEditorChange, createEditorLocalConcurrentRecord, mayApplyRemoteWithEditorIntent, observeEditorDisk, observeStableDisk } from "../../core/editor-latch";
 describe("editor write latch", () => { it("does not guess external concurrency from a mismatched disk value", () => {
   const latch = { generation: 1, expectedContentHash: "editor", awaitingLocalWrite: true };
   expect(observeStableDisk(latch, "old-projection", false)).toBe("keep-waiting");
@@ -21,6 +21,26 @@ it("keeps the old projection waiting and records other disk candidates without g
   expect(unknown).toMatchObject({ decision: "keep-waiting", intent: { localCandidates: [{ kind: "put", hash: "other" }], awaitingLocalWrite: true } });
   expect(observeEditorDisk(unknown.intent, { kind: "put", hash: "other" }, true).decision).toBe("local-concurrent");
   expect(observeEditorDisk(unknown.intent, { kind: "put", hash: "editor" }, false)).toMatchObject({ decision: "editor-write-proven", intent: { awaitingLocalWrite: false } });
+});
+it("recognizes an earlier editor generation as autosave without clearing the latest latch", () => {
+  const first = captureEditorChange({ path: "notes/a.md", projectedHeads: ["before"], projectedValueHash: "old", editorContentHash: "edit-1" });
+  const latest = captureEditorChange({ path: "notes/a.md", projectedHeads: ["remote"], projectedValueHash: "remote", editorContentHash: "edit-2", existing: first });
+  expect(observeEditorDisk(latest, { kind: "put", hash: "edit-1" }, false)).toMatchObject({
+    decision: "editor-autosave",
+    intent: { awaitingLocalWrite: true, basisHeads: ["before"] },
+  });
+});
+it("requires explicit source evidence before creating local concurrency", () => {
+  const intent = captureEditorChange({ path: "notes/a.md", projectedHeads: ["before"], projectedValueHash: "old", editorContentHash: "editor" });
+  const deletion = { kind: "delete" as const };
+  expect(observeEditorDisk(intent, deletion, false).decision).toBe("keep-waiting");
+  expect(observeEditorDisk(intent, deletion, true).decision).toBe("local-concurrent");
+  expect(() => createEditorLocalConcurrentRecord({ intent, externalCandidate: deletion })).toThrow("source evidence");
+  expect(createEditorLocalConcurrentRecord({ intent, externalCandidate: deletion, sourceEvidenceId: "adapter:event-1" })).toMatchObject({
+    path: "notes/a.md",
+    basisHeads: ["before"],
+    externalCandidate: deletion,
+  });
 });
 it("survives persistence reload and repeated old disk observations", () => {
   let intent = JSON.parse(JSON.stringify(captureEditorChange({

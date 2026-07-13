@@ -5,6 +5,7 @@ import { sha256Hex } from "../../protocol/hash";
 import { canonicalizeProtocolJson } from "../../protocol/json";
 import { pullCommitIntoRepository } from "../../core/remote-pull";
 import { InMemoryRepositoryCore } from "../../core/repository";
+import { objectBodyFromBytes } from "../../core/object-store";
 
 describe("remote Commit pull", () => {
   it("fetches every referenced Chunk before admitting a Commit into the core", async () => {
@@ -14,7 +15,7 @@ describe("remote Commit pull", () => {
     const commitKey = `${root}/commits/${vector.commit.object.writerId}/${vector.commit.object.sequence}-${vector.commit.sha256}.json`;
     objects.set(commitKey, new TextEncoder().encode(vector.commit.canonicalJson));
     vector.chunks.forEach((chunk: { sha256: string; canonicalJson: string }) => objects.set(changeChunkKey("", vector.commit.object.repositoryId, chunk.sha256), new TextEncoder().encode(chunk.canonicalJson)));
-    const store = { get: async (key: string) => { const bytes = objects.get(key); if (!bytes) throw new Error(`missing ${key}`); return bytes; }, head: async () => ({ size: 0 }), list: async () => ({ keys: [] }), putImmutable: async () => undefined };
+    const store = { getStream: async (key: string) => { const bytes = objects.get(key); if (!bytes) throw new Error(`missing ${key}`); return objectBodyFromBytes(bytes); }, head: async () => ({ size: 0 }), list: async () => ({ keys: [] }), putImmutable: async () => undefined };
     const repository = new InMemoryRepositoryCore();
     await pullCommitIntoRepository(store, repository, "", vector.commit.object.repositoryId, vector.commit.object.descriptorHash, commitKey);
     expect(repository.register(vector.commit.object.repositoryId, "vault", "notes/first.md").heads).toHaveLength(1);
@@ -75,10 +76,10 @@ describe("remote Commit pull", () => {
       [changeChunkKey("", repositoryId, chunkHash), chunkBytes],
       [configTreeKey("", repositoryId, treeHash), treeBytes],
     ]);
-    const store = { get: async (key: string) => {
+    const store = { getStream: async (key: string) => {
       const bytes = objects.get(key);
       if (!bytes) throw new Error(`missing ${key}`);
-      return bytes;
+      return objectBodyFromBytes(bytes);
     }, head: async () => ({ size: 0 }), list: async () => ({ keys: [] }), putImmutable: async () => undefined };
     const repository = new InMemoryRepositoryCore();
 

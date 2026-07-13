@@ -125,12 +125,12 @@
 
 - [x] 接入 Obsidian `editor-change`，首次编辑立即在内存中阻塞远端应用并排队持久化 dirtyIntent。
 - [x] editor dirtyIntent 持久化 awaitingLocalWrite/editor generation/可比较内容标识；Vault 事件本身不能解除，只有同 generation editor 内容与稳定磁盘字节精确匹配或适配器证明缓冲区已干净才可解除。
-- [ ] 门闩期间稳定磁盘值等于原 projectedValue 时继续等待；其他值先进入不可变 localCandidates，匹配已知 editor generation 可视为中间 autosave。只有适配器有来源证据时才创建 LocalConcurrentRecord，不能因不匹配最新 buffer 猜外部并发。
+- [x] 门闩期间稳定磁盘值等于原 projectedValue 时继续等待；其他值先进入不可变 localCandidates，匹配已知 editor generation 可视为中间 autosave。只有适配器有来源证据时才创建 LocalConcurrentRecord，不能因不匹配最新 buffer 猜外部并发。
 - [x] awaitingLocalWrite 路径不得冻结进 Outbox；最新未变化 editor generation 与稳定磁盘匹配或适配器证明 buffer clean 后才选最终 DirtyRecord，未选候选保留到发布复核完成后的本地恢复策略。
 - [x] 接入 Vault create/modify/delete/rename，事件记录路径、generation 和当时 projectedHeads。
 - [x] rename 事件在一个本地状态事务中保存旧路径删除和新路径新增意图。
-- [ ] 配置通道没有通用文件事件时，依靠安静窗口扫描和应用前完整复查保证安全。
-- [ ] 插件 unload、移动端挂起前停止调度并尽力刷新已进入内存的 dirtyIntent。
+- [x] 配置通道没有通用文件事件时，依靠安静窗口扫描和应用前完整复查保证安全。
+- [x] 插件 unload、移动端挂起前停止调度并尽力刷新已进入内存的 dirtyIntent。
 
 ### Hash、暂存与删除证据
 
@@ -144,15 +144,15 @@
 - [x] 审计缺失只有在整轮成功、未取消、范围版本不变且直接复查仍缺失时才能成为 DeletionEvidence。
 - [x] ignore/config profile 变更只停止管理，不产生 tombstone。
 - [x] 文件超限、路径不兼容、读取失败和扫描不完整都返回 unknown，不返回 absent。
-- [ ] 新建根 put 冻结后发生 confirmed-absent 时持久化等待删除意图和该 put 的 localPredecessorVersion；put 验证发布前不得冻结根 delete，发布后 delete 只继承该 Version ID。
+- [x] 新建根 put 冻结后发生 confirmed-absent 时持久化等待删除意图和该 put 的 localPredecessorVersion；put 验证发布前不得冻结根 delete，发布后 delete 只继承该 Version ID。
 - [x] 设计 Hash 缓存；完整审计绕过不可靠缓存，缓存失效不改变结果。
 
 ### 测试
 
 - [x] `editor-change -> 远端新头 -> 本地尚未保存` 时远端应用被阻止。
 - [x] editor-change 后旧磁盘字节重复稳定、轮询超时和插件热重载都不能提前清除 awaitingLocalWrite；后续 autosave 仍继承原 projectedHeads。
-- [ ] editor-change 后旧 projectedValue 反复稳定不会制造 LocalConcurrentRecord；匹配 editor 候选的 autosave 只生成正常 DirtyRecord。
-- [ ] editor-change 后外部 modify/delete/rename 先到：无来源证据时只暂存候选并继续门闩，有来源证据时进入 LocalConcurrentRecord；两种情况都不发布伪父子版本或允许远端应用。
+- [x] editor-change 后旧 projectedValue 反复稳定不会制造 LocalConcurrentRecord；匹配 editor 候选的 autosave 只生成正常 DirtyRecord。
+- [x] editor-change 后外部 modify/delete/rename 先到：无来源证据时只暂存候选并继续门闩，有来源证据时进入 LocalConcurrentRecord；两种情况都不发布伪父子版本或允许远端应用。
 - [x] 本地磁盘先变化、Vault 事件后到、远端先拉取时，basisHeads 仍为旧 projectedHeads。
 - [x] 同内容只改 mtime 100 次，不产生 DirtyRecord。
 - [x] 写入过程中读取、零字节、大文件、Unicode 和大小写别名测试。
@@ -160,7 +160,7 @@
 - [x] 权限错误、取消扫描、目录临时不可用和 ignore 变更均不产生墓碑。
 - [x] 自定义 configDir 下，本插件 data/state 永远不可进入扫描结果。
 - [x] configDir 切换后，旧目录中的凭证、状态、Outbox 和恢复数据仍在 sensitivePathExclusions 中且不能被用户 ignore 规则重新纳入。
-- [ ] configDir 切换会使原 RepositoryLocator 指纹失配并停止发布/应用；新 repositoryId descriptor 携带旧 current/histories 并集，所有设备继续排除旧目录。
+- [x] configDir 切换会使原 RepositoryLocator 指纹失配并停止发布/应用；新 repositoryId descriptor 携带旧 current/histories 并集，所有设备继续排除旧目录。
 - [x] `foo` 文件与 `foo/bar.md` 并发、case-fold 特殊字符和不同运行时 locale 得到同一冲突结果。
 - [x] 规范等价但字节不同的 Unicode 文件名在可创建它们的平台形成同一 NFC collision，不丢任何本地字节。
 
@@ -172,26 +172,26 @@
 
 ### 接口与适配器
 
-- [ ] 定义 ObjectStore：分页 List、Head、流式 Get、PutImmutable 和可选 DeleteProbe。
-- [ ] AWS SDK 只存在于 S3 adapter，领域层不引用供应商类型。
-- [ ] 实现冻结的 Locator 规范：HTTPS origin-only WHATWG endpoint（测试模式仅 loopback HTTP）、`[A-Za-z0-9._-]{1,128}` region、显式 forcePathStyle、Bucket 和 normalizedPrefix；验证所有完整协议 Key 不超过 1,024 UTF-8 bytes。
-- [ ] 实现超时、取消、指数退避、限流和错误分类。
-- [ ] List 正确处理空页、重复 Key、乱序结果、continuation token 和 Prefix delimiter。
-- [ ] PutImmutable 强制 `If-None-Match: *` 或已证明等价的原子仅创建；条件失败 GET 比对，写后再次 GET/Hash。无条件 PUT + HEAD 检查不得进入正式 adapter。
-- [ ] 同 Key 不同字节立即报告完整性错误，不自动覆盖或修复。
-- [ ] 正常协议接口不暴露 DeleteObject；probe 清理和维护删除使用独立能力。
-- [ ] 连接测试执行隔离 Key 的 Put、Get、Hash、Head、List；Delete 不可用时仍可通过正常同步能力测试。
-- [ ] 记录并脱敏 HTTP 状态、Request ID、重试和失败阶段。
+- [x] 定义 ObjectStore：分页 List、Head、流式 Get、PutImmutable 和可选 DeleteProbe。
+- [x] AWS SDK 只存在于 S3 adapter，领域层不引用供应商类型。
+- [x] 实现冻结的 Locator 规范：HTTPS origin-only WHATWG endpoint（测试模式仅 loopback HTTP）、`[A-Za-z0-9._-]{1,128}` region、显式 forcePathStyle、Bucket 和 normalizedPrefix；验证所有完整协议 Key 不超过 1,024 UTF-8 bytes。
+- [x] 实现超时、取消、指数退避、限流和错误分类。
+- [x] List 正确处理空页、重复 Key、乱序结果、continuation token 和 Prefix delimiter。
+- [x] PutImmutable 强制 `If-None-Match: *` 或已证明等价的原子仅创建；条件失败 GET 比对，写后再次 GET/Hash。无条件 PUT + HEAD 检查不得进入正式 adapter。
+- [x] 同 Key 不同字节立即报告完整性错误，不自动覆盖或修复。
+- [x] 正常协议接口不暴露 DeleteObject；probe 清理和维护删除使用独立能力。
+- [x] 连接测试执行隔离 Key 的 Put、Get、Hash、Head、List；Delete 不可用时仍可通过正常同步能力测试。
+- [x] 记录并脱敏 HTTP 状态、Request ID、重试和失败阶段。
 
 ### 测试
 
-- [ ] Fake ObjectStore 模拟晚可见、重复、乱序、临时 404 和 PUT 响应丢失。
-- [ ] 条件创建不可用或语义不原子时，连接 probe 明确拒绝写模式；只读诊断不得发 PUT。
-- [ ] 以不同正文并发 PutImmutable 同一 Key，契约测试必须证明恰好一个请求成功、失败请求不覆盖当前字节；客户端锁、HEAD+PUT 和无条件 PUT adapter 必须失败。
-- [ ] 预先存在不同字节的同 Key 对象被拒绝，不发生覆盖。
+- [x] Fake ObjectStore 模拟晚可见、重复、乱序、临时 404 和 PUT 响应丢失。
+- [x] 条件创建不可用或语义不原子时，连接 probe 明确拒绝写模式；只读诊断不得发 PUT。
+- [x] 以不同正文并发 PutImmutable 同一 Key，契约测试必须证明恰好一个请求成功、失败请求不覆盖当前字节；客户端锁、HEAD+PUT 和无条件 PUT adapter 必须失败。
+- [x] 预先存在不同字节的同 Key 对象被拒绝，不发生覆盖。
 - [ ] AWS S3 和声明支持的兼容存储运行同一契约测试。
 - [ ] Bucket Versioning 开启时，重复重试不会无意义地产生大量非当前版本。
-- [ ] 无 DeleteObject 权限的普通凭证可完成全部正常同步契约。
+- [x] 无 DeleteObject 权限的普通凭证可完成全部正常同步契约。
 
 验收门：所有声明支持的存储通过同一契约；不满足关键能力时向导能指出具体缺失，不进入正式仓库。
 
@@ -201,57 +201,57 @@
 
 ### 仓库与 Key
 
-- [ ] 实现 RepositoryLocator、仓库指纹和 repositoryId 根路径。
+- [x] 实现 RepositoryLocator、仓库指纹和 repositoryId 根路径。
 - [ ] RepositoryDescriptor/Locator 持久化规范 configDir、historicalConfigDirs 和 descriptorHash；实际 vault.configDir、本机历史集合、descriptor bytes 或 Tree/Chunk/Commit descriptorHash 不一致时拒绝绑定、发布和应用。
-- [ ] 实现 Prefix 下 repositoryId 发现：只接受精确深度的 canonical UUIDv4/format.json，逐项 GET 并校验 Key/descriptor/Hash；畸形或缺失候选仅诊断，多个合法仓库必须显式选择。
-- [ ] 实现固定 RepositoryDescriptor/`format.json` 编码：仅创建者用 PutImmutable 写，加入者只读；条件失败只 GET 比对，永不无条件覆盖。
+- [x] 实现 Prefix 下 repositoryId 发现：只接受精确深度的 canonical UUIDv4/format.json，逐项 GET 并校验 Key/descriptor/Hash；畸形或缺失候选仅诊断，多个合法仓库必须显式选择。
+- [x] 实现固定 RepositoryDescriptor/`format.json` 编码：仅创建者用 PutImmutable 写，加入者只读；条件失败只 GET 比对，永不无条件覆盖。
 - [ ] 空仓库保存 descriptor anchor；非空仓库保存每个已知 writer 的连续 frontier 分支 tip Hash 集合，并在发布前逐个 GET、验证 Key 和正文 Hash，HEAD/ETag 不足以通过。
 - [ ] List 缺失不视为损坏；已观察 integrity anchor 或已知 Commit 经重试仍无法直接 HEAD/GET 时停止发布。
-- [ ] 实现 Blob、ConfigTree、Change Chunk 和 Commit Key builder。
-- [ ] Key builder 对空 Prefix 不产生前导 `/`，非空 Prefix 只连接一个 `/`；固定向量覆盖空/Unicode Prefix 和完整 Key 1,024/1,025 bytes。
-- [ ] 内容寻址 Key 的分片目录严格使用 Hash 前两个小写字符。
+- [x] 实现 Blob、ConfigTree、Change Chunk 和 Commit Key builder。
+- [x] Key builder 对空 Prefix 不产生前导 `/`，非空 Prefix 只连接一个 `/`；固定向量覆盖空/Unicode Prefix 和完整 Key 1,024/1,025 bytes。
+- [x] 内容寻址 Key 的分片目录严格使用 Hash 前两个小写字符。
 
 ### 对象读写
 
-- [ ] 实现 Blob 上传、下载、流式 Hash 和可读验证。
+- [x] 实现 Blob 上传、下载、流式 Hash 和可读验证。
 - [ ] Config/Vault put 的声明 size 必须等于实际 Blob bytes；同 Hash 不同 size 只验证匹配引用，不按声明 size 预分配或错误应用。
-- [ ] v1 拒绝超过 5,000,000,000 bytes 的 Blob，不实现 multipart；平台更低上限必须可诊断。
+- [x] v1 拒绝超过 5,000,000,000 bytes 的 Blob，不实现 multipart；平台更低上限必须可诊断。
 - [ ] 实现 ConfigTree 编码、上传、下载和完整 profile/item 校验。
-- [ ] ConfigTree validator 按冻结映射验证 baseFiles/themes/snippets/pluginPackages/pluginData 的路径覆盖，拒绝重叠/越界和 package 根 data.json 混入。
-- [ ] ConfigTree validator 按固定 case-fold/段前缀规则拒绝映射到 current 内 historicalConfigDir、`.obsidian-s3-sync-local` 或 `plugins/obsidian-s3-sync` 的 item，不使用本机自定义保留根改变协议判定。
+- [x] ConfigTree validator 按冻结映射验证 baseFiles/themes/snippets/pluginPackages/pluginData 的路径覆盖，拒绝重叠/越界和 package 根 data.json 混入。
+- [x] ConfigTree validator 按固定 case-fold/段前缀规则拒绝映射到 current 内 historicalConfigDir、`.obsidian-s3-sync-local` 或 `plugins/obsidian-s3-sync` 的 item，不使用本机自定义保留根改变协议判定。
 - [ ] 实现多 Change Chunk 编码；同一 Commit 全局禁止重复 Vault path。
 - [ ] Vault Mutation 按固定 case-fold/段前缀规则命中 descriptor current/historical configDir 或 Vault 根 `.s3-sync-conflicts` 时只隔离该寄存器版本，绝不创建/应用；同信封其他合法寄存器可继续。
-- [ ] 拒绝空 Change Chunk 和空 Commit；真正空仓库只使用 RepositoryDescriptor anchor。
-- [ ] Config Commit 必须恰有一个 Chunk 和一个 ConfigSnapshotMutation。
+- [x] 拒绝空 Change Chunk 和空 Commit；真正空仓库只使用 RepositoryDescriptor anchor。
+- [x] Config Commit 必须恰有一个 Chunk 和一个 ConfigSnapshotMutation。
 - [ ] 校验 Chunk 数组非空、index 连续、跨 Chunk Mutation 全局排序，以及 repositoryId/channel/chunkCount 一致。
 - [ ] Commit 结构信封使用磁盘/增量验证，不能把最多 1,024 个 4 MiB Chunk 同时留在内存；创建任何 Version 前仍须完成全信封校验。
-- [ ] 实现 Commit 规范编码、Commit Hash 和 20 位 sequence Key。
+- [x] 实现 Commit 规范编码、Commit Hash 和 20 位 sequence Key。
 - [ ] sequence 达到 uint64 最大值后轮换 writerId；禁止溢出、回绕或复用。
-- [ ] `parent-reduction` Commit 必须恰有一个 Chunk 和一个 Mutation。
-- [ ] 校验两个 channel 的全部 kind：bootstrap=0、change=0..1,024、conflict-resolution=1..1,024、parent-reduction=2..1,024 parents 且 reduction 仅单 Mutation；kind 不参与选胜者。
-- [ ] 实现发布顺序：Blob -> ConfigTree -> Change Chunk -> Commit。
-- [ ] 所有对象同 Key 同字节视为重试成功，同 Key 不同字节为完整性错误。
+- [x] `parent-reduction` Commit 必须恰有一个 Chunk 和一个 Mutation。
+- [x] 校验两个 channel 的全部 kind：bootstrap=0、change=0..1,024、conflict-resolution=1..1,024、parent-reduction=2..1,024 parents 且 reduction 仅单 Mutation；kind 不参与选胜者。
+- [x] 实现发布顺序：Blob -> ConfigTree -> Change Chunk -> Commit。
+- [x] 所有对象同 Key 同字节视为重试成功，同 Key 不同字节为完整性错误。
 
 ### 发现、依赖和 writer 链
 
-- [ ] 分页发现 writer 和 Commit，不依赖可变 writer registry。
-- [ ] 校验 writer sequence、首提交 null previous、后续 previousCommitHash、缺口和分叉。
-- [ ] 实现 parent 依赖队列，依赖未齐不应用相关寄存器。
+- [x] 分页发现 writer 和 Commit，不依赖可变 writer registry。
+- [x] 校验 writer sequence、首提交 null previous、后续 previousCommitHash、缺口和分叉。
+- [x] 实现 parent 依赖队列，依赖未齐不应用相关寄存器。
 - [ ] 实现增量轮询和从头完整 Commit 审计；marker 只是缓存。
 - [ ] 实现可恢复的远端完整校验：遍历全部已验证 Commit 及可达 Chunk/Tree/Blob 并重新 GET/Hash；tip anchor 检查不能冒充全仓健康。
-- [ ] 实现远端全量重建 API，不依赖本地数据库或 checkpoint。
-- [ ] checkpoint 在 v1 后续实现前保持未使用状态。
+- [x] 实现远端全量重建 API，不依赖本地数据库或 checkpoint。
+- [x] checkpoint 在 v1 后续实现前保持未使用状态。
 
 ### 测试
 
-- [ ] 与任务 0 固定测试向量逐字节一致。
+- [x] 与任务 0 固定测试向量逐字节一致。
 - [ ] 在每个远端写入步骤前后注入崩溃，Commit 可见状态始终完整可重建。
-- [ ] 已共享 repositoryId 的两个 writer 并发 bootstrap，结果合并或显式冲突。
+- [x] 已共享 repositoryId 的两个 writer 并发 bootstrap，结果合并或显式冲突。
 - [ ] 不同 repositoryId 在同 Prefix 完全隔离。
-- [ ] Commit 先可见、依赖暂不可见时只重试。
-- [ ] 任一 Change Chunk 缺失/损坏或跨 Chunk 规则失败时，Commit 的所有 Mutation 都不创建；完整结构信封通过后再按 Mutation 验证 Blob/Tree/parent。
+- [x] Commit 先可见、依赖暂不可见时只重试。
+- [x] 任一 Change Chunk 缺失/损坏或跨 Chunk 规则失败时，Commit 的所有 Mutation 都不创建；完整结构信封通过后再按 Mutation 验证 Blob/Tree/parent。
 - [ ] 单个 Vault Blob 或 ConfigTree 内容依赖缺失/损坏只阻塞对应寄存器，其他 Mutation 可归并；缺依赖值绝不按空内容应用。
-- [ ] parent 来自其他路径、其他仓库或其他 channel 时隔离。
+- [x] parent 来自其他路径、其他仓库或其他 channel 时隔离。
 - [ ] writer 同 sequence 两个 Hash 均参与归并并触发身份轮换。
 - [ ] sequence 最大值或 fork 排空后轮换 writerId，下一本地 generation 仍可把旧 writer 的精确 Version ID 作为 localPredecessor，previousCommitHash 则在新 writer 上从 null 开始。
 - [ ] 任意对象被篡改、截断或超限时停止相关寄存器应用。

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createRepositoryDescriptor } from "../../core/repository-bootstrap";
+import { objectBodyFromBytes } from "../../core/object-store";
 
 describe("repository bootstrap", () => {
   it("creates one canonical immutable descriptor at its exact repository key", async () => {
@@ -7,7 +8,7 @@ describe("repository bootstrap", () => {
     const store = {
       list: async () => ({ keys: [] }),
       head: async () => ({ size: 0 }),
-      get: async (key: string) => objects.get(key) ?? new Uint8Array(),
+      getStream: async (key: string) => objectBodyFromBytes(objects.get(key) ?? new Uint8Array()),
       putImmutable: async (key: string, bytes: Uint8Array) => {
         const current = objects.get(key);
         if (current && !current.every((value, index) => value === bytes[index])) throw new Error("immutable collision");
@@ -31,7 +32,7 @@ describe("repository bootstrap", () => {
 
   it("rejects an invalid descriptor before it reaches ObjectStore", async () => {
     let writes = 0;
-    const store = { list: async () => ({ keys: [] }), head: async () => ({ size: 0 }), get: async () => new Uint8Array(), putImmutable: async () => { writes += 1; } };
+    const store = { list: async () => ({ keys: [] }), head: async () => ({ size: 0 }), getStream: async () => objectBodyFromBytes(new Uint8Array()), putImmutable: async () => { writes += 1; } };
     await expect(createRepositoryDescriptor(store, {
       prefix: "",
       repositoryId: "123e4567-e89b-42d3-a456-426614174000",

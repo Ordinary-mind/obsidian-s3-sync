@@ -10,6 +10,7 @@ export * from "./vault-event";
 export * from "./streaming-capture";
 export * from "./management-transition";
 export * from "./hash-cache";
+export * from "./config-scan";
 export * from "./outbox";
 export * from "./apply-plan";
 export * from "./apply-journal";
