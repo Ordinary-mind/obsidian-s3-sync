@@ -27,5 +27,11 @@ export function createDefaultData(): S3SyncData {
     lastSyncedVersion: 0,
     files: {},
     conflicts: {},
+    v1DirtyIntents: {},
+    v1ProjectedHeads: {},
+    v1VaultEvents: [],
+    v1VaultGenerations: {},
+    v1RecoveryCandidates: {},
+    v1ApplyJournals: [],
   };
 }

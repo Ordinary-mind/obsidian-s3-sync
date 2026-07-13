@@ -1,3 +1,7 @@
+import type { EditorDirtyIntent, EditorLocalCandidate } from "../core/editor-latch";
+import type { VaultEventIntent } from "../core/vault-event";
+import type { ApplyJournal } from "../core/apply-journal";
+
 export interface S3SyncSettings {
   endpoint: string;
   region: string;
@@ -37,6 +41,12 @@ export interface S3SyncData {
   lastSyncedVersion: number;
   files: Record<string, LocalFileState>;
   conflicts: Record<string, ConflictRecord>;
+  v1DirtyIntents: Record<string, EditorDirtyIntent>;
+  v1ProjectedHeads: Record<string, string[]>;
+  v1VaultEvents: VaultEventIntent[];
+  v1VaultGenerations: Record<string, number>;
+  v1RecoveryCandidates: Record<string, EditorLocalCandidate[]>;
+  v1ApplyJournals: ApplyJournal[];
   v1?: {
     prefix: string;
     repositoryId: string;

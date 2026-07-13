@@ -81,7 +81,7 @@
 
 ### 本地因果命令
 
-- [ ] 定义 RemoteRegisterState、PathProjection、dirtyIntent、DirtyRecord、LocalConcurrentRecord、DeletionEvidence 和 generation 类型。
+- [x] 定义 RemoteRegisterState、PathProjection、dirtyIntent、DirtyRecord、LocalConcurrentRecord、DeletionEvidence 和 generation 类型。
 - [x] `captureDirtyIntent` 只能复制 projectedHeads，不接收 observedHeads 参数。
 - [x] 实现 DirtyRecord 连续编辑合并，但 basisHeads 永远不可变。
 - [x] 定义 localPredecessorVersion：只能引用同一本地因果队列、同路径前一冻结 Outbox 的精确 Version ID；writerId 轮换不改变该引用，后续 generation 用它替代 basisHeads 且不能吸收新 observedHeads。
@@ -93,12 +93,12 @@
 ### 测试
 
 - [x] 同一提交集合随机排列和重复至少 1,000 次，最终状态完全一致。
-- [ ] 属性测试覆盖归并的交换律、结合律、幂等性和已覆盖版本不复活。
-- [ ] 子版本先于 parent 到达时保持 pending，parent 到达后得到正确结果。
-- [ ] dangling、跨路径、自引用和循环 parent 被隔离。
-- [ ] 时间戳、mtime、List 顺序和跨 writer sequence 不影响 heads。
-- [ ] 本地 dirtyIntent 建立后新增远端头，发布仍使用原 projectedHeads。
-- [ ] 两个不同 ConfigTree 并发时保持两个快照头，不产生文件级混合结果。
+- [x] 属性测试覆盖归并的交换律、结合律、幂等性和已覆盖版本不复活。
+- [x] 子版本先于 parent 到达时保持 pending，parent 到达后得到正确结果。
+- [x] dangling、跨路径、自引用和循环 parent 被隔离。
+- [x] 时间戳、mtime、List 顺序和跨 writer sequence 不影响 heads。
+- [x] 本地 dirtyIntent 建立后新增远端头，发布仍使用原 projectedHeads。
+- [x] 两个不同 ConfigTree 并发时保持两个快照头，不产生文件级混合结果。
 
 验收门：纯领域测试能证明远端收敛规则和本地父版本选择，不需要 Obsidian、S3 或真实文件系统。
 
@@ -109,60 +109,60 @@
 ### 路径与范围
 
 - [x] 实现 Vault 相对路径规范化：`/`、NFC、禁止绝对路径、空段和 `..`。
-- [ ] 本地两个原始名称归一成同一 NFC path 时形成结构冲突，不按扫描顺序覆盖；远端非 NFC path 拒绝。
-- [ ] 按冻结的 Unicode 15.1.0 NFC 与 C/F 映射实现规范路径和 case-fold key，不使用 locale 或运行时隐式 Unicode 版本。
-- [ ] 实现 Windows 保留名、尾随点/空格和平台非法字符检查；插件 ID 额外按冻结的 1..255 UTF-8 bytes、非法字符和设备名集合验证。
-- [ ] 从 `vault.configDir` 获取实际配置根，不硬编码 `.obsidian`。
-- [ ] Vault channel 按 descriptor 永久排除当前及全部 historicalConfigDirs；Config channel 只映射 current，并排除位于 current 内的历史子树。
-- [ ] 本机已知历史 configDir 不是 descriptor 集合子集时拒绝加入该 repositoryId，不能只在单机追加排除后造成跨设备范围分歧。
-- [ ] 永久排除本同步插件目录、固定 `.obsidian-s3-sync-local/<repositoryId>/` 状态/恢复根和 Vault 根 `.s3-sync-conflicts`，用户规则不能覆盖；不得另建只在本机生效的 Vault 级保留根。
-- [ ] 状态根和冲突根使用可验证所有权 metadata；同名文件、symlink、未知目录或 metadata 不匹配时拒绝接管、覆盖或静默排除用户内容。
-- [ ] 检测 case-only 路径别名和远端并发别名冲突。
-- [ ] 检测本地及远端 put 路径的严格段前缀碰撞，作为结构冲突阻止受影响子树自动应用。
-- [ ] symlink 检测能力不足时明确标记该路径不支持，不跟随到 Vault 外部。
+- [x] 本地两个原始名称归一成同一 NFC path 时形成结构冲突，不按扫描顺序覆盖；远端非 NFC path 拒绝。
+- [x] 按冻结的 Unicode 15.1.0 NFC 与 C/F 映射实现规范路径和 case-fold key，不使用 locale 或运行时隐式 Unicode 版本。
+- [x] 实现 Windows 保留名、尾随点/空格和平台非法字符检查；插件 ID 额外按冻结的 1..255 UTF-8 bytes、非法字符和设备名集合验证。
+- [x] 从 `vault.configDir` 获取实际配置根，不硬编码 `.obsidian`。
+- [x] Vault channel 按 descriptor 永久排除当前及全部 historicalConfigDirs；Config channel 只映射 current，并排除位于 current 内的历史子树。
+- [x] 本机已知历史 configDir 不是 descriptor 集合子集时拒绝加入该 repositoryId，不能只在单机追加排除后造成跨设备范围分歧。
+- [x] 永久排除本同步插件目录、固定 `.obsidian-s3-sync-local/<repositoryId>/` 状态/恢复根和 Vault 根 `.s3-sync-conflicts`，用户规则不能覆盖；不得另建只在本机生效的 Vault 级保留根。
+- [x] 状态根和冲突根使用可验证所有权 metadata；同名文件、symlink、未知目录或 metadata 不匹配时拒绝接管、覆盖或静默排除用户内容。
+- [x] 检测 case-only 路径别名和远端并发别名冲突。
+- [x] 检测本地及远端 put 路径的严格段前缀碰撞，作为结构冲突阻止受影响子树自动应用。
+- [x] symlink 检测能力不足时明确标记该路径不支持，不跟随到 Vault 外部。
 
 ### 编辑和文件事件
 
-- [ ] 接入 Obsidian `editor-change`，首次编辑立即在内存中阻塞远端应用并排队持久化 dirtyIntent。
-- [ ] editor dirtyIntent 持久化 awaitingLocalWrite/editor generation/可比较内容标识；Vault 事件本身不能解除，只有同 generation editor 内容与稳定磁盘字节精确匹配或适配器证明缓冲区已干净才可解除。
+- [x] 接入 Obsidian `editor-change`，首次编辑立即在内存中阻塞远端应用并排队持久化 dirtyIntent。
+- [x] editor dirtyIntent 持久化 awaitingLocalWrite/editor generation/可比较内容标识；Vault 事件本身不能解除，只有同 generation editor 内容与稳定磁盘字节精确匹配或适配器证明缓冲区已干净才可解除。
 - [ ] 门闩期间稳定磁盘值等于原 projectedValue 时继续等待；其他值先进入不可变 localCandidates，匹配已知 editor generation 可视为中间 autosave。只有适配器有来源证据时才创建 LocalConcurrentRecord，不能因不匹配最新 buffer 猜外部并发。
-- [ ] awaitingLocalWrite 路径不得冻结进 Outbox；最新未变化 editor generation 与稳定磁盘匹配或适配器证明 buffer clean 后才选最终 DirtyRecord，未选候选保留到发布复核完成后的本地恢复策略。
-- [ ] 接入 Vault create/modify/delete/rename，事件记录路径、generation 和当时 projectedHeads。
-- [ ] rename 事件在一个本地状态事务中保存旧路径删除和新路径新增意图。
+- [x] awaitingLocalWrite 路径不得冻结进 Outbox；最新未变化 editor generation 与稳定磁盘匹配或适配器证明 buffer clean 后才选最终 DirtyRecord，未选候选保留到发布复核完成后的本地恢复策略。
+- [x] 接入 Vault create/modify/delete/rename，事件记录路径、generation 和当时 projectedHeads。
+- [x] rename 事件在一个本地状态事务中保存旧路径删除和新路径新增意图。
 - [ ] 配置通道没有通用文件事件时，依靠安静窗口扫描和应用前完整复查保证安全。
 - [ ] 插件 unload、移动端挂起前停止调度并尽力刷新已进入内存的 dirtyIntent。
 
 ### Hash、暂存与删除证据
 
-- [ ] 实现原始字节流式 SHA-256，不使用 ETag、mtime 或 size 替代。
-- [ ] 实现防抖稳定读取：第一次边复制到临时不可变暂存边计算 size/Hash，安静窗口后第二次完整读取活动路径；类型、size、Hash 全相同才接受第一份字节。
-- [ ] 两次读取之间或期间发生变化、读取失败、文件类型变化时保留 dirtyIntent 并重试，不发布撕裂字节。
-- [ ] 暂存写入完成后重新 Hash，不能只保存活动文件路径。
+- [x] 实现原始字节流式 SHA-256，不使用 ETag、mtime 或 size 替代。
+- [x] 实现防抖稳定读取：第一次边复制到临时不可变暂存边计算 size/Hash，安静窗口后第二次完整读取活动路径；类型、size、Hash 全相同才接受第一份字节。
+- [x] 两次读取之间或期间发生变化、读取失败、文件类型变化时保留 dirtyIntent 并重试，不发布撕裂字节。
+- [x] 暂存写入完成后重新 Hash，不能只保存活动文件路径。
 - [x] 实现 `present`、`confirmed-absent`、`unknown/error` 和 `out-of-scope` 四态观察。
-- [ ] 文件逻辑路径上出现目录、symlink、reparse point 或不可安全枚举节点时返回 unknown，不返回 confirmed-absent。
-- [ ] delete/rename 事件必须排除本插件 ApplyJournal 对应操作。
-- [ ] 审计缺失只有在整轮成功、未取消、范围版本不变且直接复查仍缺失时才能成为 DeletionEvidence。
-- [ ] ignore/config profile 变更只停止管理，不产生 tombstone。
-- [ ] 文件超限、路径不兼容、读取失败和扫描不完整都返回 unknown，不返回 absent。
+- [x] 文件逻辑路径上出现目录、symlink、reparse point 或不可安全枚举节点时返回 unknown，不返回 confirmed-absent。
+- [x] delete/rename 事件必须排除本插件 ApplyJournal 对应操作。
+- [x] 审计缺失只有在整轮成功、未取消、范围版本不变且直接复查仍缺失时才能成为 DeletionEvidence。
+- [x] ignore/config profile 变更只停止管理，不产生 tombstone。
+- [x] 文件超限、路径不兼容、读取失败和扫描不完整都返回 unknown，不返回 absent。
 - [ ] 新建根 put 冻结后发生 confirmed-absent 时持久化等待删除意图和该 put 的 localPredecessorVersion；put 验证发布前不得冻结根 delete，发布后 delete 只继承该 Version ID。
-- [ ] 设计 Hash 缓存；完整审计绕过不可靠缓存，缓存失效不改变结果。
+- [x] 设计 Hash 缓存；完整审计绕过不可靠缓存，缓存失效不改变结果。
 
 ### 测试
 
-- [ ] `editor-change -> 远端新头 -> 本地尚未保存` 时远端应用被阻止。
-- [ ] editor-change 后旧磁盘字节重复稳定、轮询超时和插件热重载都不能提前清除 awaitingLocalWrite；后续 autosave 仍继承原 projectedHeads。
+- [x] `editor-change -> 远端新头 -> 本地尚未保存` 时远端应用被阻止。
+- [x] editor-change 后旧磁盘字节重复稳定、轮询超时和插件热重载都不能提前清除 awaitingLocalWrite；后续 autosave 仍继承原 projectedHeads。
 - [ ] editor-change 后旧 projectedValue 反复稳定不会制造 LocalConcurrentRecord；匹配 editor 候选的 autosave 只生成正常 DirtyRecord。
 - [ ] editor-change 后外部 modify/delete/rename 先到：无来源证据时只暂存候选并继续门闩，有来源证据时进入 LocalConcurrentRecord；两种情况都不发布伪父子版本或允许远端应用。
-- [ ] 本地磁盘先变化、Vault 事件后到、远端先拉取时，basisHeads 仍为旧 projectedHeads。
-- [ ] 同内容只改 mtime 100 次，不产生 DirtyRecord。
-- [ ] 写入过程中读取、零字节、大文件、Unicode 和大小写别名测试。
-- [ ] delete 后快速 recreate 合并为最终 put，不发布瞬时墓碑。
-- [ ] 权限错误、取消扫描、目录临时不可用和 ignore 变更均不产生墓碑。
-- [ ] 自定义 configDir 下，本插件 data/state 永远不可进入扫描结果。
-- [ ] configDir 切换后，旧目录中的凭证、状态、Outbox 和恢复数据仍在 sensitivePathExclusions 中且不能被用户 ignore 规则重新纳入。
+- [x] 本地磁盘先变化、Vault 事件后到、远端先拉取时，basisHeads 仍为旧 projectedHeads。
+- [x] 同内容只改 mtime 100 次，不产生 DirtyRecord。
+- [x] 写入过程中读取、零字节、大文件、Unicode 和大小写别名测试。
+- [x] delete 后快速 recreate 合并为最终 put，不发布瞬时墓碑。
+- [x] 权限错误、取消扫描、目录临时不可用和 ignore 变更均不产生墓碑。
+- [x] 自定义 configDir 下，本插件 data/state 永远不可进入扫描结果。
+- [x] configDir 切换后，旧目录中的凭证、状态、Outbox 和恢复数据仍在 sensitivePathExclusions 中且不能被用户 ignore 规则重新纳入。
 - [ ] configDir 切换会使原 RepositoryLocator 指纹失配并停止发布/应用；新 repositoryId descriptor 携带旧 current/histories 并集，所有设备继续排除旧目录。
-- [ ] `foo` 文件与 `foo/bar.md` 并发、case-fold 特殊字符和不同运行时 locale 得到同一冲突结果。
-- [ ] 规范等价但字节不同的 Unicode 文件名在可创建它们的平台形成同一 NFC collision，不丢任何本地字节。
+- [x] `foo` 文件与 `foo/bar.md` 并发、case-fold 特殊字符和不同运行时 locale 得到同一冲突结果。
+- [x] 规范等价但字节不同的 Unicode 文件名在可创建它们的平台形成同一 NFC collision，不丢任何本地字节。
 
 验收门：观察层只报告已确认字节或删除意图；任何不确定情况都能明确解释且不会进入发布命令。
 

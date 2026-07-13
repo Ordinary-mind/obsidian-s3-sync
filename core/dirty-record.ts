@@ -1,10 +1,30 @@
-export interface DirtyRecord {
+import type { Generation } from "./generation";
+import type { DeletionEvidence } from "./presence";
+import type { BlobRef } from "./types";
+
+export interface DirtyIntent {
   path: string;
   queueId: string;
-  generation: number;
+  generation: Generation;
   basisHeads: string[];
   localPredecessorVersion?: string;
   awaitingLocalWrite: boolean;
+}
+
+export type ConfirmedLocalValue =
+  | { kind: "put"; blob: BlobRef; stagedPath: string }
+  | { kind: "delete"; evidence: DeletionEvidence };
+
+export interface DirtyRecord extends DirtyIntent {
+  value?: ConfirmedLocalValue;
+}
+
+export interface LocalConcurrentRecord {
+  path: string;
+  generation: Generation;
+  basisHeads: string[];
+  editorValue: ConfirmedLocalValue;
+  externalValue: ConfirmedLocalValue;
 }
 
 export interface FrozenOutboxVersion {
@@ -17,7 +37,7 @@ export function canFreezeDeleteAfterRootPut(rootPut: FrozenOutboxVersion, publis
   return publishedVersionIds.has(rootPut.versionId);
 }
 
-export function captureDirtyIntent(path: string, projectedHeads: readonly string[], generation = 1): DirtyRecord {
+export function captureDirtyIntent(path: string, projectedHeads: readonly string[], generation: Generation = 1): DirtyRecord {
   return { path, queueId: path, generation, basisHeads: [...projectedHeads], awaitingLocalWrite: true };
 }
 
@@ -25,7 +45,7 @@ export function mergeDirtyEdit(record: DirtyRecord): DirtyRecord {
   return { ...record, generation: record.generation + 1, basisHeads: [...record.basisHeads], awaitingLocalWrite: true };
 }
 
-export function nextDirtyGeneration(path: string, generation: number, predecessor: FrozenOutboxVersion): DirtyRecord {
+export function nextDirtyGeneration(path: string, generation: Generation, predecessor: FrozenOutboxVersion): DirtyRecord {
   if (predecessor.path !== path || predecessor.queueId !== path) throw new Error("local predecessor must belong to the same path queue");
   return { path, queueId: path, generation, basisHeads: [], localPredecessorVersion: predecessor.versionId, awaitingLocalWrite: true };
 }

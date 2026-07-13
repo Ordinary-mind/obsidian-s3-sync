@@ -19,6 +19,8 @@ describe("ConfigTree profile coverage", () => {
   it("rejects the sync plugin and invalid portable plugin IDs", () => {
     expect(isPortablePluginIdAllowed("other", "obsidian-s3-sync")).toBe(true);
     expect(isPortablePluginIdAllowed("obsidian-s3-sync", "obsidian-s3-sync")).toBe(false);
+    expect(isPortablePluginIdAllowed("OBSIDIAN-S3-SYNC", "obsidian-s3-sync")).toBe(false);
     expect(isPortablePluginIdAllowed("bad/name", "obsidian-s3-sync")).toBe(false);
+    expect(isPortablePluginIdAllowed("NUL.json", "obsidian-s3-sync")).toBe(false);
   });
 });

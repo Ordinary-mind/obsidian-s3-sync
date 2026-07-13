@@ -16,6 +16,8 @@ export interface RegisterState {
   invalid: string[];
 }
 
+export type RemoteRegisterState = RegisterState;
+
 export interface SemanticHeadGroup {
   value: string;
   representative: string;

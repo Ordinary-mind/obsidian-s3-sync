@@ -4,7 +4,10 @@ import { canElideNetNoop, canFreezeDeleteAfterRootPut, captureDirtyIntent, freez
 describe("core dirty intent causality", () => {
   it("freezes projected heads and never accepts later observed heads", () => {
     const first = captureDirtyIntent("notes/a.md", ["before"]);
+    const observedHeadsAfterCapture = ["before", "concurrent"];
     expect(mergeDirtyEdit(first)).toMatchObject({ generation: 2, basisHeads: ["before"], awaitingLocalWrite: true });
+    expect(first.basisHeads).toEqual(["before"]);
+    expect(observedHeadsAfterCapture).toEqual(["before", "concurrent"]);
   });
   it("uses an exact frozen local predecessor for later generations", () => {
     expect(nextDirtyGeneration("notes/a.md", 2, { path: "notes/a.md", queueId: "notes/a.md", versionId: "local:0:0" })).toMatchObject({ path: "notes/a.md", localPredecessorVersion: "local:0:0", basisHeads: [] });
@@ -26,6 +29,12 @@ describe("core dirty intent causality", () => {
     expect(canElideNetNoop(settled, "same", "same", false)).toBe(true);
     expect(canElideNetNoop(settled, "same", "same", true)).toBe(false);
     expect(canElideNetNoop(captureDirtyIntent("notes/a.md", []), "same", "same", false)).toBe(false);
+  });
+  it("ignores repeated mtime-only notifications when content bytes are unchanged", () => {
+    const settled = proveEditorWrite(captureDirtyIntent("notes/a.md", ["projected"]), 1);
+    for (let mtime = 1; mtime <= 100; mtime += 1) {
+      expect(canElideNetNoop(settled, "same-content", "same-content", false)).toBe(true);
+    }
   });
   it("does not freeze a root delete until its root put is confirmed published", () => {
     const put = freezeOutboxVersion(proveEditorWrite(captureDirtyIntent("notes/new.md", []), 1), "put:0:0");

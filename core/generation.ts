@@ -1,3 +1,5 @@
+export type Generation = number;
+
 export interface PublishedReconcile {
   publishedVersionId: string;
   publishedValueHash: string;

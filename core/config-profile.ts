@@ -1,4 +1,5 @@
 import type { ConfigProfile } from "./types";
+import { validatePortablePluginId, vaultPathCaseFoldKey } from "./path";
 
 export function isConfigItemCovered(path: string, profile: ConfigProfile): boolean {
   if (profile.baseFiles.includes(path) && !path.includes("/")) return true;
@@ -16,5 +17,6 @@ export function hasPackageManifestAnchor(items: ReadonlyArray<{ path: string; ki
 }
 
 export function isPortablePluginIdAllowed(pluginId: string, syncPluginId: string): boolean {
-  return pluginId !== syncPluginId && pluginId.length > 0 && new TextEncoder().encode(pluginId).byteLength <= 255 && !/[<>:"/\\|?*]/.test(pluginId) && !/[. ]$/.test(pluginId);
+  return validatePortablePluginId(pluginId).length === 0
+    && vaultPathCaseFoldKey(pluginId) !== vaultPathCaseFoldKey(syncPluginId);
 }

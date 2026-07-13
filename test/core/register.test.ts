@@ -40,6 +40,64 @@ describe("core register reduction", () => {
     expect(reduceRegister([...versions, versions[0]])).toEqual({ heads: ["next"], pending: [], invalid: [] });
   });
 
+  it("satisfies commutative, associative, and idempotent delivery laws", () => {
+    const versionArbitrary = fc.array(fc.nat(), { minLength: 1, maxLength: 24 }).map((choices) =>
+      choices.map((choice, index) => ({
+        ...base,
+        versionId: `v${index}`,
+        logicalKey: "a",
+        parents: index === 0 ? [] : [`v${choice % index}`],
+      })),
+    );
+
+    fc.assert(fc.property(versionArbitrary, fc.nat(), fc.nat(), (versions, firstChoice, secondChoice) => {
+      const first = firstChoice % (versions.length + 1);
+      const second = first + (secondChoice % (versions.length - first + 1));
+      const left = versions.slice(0, first);
+      const middle = versions.slice(first, second);
+      const right = versions.slice(second);
+      const expected = reduceRegister(versions);
+
+      expect(reduceRegister([...middle, ...left, ...right])).toEqual(expected);
+      expect(reduceRegister([...left, ...middle, ...right])).toEqual(
+        reduceRegister([...left, ...[...middle, ...right]]),
+      );
+      expect(reduceRegister([...versions, ...versions])).toEqual(expected);
+    }), { numRuns: 500, seed: 20260713 });
+  });
+
+  it("verifies a pending child when its parent arrives", () => {
+    const parent = { ...base, versionId: "parent", logicalKey: "a", parents: [] };
+    const child = { ...base, versionId: "child", logicalKey: "a", parents: ["parent"] };
+
+    expect(reduceRegister([child])).toEqual({ heads: [], pending: ["child"], invalid: [] });
+    expect(reduceRegister([child, parent])).toEqual({ heads: ["child"], pending: [], invalid: [] });
+  });
+
+  it("isolates self, cycle, and cross-path parents while keeping dangling parents pending", () => {
+    const root = { ...base, versionId: "root", logicalKey: "a", parents: [] };
+    const versions = [
+      root,
+      { ...base, versionId: "dangling", logicalKey: "a", parents: ["missing"] },
+      { ...base, versionId: "self", logicalKey: "a", parents: ["self"] },
+      { ...base, versionId: "cycle-a", logicalKey: "a", parents: ["cycle-b"] },
+      { ...base, versionId: "cycle-b", logicalKey: "a", parents: ["cycle-a"] },
+      { ...base, versionId: "cross-path", logicalKey: "b", parents: ["root"] },
+    ];
+
+    expect(reduceRegister(versions)).toEqual({
+      heads: ["root"],
+      pending: ["dangling"],
+      invalid: ["cross-path", "cycle-a", "cycle-b", "self"],
+    });
+  });
+
+  it("ignores timestamps, mtimes, delivery order, and cross-writer sequence metadata", () => {
+    const root = { ...base, versionId: "root", logicalKey: "a", parents: [], timestamp: 999, mtime: 100, writerId: "z", sequence: "99" };
+    const next = { ...base, versionId: "next", logicalKey: "a", parents: ["root"], timestamp: 1, mtime: 0, writerId: "a", sequence: "1" };
+    expect(reduceRegister([next, root])).toEqual({ heads: ["next"], pending: [], invalid: [] });
+  });
+
   it("keeps Config snapshots pending until their Tree arrives and isolates deletes without parent management", () => {
     const config = { repositoryId: "repository", channel: "config" as const, logicalKey: "portable" };
     const parent = { ...config, versionId: "parent", parents: [], configTree: { items: [{ path: "plugins/example/data.json", kind: "put" as const }] } };
@@ -49,6 +107,14 @@ describe("core register reduction", () => {
     expect(reduceRegister([{ ...config, versionId: "missing-tree", parents: [] }])).toEqual({ heads: [], pending: ["missing-tree"], invalid: [] });
     expect(reduceRegister([parent, validDelete])).toEqual({ heads: ["delete"], pending: [], invalid: [] });
     expect(reduceRegister([parent, invalidDelete])).toEqual({ heads: ["parent"], pending: [], invalid: ["invalid"] });
+  });
+
+  it("keeps concurrent ConfigTree snapshots as whole-tree heads", () => {
+    const config = { repositoryId: "repository", channel: "config" as const, logicalKey: "portable" };
+    const left = { ...config, versionId: "left", parents: [], configTree: { items: [{ path: "themes/a/theme.css", kind: "put" as const }] } };
+    const right = { ...config, versionId: "right", parents: [], configTree: { items: [{ path: "snippets/b.css", kind: "put" as const }] } };
+
+    expect(reduceRegister([right, left])).toEqual({ heads: ["left", "right"], pending: [], invalid: [] });
   });
 
   it("groups equivalent heads without discarding their original Version IDs", () => {

@@ -1,8 +1,12 @@
+import type { Generation } from "./generation";
+
 export interface ProjectionState {
   projectedHeads: string[];
   projectedValueHash: string | undefined;
-  generation: number;
+  generation: Generation;
 }
+
+export type PathProjection = ProjectionState;
 
 export function adoptProjection(state: ProjectionState, heads: readonly string[], valueHash: string | undefined): ProjectionState {
   return { projectedHeads: [...new Set(heads)].sort(), projectedValueHash: valueHash, generation: state.generation + 1 };

@@ -13,6 +13,12 @@ import { recordPublishedWriterCommit, reserveWriterCommit } from "../core/writer
 import { decideResolvedRemotePut } from "../core/pull-decision";
 import { conflictId } from "../core/conflict-id";
 import { remoteConflictCopyPath } from "../core/conflict-copy";
+import { captureEditorChange, mayApplyRemoteWithEditorIntent, observeEditorDisk } from "../core/editor-latch";
+import { sha256Hex } from "../protocol/hash";
+import { clearVaultEventsThroughGeneration, latestVaultEvent, recordVaultEvent, recordVaultRename } from "../core/vault-event";
+import { isVaultPathExcluded } from "../core/scope";
+import { advanceApplyJournal, type ApplyJournal } from "../core/apply-journal";
+import { isOwnApplyEvent } from "../core/apply-operation";
 
 interface PersistedPluginData {
   settings?: Partial<S3SyncSettings>;
@@ -28,6 +34,8 @@ export default class S3SyncPlugin extends Plugin {
   private statusEl: HTMLElement | null = null;
   private readonly runtimeContractSessionId = crypto.randomUUID();
   private editorChangeObserved = false;
+  private causalStatePersistence = Promise.resolve();
+  private readonly v1ApplyPaths = new Set<string>();
 
   async onload(): Promise<void> {
     await this.loadPluginData();
@@ -84,10 +92,22 @@ export default class S3SyncPlugin extends Plugin {
     });
 
     this.addSettingTab(new S3SyncSettingTab(this.app, this));
-    this.registerEvent(this.app.workspace.on("editor-change", () => {
+    this.registerEvent(this.app.workspace.on("editor-change", (editor, info) => {
       this.editorChangeObserved = true;
+      const file = info.file;
+      if (!file || !this.data.v1) return;
+      const path = normalizePath(file.path);
+      const editorContentHash = sha256Hex(new TextEncoder().encode(editor.getValue()));
+      this.data.v1DirtyIntents[path] = captureEditorChange({
+        path,
+        projectedHeads: this.data.v1ProjectedHeads[path] ?? [],
+        projectedValueHash: this.data.files[path]?.hash,
+        editorContentHash,
+        existing: this.data.v1DirtyIntents[path],
+      });
+      this.queueCausalStatePersistence();
     }));
-
+    this.registerV1VaultEvents();
   }
 
   onunload(): void {
@@ -95,6 +115,7 @@ export default class S3SyncPlugin extends Plugin {
       window.clearTimeout(this.syncTimer);
       this.syncTimer = null;
     }
+    void this.savePluginData().catch((error) => console.error("S3 Sync failed to flush v1 causal state during unload", error));
   }
 
   async saveSettings(): Promise<void> {
@@ -226,8 +247,19 @@ export default class S3SyncPlugin extends Plugin {
       }
       const file = this.app.workspace.getActiveFile();
       if (!file) throw new Error("no active file to publish");
+      const dirtyIntent = this.data.v1DirtyIntents[file.path];
+      const vaultEvent = latestVaultEvent(this.data.v1VaultEvents, file.path);
       const capture = await captureStableVaultFile(this.app.vault, file.path);
       if (!capture) throw new Error("active file changed during capture or is not a regular file");
+      if (
+        this.data.v1DirtyIntents[file.path]?.generation !== dirtyIntent?.generation
+        || latestVaultEvent(this.data.v1VaultEvents, file.path)?.generation !== vaultEvent?.generation
+      ) {
+        throw new Error("local causal generation changed during stable capture");
+      }
+      if (dirtyIntent?.awaitingLocalWrite && capture.hash !== dirtyIntent.expectedContentHash) {
+        throw new Error("active editor generation has not reached stable disk bytes");
+      }
       const service = new V1RepositoryService(this.settings, state.prefix);
       const remote = await service.resolvedVaultPut(state.repositoryId, state.descriptorHash, file.path);
       const projectedHash = this.data.files[file.path]?.hash;
@@ -236,7 +268,7 @@ export default class S3SyncPlugin extends Plugin {
         await this.saveSyncData();
         throw new Error("local and remote content both changed; resolve the conflict before publishing");
       }
-      const parents = remote?.heads ?? [];
+      const parents = dirtyIntent?.basisHeads ?? vaultEvent?.basisHeads ?? remote?.heads ?? [];
       const reservation = reserveWriterCommit(state);
       const commitHash = await service.publishVaultPut({
         repositoryId: state.repositoryId,
@@ -252,6 +284,14 @@ export default class S3SyncPlugin extends Plugin {
       });
       this.data.v1 = { ...state, ...recordPublishedWriterCommit(state, commitHash) };
       this.data.files[file.path] = { hash: capture.hash, size: capture.size, updatedAt: new Date().toISOString() };
+      this.data.v1ProjectedHeads[file.path] = [`${commitHash}:0:0`];
+      if (dirtyIntent?.localCandidates.length) {
+        this.data.v1RecoveryCandidates[file.path] = dirtyIntent.localCandidates.map((candidate) => ({ ...candidate }));
+      }
+      delete this.data.v1DirtyIntents[file.path];
+      if (vaultEvent) {
+        this.data.v1VaultEvents = clearVaultEventsThroughGeneration(this.data.v1VaultEvents, file.path, vaultEvent.generation);
+      }
       await this.saveSyncData();
       new Notice(`S3 Sync v1 published: ${file.path}`);
     } catch (error) {
@@ -270,6 +310,10 @@ export default class S3SyncPlugin extends Plugin {
       let skipped = 0;
       let conflicts = 0;
       for (const remote of files) {
+        if (!mayApplyRemoteWithEditorIntent(this.data.v1DirtyIntents[remote.path]) || latestVaultEvent(this.data.v1VaultEvents, remote.path)) {
+          skipped += 1;
+          continue;
+        }
         const existing = getTFile(this.app.vault, remote.path);
         const capture = existing ? await captureStableVaultFile(this.app.vault, remote.path) : undefined;
         const decision = decideResolvedRemotePut({ localExists: !!existing, projectedHash: this.data.files[remote.path]?.hash, currentHash: capture?.hash, remoteHash: remote.hash });
@@ -292,6 +336,7 @@ export default class S3SyncPlugin extends Plugin {
         }
         if (decision === "adopt") {
           this.data.files[remote.path] = { hash: remote.hash, size: remote.size, updatedAt: new Date().toISOString() };
+          this.data.v1ProjectedHeads[remote.path] = [...remote.heads];
           continue;
         }
         const binary = new Uint8Array(remote.bytes.byteLength);
@@ -299,13 +344,14 @@ export default class S3SyncPlugin extends Plugin {
         if (decision === "create") {
           await ensureParentFolder(this.app.vault, remote.path);
           if (this.app.vault.getAbstractFileByPath(remote.path)) { skipped += 1; continue; }
-          await this.app.vault.createBinary(remote.path, binary.buffer);
+          await this.withV1ApplyPath(remote.path, remote.hash, () => this.app.vault.createBinary(remote.path, binary.buffer));
           created += 1;
         } else {
-          await this.app.vault.modifyBinary(existing!, binary.buffer);
+          await this.withV1ApplyPath(remote.path, remote.hash, () => this.app.vault.modifyBinary(existing!, binary.buffer));
           updated += 1;
         }
         this.data.files[remote.path] = { hash: remote.hash, size: remote.size, updatedAt: new Date().toISOString() };
+        this.data.v1ProjectedHeads[remote.path] = [...remote.heads];
       }
       await this.saveSyncData();
       new Notice(`S3 Sync v1 pull: created ${created}, updated ${updated}, conflicts ${conflicts}, skipped ${skipped}`);
@@ -330,6 +376,127 @@ export default class S3SyncPlugin extends Plugin {
       new Notice(`S3 Sync v1 runtime contract failed: ${this.errorMessage(error)}`);
       console.error(error);
     }
+  }
+
+  private registerV1VaultEvents(): void {
+    this.registerEvent(this.app.vault.on("create", (file) => {
+      if (!(file instanceof TFile)) return;
+      const path = normalizePath(file.path);
+      void this.handleV1UpsertEvent(file, path);
+    }));
+    this.registerEvent(this.app.vault.on("modify", (file) => {
+      if (!(file instanceof TFile)) return;
+      const path = normalizePath(file.path);
+      void this.handleV1UpsertEvent(file, path);
+    }));
+    this.registerEvent(this.app.vault.on("delete", (file) => {
+      if (!(file instanceof TFile)) return;
+      const path = normalizePath(file.path);
+      if (isOwnApplyEvent(this.data.v1ApplyJournals, path, undefined)) return;
+      this.recordV1VaultEvent("delete", path);
+      this.recordEditorDeleteCandidate(path);
+    }));
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+      if (!(file instanceof TFile) || !this.data.v1) return;
+      const normalizedOldPath = normalizePath(oldPath);
+      const newPath = normalizePath(file.path);
+      if (!this.isV1ManagedVaultPath(normalizedOldPath) || !this.isV1ManagedVaultPath(newPath)) return;
+      if (this.v1ApplyPaths.has(normalizedOldPath) || this.v1ApplyPaths.has(newPath)) return;
+      const transactionId = crypto.randomUUID();
+      this.data.v1VaultEvents = recordVaultRename(this.data.v1VaultEvents, {
+        transactionId,
+        deleteId: crypto.randomUUID(),
+        upsertId: crypto.randomUUID(),
+        oldPath: normalizedOldPath,
+        newPath,
+        oldProjectedHeads: this.data.v1ProjectedHeads[normalizedOldPath] ?? [],
+        newProjectedHeads: this.data.v1ProjectedHeads[newPath] ?? [],
+        oldPreviousGeneration: this.data.v1VaultGenerations[normalizedOldPath] ?? 0,
+        newPreviousGeneration: this.data.v1VaultGenerations[newPath] ?? 0,
+      });
+      this.data.v1VaultGenerations[normalizedOldPath] = latestVaultEvent(this.data.v1VaultEvents, normalizedOldPath)!.generation;
+      this.data.v1VaultGenerations[newPath] = latestVaultEvent(this.data.v1VaultEvents, newPath)!.generation;
+      this.recordEditorDeleteCandidate(normalizedOldPath);
+      this.queueCausalStatePersistence();
+    }));
+  }
+
+  private recordV1VaultEvent(kind: "upsert" | "delete", path: string): void {
+    if (!this.data.v1 || !this.isV1ManagedVaultPath(path) || this.v1ApplyPaths.has(path)) return;
+    this.data.v1VaultEvents = recordVaultEvent(this.data.v1VaultEvents, {
+      id: crypto.randomUUID(),
+      kind,
+      path,
+      projectedHeads: this.data.v1ProjectedHeads[path] ?? [],
+      previousGeneration: this.data.v1VaultGenerations[path] ?? 0,
+    });
+    this.data.v1VaultGenerations[path] = latestVaultEvent(this.data.v1VaultEvents, path)!.generation;
+    this.queueCausalStatePersistence();
+  }
+
+  private async handleV1UpsertEvent(file: TFile, path: string): Promise<void> {
+    if (!this.data.v1 || !this.isV1ManagedVaultPath(path) || this.v1ApplyPaths.has(path)) return;
+    const applyJournals = this.data.v1ApplyJournals.map((journal) => ({ ...journal }));
+    const capture = await captureStableVaultFile(this.app.vault, file.path);
+    if (capture && isOwnApplyEvent(applyJournals, path, capture.hash)) return;
+    this.recordV1VaultEvent("upsert", path);
+    if (capture) this.recordEditorPutCandidate(path, capture.hash);
+  }
+
+  private isV1ManagedVaultPath(path: string): boolean {
+    return !isVaultPathExcluded(path, this.app.vault.configDir, []);
+  }
+
+  private recordEditorPutCandidate(path: string, hash: string): void {
+    const intent = this.data.v1DirtyIntents[path];
+    if (!intent) return;
+    this.data.v1DirtyIntents[path] = observeEditorDisk(intent, { kind: "put", hash }, false).intent;
+    this.queueCausalStatePersistence();
+  }
+
+  private recordEditorDeleteCandidate(path: string): void {
+    const intent = this.data.v1DirtyIntents[path];
+    if (!intent) return;
+    this.data.v1DirtyIntents[path] = observeEditorDisk(intent, { kind: "delete" }, false).intent;
+  }
+
+  private queueCausalStatePersistence(): void {
+    this.causalStatePersistence = this.causalStatePersistence
+      .then(() => this.savePluginData())
+      .catch((error) => console.error("S3 Sync failed to persist v1 causal state", error));
+  }
+
+  private async withV1ApplyPath<T>(path: string, targetHash: string | undefined, operation: () => Promise<T>): Promise<T> {
+    const journal: ApplyJournal = {
+      operationId: crypto.randomUUID(),
+      path,
+      expectedBeforeHash: this.data.files[path]?.hash,
+      targetHash,
+      state: "prepared",
+    };
+    this.data.v1ApplyJournals.push(journal);
+    try {
+      await this.savePluginData();
+    } catch (error) {
+      this.data.v1ApplyJournals = this.data.v1ApplyJournals.filter((entry) => entry.operationId !== journal.operationId);
+      throw error;
+    }
+    this.v1ApplyPaths.add(path);
+    let result: T;
+    try {
+      result = await operation();
+    } catch (error) {
+      this.data.v1ApplyJournals = this.data.v1ApplyJournals.map((entry) => entry.operationId === journal.operationId
+        ? advanceApplyJournal(entry, "recovery-required")
+        : entry);
+      await this.savePluginData();
+      throw error;
+    } finally {
+      this.v1ApplyPaths.delete(path);
+    }
+    this.data.v1ApplyJournals = this.data.v1ApplyJournals.filter((entry) => entry.operationId !== journal.operationId);
+    await this.savePluginData();
+    return result;
   }
 
   private registerVaultEvents(): void {
@@ -539,6 +706,12 @@ export default class S3SyncPlugin extends Plugin {
       lastSyncedVersion: persisted?.syncData?.lastSyncedVersion ?? 0,
       files,
       conflicts,
+      v1DirtyIntents: persisted?.syncData?.v1DirtyIntents ?? {},
+      v1ProjectedHeads: persisted?.syncData?.v1ProjectedHeads ?? {},
+      v1VaultEvents: persisted?.syncData?.v1VaultEvents ?? [],
+      v1VaultGenerations: persisted?.syncData?.v1VaultGenerations ?? {},
+      v1RecoveryCandidates: persisted?.syncData?.v1RecoveryCandidates ?? {},
+      v1ApplyJournals: persisted?.syncData?.v1ApplyJournals ?? [],
     };
   }
 
