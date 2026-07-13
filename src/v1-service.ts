@@ -4,6 +4,9 @@ import { InMemoryRepositoryCore } from "../core/repository";
 import { pullCommitIntoRepository } from "../core/remote-pull";
 import { createRepositoryDescriptor } from "../core/repository-bootstrap";
 import { probeWritableObjectStore } from "../core/connection-probe";
+import { buildVaultPutPublishEnvelope } from "../core/vault-publish-envelope";
+import { publishEnvelope } from "../core/remote-publish";
+import type { StableCapture } from "../core/stable-capture";
 import { validateRepositoryEndpoint } from "../core/locator";
 import type { S3SyncSettings } from "./types";
 
@@ -25,6 +28,20 @@ export class V1RepositoryService {
   async probeWritableConnection(probeId: string): Promise<void> {
     const key = [this.prefix.replace(/\/$/, ""), ".obsidian-s3-sync/v1/probes", `${probeId}.bin`].filter(Boolean).join("/");
     await probeWritableObjectStore(this.store(), key, new TextEncoder().encode(probeId));
+  }
+  async publishVaultPut(input: {
+    repositoryId: string;
+    descriptorHash: string;
+    writerId: string;
+    sequence: string;
+    previousCommitHash: string | null;
+    createdAt: string;
+    clientVersion: string;
+    path: string;
+    parents: string[];
+    capture: StableCapture;
+  }): Promise<void> {
+    await publishEnvelope(this.store(), buildVaultPutPublishEnvelope({ ...input, prefix: this.prefix }));
   }
   async pullCommit(repositoryId: string, descriptorHash: string, commitKey: string, repository = new InMemoryRepositoryCore()): Promise<InMemoryRepositoryCore> {
     await pullCommitIntoRepository(this.store(), repository, this.prefix, repositoryId, descriptorHash, commitKey);
