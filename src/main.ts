@@ -519,6 +519,19 @@ export default class S3SyncPlugin extends Plugin {
         };
       }
     }
+    const conflictKeys = new Map<string, string>();
+    for (const [id, conflict] of Object.entries(conflicts)) {
+      const key = `${conflict.path}\u0000${conflict.baseHash ?? "none"}\u0000${conflict.localHash ?? "none"}\u0000${conflict.remoteHash ?? "none"}`;
+      const previousId = conflictKeys.get(key);
+      if (!previousId) {
+        conflictKeys.set(key, id);
+      } else if (conflicts[previousId].detectedAt >= conflict.detectedAt) {
+        delete conflicts[id];
+      } else {
+        delete conflicts[previousId];
+        conflictKeys.set(key, id);
+      }
+    }
 
     this.data = {
       ...defaultData,
