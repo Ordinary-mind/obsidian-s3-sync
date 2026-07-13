@@ -13,6 +13,7 @@ import { createRepositoryLocator, type RepositoryLocator } from "../core/locator
 import { assertDescriptorDirectoryBinding, type PersistedRepositoryBinding } from "../core/repository-binding";
 import { verifyWriterFrontiers, type CommitFrontierAnchor, type WriterFrontiers } from "../core/commit-frontier";
 import type { S3SyncSettings } from "./types";
+import type { VerifiedRegisterObservation as RemoteRegisterObservation } from "../core/remote-merge-state";
 
 export class V1RepositoryService {
   private readonly locator: Readonly<RepositoryLocator>;
@@ -82,14 +83,16 @@ export class V1RepositoryService {
   async resolvedVaultPutWithAnchors(repositoryId: string, descriptorHash: string, path: string): Promise<{
     value: { heads: string[]; hash: string } | undefined;
     acceptedCommits: CommitFrontierAnchor[];
+    observations: RemoteRegisterObservation[];
   }> {
     const pulled = await this.pullAllCommitsWithAnchors(repositoryId, descriptorHash);
     const repository = pulled.repository;
     const state = repository.register(repositoryId, "vault", path);
     if (state.disposition !== "resolved") throw new Error(`cannot publish ${path}: remote register is ${state.disposition}`);
-    if (state.heads.length === 0) return { value: undefined, acceptedCommits: pulled.acceptedCommits };
+    const observations = registerObservations(repository, repositoryId);
+    if (state.heads.length === 0) return { value: undefined, acceptedCommits: pulled.acceptedCommits, observations };
     const version = repository.version(state.heads[0]);
-    return { value: version?.blob ? { heads: state.heads, hash: version.blob.hash } : undefined, acceptedCommits: pulled.acceptedCommits };
+    return { value: version?.blob ? { heads: state.heads, hash: version.blob.hash } : undefined, acceptedCommits: pulled.acceptedCommits, observations };
   }
   async listResolvedVaultPuts(repositoryId: string, descriptorHash: string): Promise<Array<{ path: string; hash: string; size: number; bytes: Uint8Array; heads: string[] }>> {
     return (await this.listResolvedVaultPutsWithDiagnostics(repositoryId, descriptorHash)).files;
@@ -99,6 +102,7 @@ export class V1RepositoryService {
     blocked: Array<{ path: string; heads: string[]; reason: unknown }>;
     blockedCommitKeys: Array<{ key: string; reason: unknown }>;
     acceptedCommits: CommitFrontierAnchor[];
+    observations: RemoteRegisterObservation[];
   }> {
     const pulled = await this.pullAllCommitsWithDiagnostics(repositoryId, descriptorHash);
     const repository = pulled.repository;
@@ -115,6 +119,7 @@ export class V1RepositoryService {
       blocked: result.blocked.sort((left, right) => left.path.localeCompare(right.path)),
       blockedCommitKeys: pulled.blockedCommitKeys,
       acceptedCommits: pulled.acceptedCommits,
+      observations: registerObservations(repository, repositoryId),
     };
   }
   async pullCommit(repositoryId: string, descriptorHash: string, commitKey: string, repository = new InMemoryRepositoryCore()): Promise<InMemoryRepositoryCore> {
@@ -174,4 +179,18 @@ export class V1RepositoryService {
   private async requireDescriptor(repositoryId: string, descriptorHash: string): Promise<{ configDir: string; historicalConfigDirs: string[] }> {
     return readRepositoryDescriptorAnchor(this.store(), this.prefix, repositoryId, descriptorHash);
   }
+}
+
+function registerObservations(repository: InMemoryRepositoryCore, repositoryId: string): RemoteRegisterObservation[] {
+  return [...repository.allRegisters(repositoryId)].map(([key, state]) => {
+    const version = state.disposition === "resolved" && state.heads.length === 1 ? repository.version(state.heads[0]) : undefined;
+    return {
+      key,
+      heads: [...state.heads],
+      pending: [...state.pending],
+      invalid: [...state.invalid],
+      disposition: state.disposition,
+      ...(version ? { valueHash: version.blob?.hash ?? null } : {}),
+    };
+  }).sort((left, right) => left.key.localeCompare(right.key));
 }

@@ -268,9 +268,9 @@
 - [ ] `data.json` 只保存连接设置、凭证或平台 secret provider 引用和 UI 偏好；无 secret provider 时明确提示本地明文风险。
 - [ ] 在实际 configDir 下建立固定 `.obsidian-s3-sync-local/<repositoryId>/` 状态根，全部暂存、Journal 和非冲突恢复文件都只能位于其下。
 - [x] 实现 schema 版本、state generation、校验和、双副本和单写入队列。
-- [ ] 一个状态事务可原子更新 dirtyIntent、projection、writer sequence 和 Outbox 引用。
+- [x] 一个状态事务可原子更新 dirtyIntent、projection、writer sequence 和 Outbox 引用。
 - [x] 实现 RepositoryLocator、descriptor Hash 和每个 writer frontier branch-tip integrity anchors 持久化。
-- [ ] 实现 ingested frontier、稀疏 seen commits、observedHeads、projectedHeads、projectedValue 和 pending apply。
+- [x] 实现 ingested frontier、稀疏 seen commits、observedHeads、projectedHeads、projectedValue 和 pending apply。
 - [ ] 持久化 LocalConcurrentRecord、对应暂存引用和用户选择/合并状态；未解决时阻止该路径发布与远端应用。
 - [ ] 持久化每个已发布 Mutation 的 Version ID、暂存引用和 PublishedReconcile；该状态未解决前阻止相关寄存器远端应用。
 - [ ] 设置切换仓库时先停止协调器；旧仓库 Outbox 不得发送到新仓库。

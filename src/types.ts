@@ -3,6 +3,7 @@ import type { VaultEventIntent } from "../core/vault-event";
 import type { ApplyJournal } from "../core/apply-journal";
 import type { RepositoryLocator } from "../core/locator";
 import type { WriterFrontiers } from "../core/commit-frontier";
+import type { CommitFrontierAnchor } from "../core/commit-frontier";
 
 export interface S3SyncSettings {
   endpoint: string;
@@ -49,6 +50,9 @@ export interface S3SyncData {
   v1VaultGenerations: Record<string, number>;
   v1RecoveryCandidates: Record<string, EditorLocalCandidate[]>;
   v1ApplyJournals: ApplyJournal[];
+  v1SparseSeenCommits: Record<string, CommitFrontierAnchor>;
+  v1ObservedRegisters: Record<string, { heads: string[]; pending: string[]; invalid: string[]; disposition: "resolved" | "concurrent" | "pending" | "invalid"; valueHash?: string | null }>;
+  v1PendingApply: Record<string, { targetHeads: string[]; targetValueHash: string | null }>;
   v1?: {
     prefix: string;
     locator: RepositoryLocator;

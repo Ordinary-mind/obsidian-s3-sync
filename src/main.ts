@@ -24,7 +24,10 @@ import { assertPersistedRepositoryBinding, createPersistedRepositoryBinding } fr
 import { advanceWriterFrontiers, type CommitFrontierAnchor } from "../core/commit-frontier";
 import { DurableStateStore, type StateJsonValue } from "../core/durable-state";
 import { openRepositoryStateFiles } from "../core/local-state-files";
-import { parseRepositoryDurablePayload, repositoryDurablePayload } from "../core/repository-durable-payload";
+import { repositoryDurablePayload } from "../core/repository-durable-payload";
+import { validateRepositoryStatePayload, writeRepositoryStateTransaction } from "../core/repository-state-transaction";
+import { advanceIngestedCommitState } from "../core/ingested-state";
+import { mergeVerifiedRegisterObservations, type VerifiedRegisterObservation } from "../core/remote-merge-state";
 
 interface PersistedPluginData {
   settings?: Partial<S3SyncSettings>;
@@ -288,7 +291,7 @@ export default class S3SyncPlugin extends Plugin {
       }
       const service = new V1RepositoryService(this.settings, state.prefix);
       const pulled = await service.resolvedVaultPutWithAnchors(state.repositoryId, state.descriptorHash, file.path);
-      state = await this.persistObservedCommitFrontiers(state, pulled.acceptedCommits);
+      state = await this.persistObservedRemoteState(state, pulled.acceptedCommits, pulled.observations);
       const remote = pulled.value;
       const projectedHash = this.data.files[file.path]?.hash;
       if (projectedHash && projectedHash !== capture.hash && remote && remote.hash !== projectedHash) {
@@ -320,6 +323,7 @@ export default class S3SyncPlugin extends Plugin {
       await this.savePluginData();
       this.data.files[file.path] = { hash: capture.hash, size: capture.size, updatedAt: new Date().toISOString() };
       this.data.v1ProjectedHeads[file.path] = [`${commitHash}:0:0`];
+      delete this.data.v1PendingApply[file.path];
       if (dirtyIntent?.localCandidates.length) {
         this.data.v1RecoveryCandidates[file.path] = dirtyIntent.localCandidates.map((candidate) => ({ ...candidate }));
       }
@@ -344,7 +348,8 @@ export default class S3SyncPlugin extends Plugin {
       if (!state || state.prefix !== this.getEffectivePrefix()) throw new Error("select a v1 repository for the current Prefix first");
       await this.assertV1RepositoryBinding(state);
       const pulled = await new V1RepositoryService(this.settings, state.prefix).listResolvedVaultPutsWithDiagnostics(state.repositoryId, state.descriptorHash);
-      state = await this.persistObservedCommitFrontiers(state, pulled.acceptedCommits);
+      state = await this.persistObservedRemoteState(state, pulled.acceptedCommits, pulled.blockedCommitKeys.length === 0 ? pulled.observations : undefined);
+      if (pulled.blockedCommitKeys.length > 0) throw pulled.blockedCommitKeys[0].reason;
       const files = pulled.files;
       let created = 0;
       let updated = 0;
@@ -378,6 +383,7 @@ export default class S3SyncPlugin extends Plugin {
         if (decision === "adopt") {
           this.data.files[remote.path] = { hash: remote.hash, size: remote.size, updatedAt: new Date().toISOString() };
           this.data.v1ProjectedHeads[remote.path] = [...remote.heads];
+          delete this.data.v1PendingApply[remote.path];
           continue;
         }
         const binary = new Uint8Array(remote.bytes.byteLength);
@@ -393,6 +399,7 @@ export default class S3SyncPlugin extends Plugin {
         }
         this.data.files[remote.path] = { hash: remote.hash, size: remote.size, updatedAt: new Date().toISOString() };
         this.data.v1ProjectedHeads[remote.path] = [...remote.heads];
+        delete this.data.v1PendingApply[remote.path];
       }
       await this.saveSyncData();
       new Notice(`S3 Sync v1 pull: created ${created}, updated ${updated}, conflicts ${conflicts}, skipped ${skipped}`);
@@ -437,12 +444,20 @@ export default class S3SyncPlugin extends Plugin {
     await new V1RepositoryService(this.settings, state.prefix).assertDescriptorBinding(state.repositoryId, state.descriptorHash, state);
   }
 
-  private async persistObservedCommitFrontiers(
+  private async persistObservedRemoteState(
     state: NonNullable<S3SyncData["v1"]>,
     commits: readonly CommitFrontierAnchor[],
+    observations?: readonly VerifiedRegisterObservation[],
   ): Promise<NonNullable<S3SyncData["v1"]>> {
-    const updated = { ...state, writerFrontiers: advanceWriterFrontiers(state.writerFrontiers ?? {}, commits) };
+    const ingested = advanceIngestedCommitState({ frontiers: state.writerFrontiers ?? {}, sparseSeenCommits: this.data.v1SparseSeenCommits }, commits);
+    const updated = { ...state, writerFrontiers: ingested.frontiers };
     this.data.v1 = updated;
+    this.data.v1SparseSeenCommits = ingested.sparseSeenCommits;
+    if (observations) {
+      const merged = mergeVerifiedRegisterObservations(observations, this.data.v1ProjectedHeads);
+      this.data.v1ObservedRegisters = merged.observedRegisters;
+      this.data.v1PendingApply = merged.pendingApply;
+    }
     await this.savePluginData();
     return updated;
   }
@@ -789,6 +804,9 @@ export default class S3SyncPlugin extends Plugin {
       v1VaultGenerations: persisted?.syncData?.v1VaultGenerations ?? {},
       v1RecoveryCandidates: persisted?.syncData?.v1RecoveryCandidates ?? {},
       v1ApplyJournals: persisted?.syncData?.v1ApplyJournals ?? [],
+      v1SparseSeenCommits: persisted?.syncData?.v1SparseSeenCommits ?? {},
+      v1ObservedRegisters: persisted?.syncData?.v1ObservedRegisters ?? {},
+      v1PendingApply: persisted?.syncData?.v1PendingApply ?? {},
     };
     await this.restoreV1DurableState();
   }
@@ -808,22 +826,27 @@ export default class S3SyncPlugin extends Plugin {
       || typeof state.configDir !== "string" || !Array.isArray(state.historicalConfigDirs)) return;
     const store = await this.v1DurableStore(state);
     const identity = repositoryDurablePayload(state) as Record<string, StateJsonValue>;
+    const projectionPaths = new Set([...Object.keys(this.data.v1ProjectedHeads), ...Object.keys(this.data.files), ...Object.keys(this.data.v1VaultGenerations)]);
+    const projections = Object.fromEntries([...projectionPaths].sort().map((path) => [path, {
+      projectedHeads: [...(this.data.v1ProjectedHeads[path] ?? [])],
+      projectedValueHash: this.data.files[path]?.hash ?? null,
+      generation: this.data.v1VaultGenerations[path] ?? 0,
+    }]));
     const payload = JSON.parse(JSON.stringify({
       ...identity,
       dirtyIntents: this.data.v1DirtyIntents,
+      projections,
+      outboxRefs: [],
+      sparseSeenCommits: this.data.v1SparseSeenCommits,
+      observedRegisters: this.data.v1ObservedRegisters,
+      pendingApply: this.data.v1PendingApply,
       projectedHeads: this.data.v1ProjectedHeads,
       vaultEvents: this.data.v1VaultEvents,
       vaultGenerations: this.data.v1VaultGenerations,
       recoveryCandidates: this.data.v1RecoveryCandidates,
       applyJournals: this.data.v1ApplyJournals,
     })) as StateJsonValue;
-    await store.update((current) => {
-      if (current && typeof current === "object" && !Array.isArray(current)
-        && current.repositoryFingerprint !== state.repositoryFingerprint) {
-        throw new Error("durable state repository fingerprint mismatch");
-      }
-      return payload;
-    });
+    await writeRepositoryStateTransaction(store, payload);
   }
 
   private async restoreV1DurableState(): Promise<void> {
@@ -831,8 +854,9 @@ export default class S3SyncPlugin extends Plugin {
     if (!state || typeof state.repositoryFingerprint !== "string" || !state.locator) return;
     const snapshot = await (await this.v1DurableStore(state)).load();
     if (!snapshot) return;
-    const durable = parseRepositoryDurablePayload(snapshot.payload);
+    const durable = validateRepositoryStatePayload(snapshot.payload);
     if (durable.repositoryFingerprint !== state.repositoryFingerprint) throw new Error("durable state repository fingerprint mismatch");
+    const payload = snapshot.payload as Record<string, StateJsonValue>;
     this.data.v1 = {
       ...state,
       writerId: durable.writerId,
@@ -840,6 +864,9 @@ export default class S3SyncPlugin extends Plugin {
       previousCommitHash: durable.previousCommitHash,
       writerFrontiers: durable.writerFrontiers,
     };
+    this.data.v1SparseSeenCommits = JSON.parse(JSON.stringify(payload.sparseSeenCommits));
+    this.data.v1ObservedRegisters = JSON.parse(JSON.stringify(payload.observedRegisters));
+    this.data.v1PendingApply = JSON.parse(JSON.stringify(payload.pendingApply));
   }
 
   private async v1DurableStore(state: NonNullable<S3SyncData["v1"]>): Promise<DurableStateStore<StateJsonValue>> {
@@ -885,7 +912,7 @@ export default class S3SyncPlugin extends Plugin {
       await this.assertV1RepositoryBinding(state);
       const service = new V1RepositoryService(this.settings, state.prefix);
     const pulled = await service.resolvedVaultPutWithAnchors(state.repositoryId, state.descriptorHash, conflict.path);
-    state = await this.persistObservedCommitFrontiers(state, pulled.acceptedCommits);
+    state = await this.persistObservedRemoteState(state, pulled.acceptedCommits, pulled.observations);
     const remote = pulled.value;
     if (!remote || remote.hash !== conflict.remoteHash || !sameHeads(remote.heads, conflict.v1RemoteHeads ?? [])) throw new Error("remote conflict changed; refresh before resolving");
     if (mode === "remote") {
@@ -897,6 +924,8 @@ export default class S3SyncPlugin extends Plugin {
       if (!file) throw new Error("local conflict file is missing");
       await this.app.vault.modifyBinary(file, bytes.buffer);
       this.data.files[conflict.path] = { hash: candidate.hash, size: candidate.size, updatedAt: new Date().toISOString() };
+      this.data.v1ProjectedHeads[conflict.path] = [...candidate.heads];
+      delete this.data.v1PendingApply[conflict.path];
     } else {
       const capture = await captureStableVaultFile(this.app.vault, conflict.path);
       if (!capture || capture.hash !== conflict.localHash) throw new Error("local conflict content changed; refresh before resolving");
@@ -906,6 +935,7 @@ export default class S3SyncPlugin extends Plugin {
       this.data.v1 = { ...state, ...recordPublishedWriterCommit(state, commitHash, () => crypto.randomUUID()), writerFrontiers: advanceWriterFrontiers(state.writerFrontiers, [published]) };
       await this.savePluginData();
       this.data.files[conflict.path] = { hash: capture.hash, size: capture.size, updatedAt: new Date().toISOString() };
+      delete this.data.v1PendingApply[conflict.path];
     }
     this.data.conflicts[conflict.id] = { ...conflict, resolved: true };
     await this.saveSyncData();

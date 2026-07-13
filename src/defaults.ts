@@ -33,5 +33,8 @@ export function createDefaultData(): S3SyncData {
     v1VaultGenerations: {},
     v1RecoveryCandidates: {},
     v1ApplyJournals: [],
+    v1SparseSeenCommits: {},
+    v1ObservedRegisters: {},
+    v1PendingApply: {},
   };
 }
