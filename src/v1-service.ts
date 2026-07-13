@@ -60,15 +60,15 @@ export class V1RepositoryService {
     const version = repository.version(state.heads[0]);
     return version?.blob ? { heads: state.heads, hash: version.blob.hash } : undefined;
   }
-  async listResolvedVaultPuts(repositoryId: string, descriptorHash: string): Promise<Array<{ path: string; hash: string; size: number; bytes: Uint8Array }>> {
+  async listResolvedVaultPuts(repositoryId: string, descriptorHash: string): Promise<Array<{ path: string; hash: string; size: number; bytes: Uint8Array; heads: string[] }>> {
     const repository = await this.pullAllCommits(repositoryId, descriptorHash);
-    const results: Array<{ path: string; hash: string; size: number; bytes: Uint8Array }> = [];
+    const results: Array<{ path: string; hash: string; size: number; bytes: Uint8Array; heads: string[] }> = [];
     for (const [key, state] of repository.allRegisters(repositoryId)) {
       if (!key.startsWith("vault:") || state.disposition !== "resolved" || state.heads.length !== 1) continue;
       const version = repository.version(state.heads[0]);
       if (!version?.blob) continue;
       const bytes = await downloadVerifiedBlob(this.store(), this.prefix, repositoryId, version.blob);
-      results.push({ path: version.logicalKey, hash: version.blob.hash, size: version.blob.size, bytes });
+      results.push({ path: version.logicalKey, hash: version.blob.hash, size: version.blob.size, bytes, heads: [...state.heads] });
     }
     return results.sort((left, right) => left.path.localeCompare(right.path));
   }

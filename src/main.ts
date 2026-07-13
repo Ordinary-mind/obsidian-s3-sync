@@ -107,6 +107,11 @@ export default class S3SyncPlugin extends Plugin {
   }
 
   async resolveConflict(conflictId: string, mode: "local" | "remote"): Promise<void> {
+    const conflict = this.data.conflicts[conflictId];
+    if (conflict?.remoteVersion === 0) {
+      await this.resolveV1Conflict(conflict, mode);
+      return;
+    }
     await this.engineOrThrow().resolveConflict(conflictId, mode);
     this.updateStatus();
   }
@@ -227,7 +232,7 @@ export default class S3SyncPlugin extends Plugin {
       const remote = await service.resolvedVaultPut(state.repositoryId, state.descriptorHash, file.path);
       const projectedHash = this.data.files[file.path]?.hash;
       if (projectedHash && projectedHash !== capture.hash && remote && remote.hash !== projectedHash) {
-        this.recordV1Conflict(file.path, projectedHash, capture.hash, remote.hash);
+        this.recordV1Conflict(file.path, projectedHash, capture.hash, remote.hash, remote.heads);
         await this.saveSyncData();
         throw new Error("local and remote content both changed; resolve the conflict before publishing");
       }
@@ -269,7 +274,7 @@ export default class S3SyncPlugin extends Plugin {
         const capture = existing ? await captureStableVaultFile(this.app.vault, remote.path) : undefined;
         const decision = decideResolvedRemotePut({ localExists: !!existing, projectedHash: this.data.files[remote.path]?.hash, currentHash: capture?.hash, remoteHash: remote.hash });
         if (decision === "conflict") {
-          const conflict = this.recordV1Conflict(remote.path, this.data.files[remote.path]?.hash ?? null, capture?.hash ?? null, remote.hash);
+          const conflict = this.recordV1Conflict(remote.path, this.data.files[remote.path]?.hash ?? null, capture?.hash ?? null, remote.hash, remote.heads);
           const copyPath = remoteConflictCopyPath(conflict, remote.hash);
           if (!this.app.vault.getAbstractFileByPath(copyPath)) {
             await ensureParentFolder(this.app.vault, copyPath);
@@ -508,6 +513,7 @@ export default class S3SyncPlugin extends Plugin {
           remoteVersion: conflict.remoteVersion,
           localDeviceId: conflict.localDeviceId,
           remoteUpdatedByDevice: conflict.remoteUpdatedByDevice,
+          v1RemoteHeads: Array.isArray(conflict.v1RemoteHeads) && conflict.v1RemoteHeads.every((head) => typeof head === "string") ? [...conflict.v1RemoteHeads] : undefined,
           detectedAt: conflict.detectedAt ?? new Date().toISOString(),
           resolved: conflict.resolved ?? false,
         };
@@ -530,7 +536,7 @@ export default class S3SyncPlugin extends Plugin {
     });
   }
 
-  private recordV1Conflict(path: string, baseHash: string | null, localHash: string | null, remoteHash: string): string {
+  private recordV1Conflict(path: string, baseHash: string | null, localHash: string | null, remoteHash: string, remoteHeads: string[] = []): string {
     const id = conflictId(this.data.v1?.repositoryId ?? "unknown", "vault", [path], [baseHash ?? "none", localHash ?? "none", remoteHash]);
     this.data.conflicts[id] = {
       id,
@@ -540,13 +546,47 @@ export default class S3SyncPlugin extends Plugin {
       remoteHash,
       remoteVersion: 0,
       localDeviceId: this.data.v1?.writerId,
+      v1RemoteHeads: [...remoteHeads],
       detectedAt: new Date().toISOString(),
       resolved: false,
     };
     return id;
   }
 
+  private async resolveV1Conflict(conflict: S3SyncData["conflicts"][string], mode: "local" | "remote"): Promise<void> {
+    const state = this.data.v1;
+    if (!state) throw new Error("v1 repository is not selected");
+    const service = new V1RepositoryService(this.settings, state.prefix);
+    const remote = await service.resolvedVaultPut(state.repositoryId, state.descriptorHash, conflict.path);
+    if (!remote || remote.hash !== conflict.remoteHash || !sameHeads(remote.heads, conflict.v1RemoteHeads ?? [])) throw new Error("remote conflict changed; refresh before resolving");
+    if (mode === "remote") {
+      const candidate = (await service.listResolvedVaultPuts(state.repositoryId, state.descriptorHash)).find((entry) => entry.path === conflict.path);
+      if (!candidate) throw new Error("remote conflict content is unavailable");
+      const bytes = new Uint8Array(candidate.bytes.byteLength);
+      bytes.set(candidate.bytes);
+      const file = getTFile(this.app.vault, conflict.path);
+      if (!file) throw new Error("local conflict file is missing");
+      await this.app.vault.modifyBinary(file, bytes.buffer);
+      this.data.files[conflict.path] = { hash: candidate.hash, size: candidate.size, updatedAt: new Date().toISOString() };
+    } else {
+      const capture = await captureStableVaultFile(this.app.vault, conflict.path);
+      if (!capture || capture.hash !== conflict.localHash) throw new Error("local conflict content changed; refresh before resolving");
+      const reservation = reserveWriterCommit(state);
+      const commitHash = await service.publishVaultPut({ repositoryId: state.repositoryId, descriptorHash: state.descriptorHash, writerId: state.writerId, sequence: reservation.sequence, previousCommitHash: reservation.previousCommitHash, createdAt: new Date().toISOString(), clientVersion: this.manifest.version, path: conflict.path, parents: remote.heads, capture });
+      this.data.v1 = { ...state, ...recordPublishedWriterCommit(state, commitHash) };
+      this.data.files[conflict.path] = { hash: capture.hash, size: capture.size, updatedAt: new Date().toISOString() };
+    }
+    this.data.conflicts[conflict.id] = { ...conflict, resolved: true };
+    await this.saveSyncData();
+  }
+
   private errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
   }
+}
+
+function sameHeads(left: readonly string[], right: readonly string[]): boolean {
+  const normalizedLeft = [...new Set(left)].sort();
+  const normalizedRight = [...new Set(right)].sort();
+  return normalizedLeft.length === normalizedRight.length && normalizedLeft.every((head, index) => head === normalizedRight[index]);
 }

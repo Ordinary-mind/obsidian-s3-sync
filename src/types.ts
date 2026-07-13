@@ -27,6 +27,7 @@ export interface ConflictRecord {
   remoteVersion: number;
   localDeviceId?: string;
   remoteUpdatedByDevice?: string;
+  v1RemoteHeads?: string[];
   detectedAt: string;
   resolved: boolean;
 }
