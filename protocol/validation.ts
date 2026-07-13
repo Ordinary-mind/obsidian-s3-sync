@@ -11,9 +11,11 @@ import {
   validateCommitEnvelope,
   validateConfigTreeProfile,
   validateRepositoryDescriptor,
+  isUtf8SortedUnique,
 } from "./semantics";
 import { sha256Hex } from "./hash";
 import { assertCommitKey, assertContentAddressedKey, descriptorKey } from "./keys";
+import { defaultCaseFold151, normalizeNfc151 } from "./unicode";
 
 type SchemaDefinition = "RepositoryDescriptor" | "ConfigTree" | "ChangeChunk" | "Commit";
 
@@ -104,6 +106,93 @@ export function parseAndValidateKeyedCommitEnvelope(
     envelope.commitHash,
   );
   return envelope;
+}
+
+interface PathTrieNode {
+  terminal: boolean;
+  children: Map<string, PathTrieNode>;
+}
+
+export class IncrementalCommitEnvelopeValidator {
+  private acceptedChunks = 0;
+  private mutationCount = 0;
+  private lastVaultPath: string | undefined;
+  private readonly foldedPutPaths = new Set<string>();
+  private readonly putPathTrie: PathTrieNode = { terminal: false, children: new Map() };
+
+  constructor(
+    private readonly repositoryId: string,
+    private readonly descriptorHash: string,
+    readonly commit: ProtocolCommit,
+    private readonly commitKey: string,
+    commitHash: string,
+  ) {
+    assertRepositoryBinding(commit as unknown as Record<string, unknown>, repositoryId, descriptorHash);
+    assertCommitKey(commitKey, commit.writerId, commit.sequence, commitHash);
+    if (commit.changeChunkHashes.length === 0 || commit.changeChunkHashes.length > 1024) {
+      throw new ProtocolValidationError("commit-envelope-invalid", "chunk-count-mismatch");
+    }
+    if (new Set(commit.changeChunkHashes).size !== commit.changeChunkHashes.length) {
+      throw new ProtocolValidationError("commit-envelope-invalid", "duplicate-chunk-hash");
+    }
+  }
+
+  acceptChunk(index: number, key: string, bytes: Uint8Array): ProtocolChunk {
+    if (index !== this.acceptedChunks || index >= this.commit.changeChunkHashes.length) {
+      throw new ProtocolValidationError("commit-envelope-invalid", "chunk-index-not-contiguous");
+    }
+    const hash = sha256Hex(bytes);
+    assertContentAddressedKey(key, hash, ".json");
+    if (hash !== this.commit.changeChunkHashes[index]) {
+      throw new ProtocolValidationError("commit-envelope-invalid", "chunk-hash-order-mismatch");
+    }
+    const chunk = parseAndValidateProtocolObject("change-chunk", bytes) as unknown as ProtocolChunk;
+    assertRepositoryBinding(chunk as unknown as Record<string, unknown>, this.repositoryId, this.descriptorHash);
+    if (chunk.channel !== this.commit.channel) this.invalid("chunk-channel-mismatch");
+    if (chunk.chunkIndex !== index || chunk.chunkCount !== this.commit.changeChunkHashes.length) this.invalid("chunk-index-not-contiguous");
+    for (const mutation of chunk.mutations) this.acceptMutation(mutation);
+    this.mutationCount += chunk.mutations.length;
+    this.acceptedChunks += 1;
+    return chunk;
+  }
+
+  finish(): void {
+    if (this.acceptedChunks !== this.commit.changeChunkHashes.length) this.invalid("chunk-count-mismatch");
+    if (this.commit.channel === "config" && (this.acceptedChunks !== 1 || this.mutationCount !== 1)) this.invalid("config-commit-shape");
+    if (this.commit.kind === "parent-reduction" && (this.acceptedChunks !== 1 || this.mutationCount !== 1)) this.invalid("parent-reduction-shape");
+  }
+
+  private acceptMutation(mutation: ProtocolChunk["mutations"][number]): void {
+    if (this.commit.channel === "vault") {
+      const path = mutation.path!;
+      if (this.lastVaultPath !== undefined && !isUtf8SortedUnique([this.lastVaultPath, path])) this.invalid("vault-global-order");
+      this.lastVaultPath = path;
+      if (mutation.kind === "put") this.acceptPutPath(path);
+    }
+    if (this.commit.kind === "bootstrap" && mutation.parents.length !== 0) this.invalid("bootstrap-parents");
+    if (this.commit.kind === "conflict-resolution" && mutation.parents.length === 0) this.invalid("conflict-resolution-parents");
+    if (this.commit.kind === "parent-reduction" && mutation.parents.length < 2) this.invalid("parent-reduction-parents");
+  }
+
+  private acceptPutPath(path: string): void {
+    const folded = defaultCaseFold151(normalizeNfc151(path));
+    if (this.foldedPutPaths.has(folded)) this.invalid("vault-global-case-alias");
+    this.foldedPutPaths.add(folded);
+    let node = this.putPathTrie;
+    const segments = folded.split("/");
+    for (let index = 0; index < segments.length; index += 1) {
+      if (node.terminal) this.invalid("vault-global-path-prefix-conflict");
+      const child = node.children.get(segments[index]) ?? { terminal: false, children: new Map<string, PathTrieNode>() };
+      node.children.set(segments[index], child);
+      node = child;
+    }
+    if (node.children.size > 0) this.invalid("vault-global-path-prefix-conflict");
+    node.terminal = true;
+  }
+
+  private invalid(violation: ProtocolViolation): never {
+    throw new ProtocolValidationError("commit-envelope-invalid", violation);
+  }
 }
 
 export function assertRepositoryBinding(

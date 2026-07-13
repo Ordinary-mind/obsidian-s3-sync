@@ -22,6 +22,9 @@ import { isOwnApplyEvent } from "../core/apply-operation";
 import { createRepositoryLocator } from "../core/locator";
 import { assertPersistedRepositoryBinding, createPersistedRepositoryBinding } from "../core/repository-binding";
 import { advanceWriterFrontiers, type CommitFrontierAnchor } from "../core/commit-frontier";
+import { DurableStateStore, type StateJsonValue } from "../core/durable-state";
+import { openRepositoryStateFiles } from "../core/local-state-files";
+import { parseRepositoryDurablePayload, repositoryDurablePayload } from "../core/repository-durable-payload";
 
 interface PersistedPluginData {
   settings?: Partial<S3SyncSettings>;
@@ -39,6 +42,7 @@ export default class S3SyncPlugin extends Plugin {
   private editorChangeObserved = false;
   private causalStatePersistence = Promise.resolve();
   private readonly v1ApplyPaths = new Set<string>();
+  private v1DurableState: { fingerprint: string; store: DurableStateStore<StateJsonValue> } | undefined;
 
   async onload(): Promise<void> {
     await this.loadPluginData();
@@ -786,13 +790,64 @@ export default class S3SyncPlugin extends Plugin {
       v1RecoveryCandidates: persisted?.syncData?.v1RecoveryCandidates ?? {},
       v1ApplyJournals: persisted?.syncData?.v1ApplyJournals ?? [],
     };
+    await this.restoreV1DurableState();
   }
 
   private async savePluginData(): Promise<void> {
+    await this.persistV1DurableState();
     await this.saveData({
       settings: this.settings,
       syncData: this.data,
     });
+  }
+
+  private async persistV1DurableState(): Promise<void> {
+    const state = this.data.v1;
+    if (!state) return;
+    if (typeof state.repositoryFingerprint !== "string" || !state.locator
+      || typeof state.configDir !== "string" || !Array.isArray(state.historicalConfigDirs)) return;
+    const store = await this.v1DurableStore(state);
+    const identity = repositoryDurablePayload(state) as Record<string, StateJsonValue>;
+    const payload = JSON.parse(JSON.stringify({
+      ...identity,
+      dirtyIntents: this.data.v1DirtyIntents,
+      projectedHeads: this.data.v1ProjectedHeads,
+      vaultEvents: this.data.v1VaultEvents,
+      vaultGenerations: this.data.v1VaultGenerations,
+      recoveryCandidates: this.data.v1RecoveryCandidates,
+      applyJournals: this.data.v1ApplyJournals,
+    })) as StateJsonValue;
+    await store.update((current) => {
+      if (current && typeof current === "object" && !Array.isArray(current)
+        && current.repositoryFingerprint !== state.repositoryFingerprint) {
+        throw new Error("durable state repository fingerprint mismatch");
+      }
+      return payload;
+    });
+  }
+
+  private async restoreV1DurableState(): Promise<void> {
+    const state = this.data.v1;
+    if (!state || typeof state.repositoryFingerprint !== "string" || !state.locator) return;
+    const snapshot = await (await this.v1DurableStore(state)).load();
+    if (!snapshot) return;
+    const durable = parseRepositoryDurablePayload(snapshot.payload);
+    if (durable.repositoryFingerprint !== state.repositoryFingerprint) throw new Error("durable state repository fingerprint mismatch");
+    this.data.v1 = {
+      ...state,
+      writerId: durable.writerId,
+      nextSequence: durable.nextSequence,
+      previousCommitHash: durable.previousCommitHash,
+      writerFrontiers: durable.writerFrontiers,
+    };
+  }
+
+  private async v1DurableStore(state: NonNullable<S3SyncData["v1"]>): Promise<DurableStateStore<StateJsonValue>> {
+    if (this.v1DurableState?.fingerprint !== state.repositoryFingerprint) {
+      const files = await openRepositoryStateFiles(this.app.vault.adapter, this.app.vault.configDir, state.repositoryId);
+      this.v1DurableState = { fingerprint: state.repositoryFingerprint, store: new DurableStateStore<StateJsonValue>(files) };
+    }
+    return this.v1DurableState.store;
   }
 
   private recordV1Conflict(path: string, baseHash: string | null, localHash: string | null, remoteHash: string, remoteHeads: string[] = []): string {

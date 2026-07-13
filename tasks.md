@@ -224,7 +224,7 @@
 - [x] 拒绝空 Change Chunk 和空 Commit；真正空仓库只使用 RepositoryDescriptor anchor。
 - [x] Config Commit 必须恰有一个 Chunk 和一个 ConfigSnapshotMutation。
 - [x] 校验 Chunk 数组非空、index 连续、跨 Chunk Mutation 全局排序，以及 repositoryId/channel/chunkCount 一致。
-- [ ] Commit 结构信封使用磁盘/增量验证，不能把最多 1,024 个 4 MiB Chunk 同时留在内存；创建任何 Version 前仍须完成全信封校验。
+- [x] Commit 结构信封使用磁盘/增量验证，不能把最多 1,024 个 4 MiB Chunk 同时留在内存；创建任何 Version 前仍须完成全信封校验。
 - [x] 实现 Commit 规范编码、Commit Hash 和 20 位 sequence Key。
 - [x] sequence 达到 uint64 最大值后轮换 writerId；禁止溢出、回绕或复用。
 - [x] `parent-reduction` Commit 必须恰有一个 Chunk 和一个 Mutation。
@@ -267,9 +267,9 @@
 
 - [ ] `data.json` 只保存连接设置、凭证或平台 secret provider 引用和 UI 偏好；无 secret provider 时明确提示本地明文风险。
 - [ ] 在实际 configDir 下建立固定 `.obsidian-s3-sync-local/<repositoryId>/` 状态根，全部暂存、Journal 和非冲突恢复文件都只能位于其下。
-- [ ] 实现 schema 版本、state generation、校验和、双副本和单写入队列。
+- [x] 实现 schema 版本、state generation、校验和、双副本和单写入队列。
 - [ ] 一个状态事务可原子更新 dirtyIntent、projection、writer sequence 和 Outbox 引用。
-- [ ] 实现 RepositoryLocator、descriptor Hash 和每个 writer frontier branch-tip integrity anchors 持久化。
+- [x] 实现 RepositoryLocator、descriptor Hash 和每个 writer frontier branch-tip integrity anchors 持久化。
 - [ ] 实现 ingested frontier、稀疏 seen commits、observedHeads、projectedHeads、projectedValue 和 pending apply。
 - [ ] 持久化 LocalConcurrentRecord、对应暂存引用和用户选择/合并状态；未解决时阻止该路径发布与远端应用。
 - [ ] 持久化每个已发布 Mutation 的 Version ID、暂存引用和 PublishedReconcile；该状态未解决前阻止相关寄存器远端应用。

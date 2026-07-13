@@ -1,39 +1,56 @@
-import { parseAndValidateProtocolObject } from "../protocol/validation";
+import { IncrementalCommitEnvelopeValidator, parseAndValidateProtocolObject } from "../protocol/validation";
 import { changeChunkKey } from "../protocol/keys";
 import type { ConfigTreeForLineage, ProtocolCommit } from "../protocol/semantics";
 import { downloadConfigTree, type ConfigTreeBinding } from "./config-tree";
 import { readObjectBytes, type ObjectStore } from "./object-store";
-import { receiveKeyedCommitBytes } from "./receive-repository";
 import { InMemoryRepositoryCore } from "./repository";
 import { sha256Hex } from "../protocol/hash";
 import type { CommitFrontierAnchor } from "./commit-frontier";
+import { createDiskChunkStagingArea, type ChunkStagingArea } from "./chunk-staging";
+import { registerVersionsFromEnvelope } from "./ingest";
 
-export async function pullCommitIntoRepository(store: ObjectStore, repository: InMemoryRepositoryCore, prefix: string, repositoryId: string, descriptorHash: string, commitKey: string, configTreeBinding?: ConfigTreeBinding): Promise<string[]> {
-  return (await pullCommitWithAnchor(store, repository, prefix, repositoryId, descriptorHash, commitKey, configTreeBinding)).versionIds;
+export async function pullCommitIntoRepository(store: ObjectStore, repository: InMemoryRepositoryCore, prefix: string, repositoryId: string, descriptorHash: string, commitKey: string, configTreeBinding?: ConfigTreeBinding, createStaging: () => Promise<ChunkStagingArea> = createDiskChunkStagingArea): Promise<string[]> {
+  return (await pullCommitWithAnchor(store, repository, prefix, repositoryId, descriptorHash, commitKey, configTreeBinding, createStaging)).versionIds;
 }
 
-async function pullCommitWithAnchor(store: ObjectStore, repository: InMemoryRepositoryCore, prefix: string, repositoryId: string, descriptorHash: string, commitKey: string, configTreeBinding?: ConfigTreeBinding): Promise<{ versionIds: string[]; anchor: CommitFrontierAnchor }> {
+async function pullCommitWithAnchor(store: ObjectStore, repository: InMemoryRepositoryCore, prefix: string, repositoryId: string, descriptorHash: string, commitKey: string, configTreeBinding?: ConfigTreeBinding, createStaging: () => Promise<ChunkStagingArea> = createDiskChunkStagingArea): Promise<{ versionIds: string[]; anchor: CommitFrontierAnchor }> {
   const commitBytes = await readObjectBytes(store, commitKey, { maximumBytes: 256 * 1024 });
   const commit = parseAndValidateProtocolObject("commit", commitBytes) as unknown as ProtocolCommit;
   const chunkKeys = commit.changeChunkHashes.map((hash) => changeChunkKey(prefix, repositoryId, hash));
-  const chunkBytes = await Promise.all(chunkKeys.map((key) => readObjectBytes(store, key, { maximumBytes: 4 * 1024 * 1024 })));
-  const configTreeHashes = commit.channel === "config"
-    ? [...new Set(chunkBytes.flatMap((bytes) => {
-      const chunk = parseAndValidateProtocolObject("change-chunk", bytes) as { mutations: Array<{ treeHash: string }> };
-      return chunk.mutations.map((mutation) => mutation.treeHash);
-    }))]
-    : [];
-  const configTreesByHash = new Map<string, ConfigTreeForLineage>();
-  await Promise.all(configTreeHashes.map(async (hash) => {
-    if (!configTreeBinding) throw new Error("ConfigTree descriptor binding is required");
-    const tree = await downloadConfigTree(store, prefix, repositoryId, descriptorHash, hash, configTreeBinding);
-    configTreesByHash.set(hash, tree);
-  }));
-  const versionIds = receiveKeyedCommitBytes(repository, repositoryId, descriptorHash, commitKey, commitBytes, chunkKeys, chunkBytes, configTreesByHash, configTreeBinding);
-  return {
-    versionIds,
-    anchor: { key: commitKey, writerId: commit.writerId, sequence: commit.sequence, hash: sha256Hex(commitBytes), previousCommitHash: commit.previousCommitHash },
-  };
+  const commitHash = sha256Hex(commitBytes);
+  const validator = new IncrementalCommitEnvelopeValidator(repositoryId, descriptorHash, commit, commitKey, commitHash);
+  const staging = await createStaging();
+  try {
+    const configTreeHashes = new Set<string>();
+    for (let index = 0; index < chunkKeys.length; index += 1) {
+      const bytes = await readObjectBytes(store, chunkKeys[index], { maximumBytes: 4 * 1024 * 1024, expectedHash: commit.changeChunkHashes[index] });
+      const chunk = validator.acceptChunk(index, chunkKeys[index], bytes);
+      if (commit.channel === "config") {
+        for (const mutation of chunk.mutations) configTreeHashes.add(mutation.treeHash!);
+      }
+      await staging.write(index, bytes);
+    }
+    validator.finish();
+    const configTreesByHash = new Map<string, ConfigTreeForLineage>();
+    for (const hash of configTreeHashes) {
+      if (!configTreeBinding) throw new Error("ConfigTree descriptor binding is required");
+      configTreesByHash.set(hash, await downloadConfigTree(store, prefix, repositoryId, descriptorHash, hash, configTreeBinding));
+    }
+    const versions = [];
+    for (let index = 0; index < chunkKeys.length; index += 1) {
+      const bytes = await staging.read(index);
+      if (sha256Hex(bytes) !== commit.changeChunkHashes[index]) throw new Error("staged Change Chunk Hash changed");
+      const chunk = parseAndValidateProtocolObject("change-chunk", bytes) as unknown as import("../protocol/semantics").ProtocolChunk;
+      versions.push(...registerVersionsFromEnvelope(commitHash, commit, [chunk], configTreesByHash, configTreeBinding));
+    }
+    for (const version of versions) repository.ingest(version);
+    return {
+      versionIds: versions.map((version) => version.versionId),
+      anchor: { key: commitKey, writerId: commit.writerId, sequence: commit.sequence, hash: commitHash, previousCommitHash: commit.previousCommitHash },
+    };
+  } finally {
+    await staging.dispose();
+  }
 }
 
 export async function pullCommitSetIntoRepository(

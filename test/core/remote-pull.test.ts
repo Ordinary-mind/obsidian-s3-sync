@@ -17,12 +17,28 @@ describe("remote Commit pull", () => {
     vector.chunks.forEach((chunk: { sha256: string; canonicalJson: string }) => objects.set(changeChunkKey("", vector.commit.object.repositoryId, chunk.sha256), new TextEncoder().encode(chunk.canonicalJson)));
     const store = { getStream: async (key: string) => { const bytes = objects.get(key); if (!bytes) throw new Error(`missing ${key}`); return objectBodyFromBytes(bytes); }, head: async () => ({ size: 0 }), list: async () => ({ keys: [] }), putImmutable: async () => undefined };
     const repository = new InMemoryRepositoryCore();
-    await pullCommitIntoRepository(store, repository, "", vector.commit.object.repositoryId, vector.commit.object.descriptorHash, commitKey);
+    const staged = new Map<number, Uint8Array>();
+    const stagingEvents: string[] = [];
+    await pullCommitIntoRepository(store, repository, "", vector.commit.object.repositoryId, vector.commit.object.descriptorHash, commitKey, undefined, async () => ({
+      write: async (index, bytes) => { stagingEvents.push(`write:${index}`); staged.set(index, new Uint8Array(bytes)); },
+      read: async (index) => { stagingEvents.push(`read:${index}`); return staged.get(index)!; },
+      dispose: async () => { stagingEvents.push("dispose"); staged.clear(); },
+    }));
+    expect(stagingEvents).toEqual([...vector.chunks.map((_: unknown, index: number) => `write:${index}`), ...vector.chunks.map((_: unknown, index: number) => `read:${index}`), "dispose"]);
     expect(repository.register(vector.commit.object.repositoryId, "vault", "notes/first.md").heads).toHaveLength(1);
     const missingCommitKey = `${root}/commits/${vector.commit.object.writerId}/00000000000000000002-${"f".repeat(64)}.json`;
     const isolated = await pullCommitSetIntoRepository(store, "", vector.commit.object.repositoryId, vector.commit.object.descriptorHash, [missingCommitKey, commitKey], { configDir: ".obsidian", historicalConfigDirs: [] });
     expect(isolated.repository.register(vector.commit.object.repositoryId, "vault", "notes/first.md").heads).toHaveLength(1);
     expect(isolated.blockedCommitKeys).toEqual([expect.objectContaining({ key: missingCommitKey })]);
+
+    const invalidObjects = new Map(objects);
+    invalidObjects.set(changeChunkKey("", vector.commit.object.repositoryId, vector.chunks.at(-1).sha256), new TextEncoder().encode("tampered"));
+    const invalidStore = { ...store, getStream: async (key: string) => { const bytes = invalidObjects.get(key); if (!bytes) throw new Error(`missing ${key}`); return objectBodyFromBytes(bytes); } };
+    const untouched = new InMemoryRepositoryCore();
+    let disposed = false;
+    await expect(pullCommitIntoRepository(invalidStore, untouched, "", vector.commit.object.repositoryId, vector.commit.object.descriptorHash, commitKey, undefined, async () => ({ write: async () => undefined, read: async () => new Uint8Array(), dispose: async () => { disposed = true; } }))).rejects.toThrow();
+    expect(untouched.allRegisters(vector.commit.object.repositoryId).size).toBe(0);
+    expect(disposed).toBe(true);
   });
 
   it("fetches and verifies the referenced ConfigTree before admitting a Config snapshot", async () => {
