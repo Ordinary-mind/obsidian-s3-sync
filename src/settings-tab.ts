@@ -89,7 +89,7 @@ export class S3SyncSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
+    const advancedSetting = new Setting(containerEl)
       .setName("高级设置")
       .setDesc(`当前实际 Prefix：${this.plugin.getEffectivePrefix()}`)
       .addButton((button) => button
@@ -113,6 +113,7 @@ export class S3SyncSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.prefix)
         .onChange(async (value) => {
           this.plugin.settings.prefix = value.trim();
+          advancedSetting.setDesc(`当前实际 Prefix：${this.plugin.getEffectivePrefix()}`);
           await this.plugin.saveSettings();
         }));
 
