@@ -10,7 +10,7 @@ export interface S3ObjectStoreOptions extends RepositoryEndpoint {
 export class S3ObjectStore implements ObjectStore {
   private readonly client: S3Client;
   constructor(private readonly options: S3ObjectStoreOptions) {
-    this.client = new S3Client({ endpoint: options.endpoint, region: options.region, forcePathStyle: options.forcePathStyle, credentials: options.credentials, requestHandler: new NodeHttpHandler() });
+    this.client = new S3Client({ endpoint: options.endpoint, region: options.region, forcePathStyle: options.forcePathStyle, credentials: options.credentials, requestHandler: new NodeHttpHandler(), streamCollector: bodyToBytes });
   }
   async list(prefix: string, continuationToken?: string): Promise<{ keys: string[]; continuationToken?: string }> {
     const result = await this.client.send(new ListObjectsV2Command({ Bucket: this.options.bucket, Prefix: prefix, ContinuationToken: continuationToken }));
