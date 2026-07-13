@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasPackageManifestAnchor, isConfigItemCovered, isPortablePluginIdAllowed } from "../../core/config-profile";
+import { createDefaultConfigProfile, hasPackageManifestAnchor, isConfigItemCovered, isPortablePluginIdAllowed, validateConfigProfile } from "../../core/config-profile";
 import { mergeEnabledPortablePlugins } from "../../core/plugin-enable";
 
 const profile = { baseFiles: ["app.json"], syncThemes: true, syncSnippets: false, portablePluginIds: ["plugin"], pluginPackages: ["plugin"], pluginData: ["plugin"] };
@@ -22,5 +22,11 @@ describe("ConfigTree profile coverage", () => {
     expect(isPortablePluginIdAllowed("OBSIDIAN-S3-SYNC", "obsidian-s3-sync")).toBe(false);
     expect(isPortablePluginIdAllowed("bad/name", "obsidian-s3-sync")).toBe(false);
     expect(isPortablePluginIdAllowed("NUL.json", "obsidian-s3-sync")).toBe(false);
+  });
+  it("uses the three frozen defaults and rejects raw enable/core/workspace files", () => {
+    expect(createDefaultConfigProfile("1.8.0").baseFiles).toEqual(["app.json", "appearance.json", "hotkeys.json"]);
+    expect(validateConfigProfile({ ...createDefaultConfigProfile("1.8.0"), baseFiles: ["community-plugins.json"] })).toContain("forbidden-base-file");
+    expect(validateConfigProfile({ ...createDefaultConfigProfile("1.8.0"), baseFiles: ["core-plugins.json"] })).toContain("forbidden-base-file");
+    expect(validateConfigProfile({ ...createDefaultConfigProfile("1.8.0"), baseFiles: ["workspace-mobile.json"] })).toContain("forbidden-base-file");
   });
 });

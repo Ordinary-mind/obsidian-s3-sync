@@ -4,6 +4,11 @@ import type { ApplyJournal } from "../core/apply-journal";
 import type { RepositoryLocator } from "../core/locator";
 import type { WriterFrontiers } from "../core/commit-frontier";
 import type { CommitFrontierAnchor } from "../core/commit-frontier";
+import type { ConfigProfile } from "../core/types";
+import type { LocalConcurrentRecord } from "../core/dirty-record";
+import type { DurableOutboxEntry, DurablePublishedReconcile } from "../core/durable-outbox";
+import type { RecoveryRecord } from "../core/recovery-record";
+import type { OperationalStatus } from "../core/operational-status";
 
 export interface S3SyncSettings {
   endpoint: string;
@@ -15,8 +20,13 @@ export interface S3SyncSettings {
   forcePathStyle: boolean;
   autoSync: boolean;
   syncOnStartup: boolean;
+  syncOnEvents: boolean;
+  remotePolling: boolean;
+  pollIntervalMinutes: number;
   debounceSeconds: number;
   ignoredPatterns: string;
+  configSyncEnabled: boolean;
+  configProfile: ConfigProfile;
 }
 
 export interface LocalFileState {
@@ -53,6 +63,12 @@ export interface S3SyncData {
   v1SparseSeenCommits: Record<string, CommitFrontierAnchor>;
   v1ObservedRegisters: Record<string, { heads: string[]; pending: string[]; invalid: string[]; disposition: "resolved" | "concurrent" | "pending" | "invalid"; valueHash?: string | null }>;
   v1PendingApply: Record<string, { targetHeads: string[]; targetValueHash: string | null }>;
+  v1LocalConcurrentRecords: Record<string, LocalConcurrentRecord>;
+  v1PublishedReconciles: DurablePublishedReconcile[];
+  v1DurableOutbox: DurableOutboxEntry[];
+  v1RecoveryRecords: Record<string, RecoveryRecord>;
+  v1ReattachRequired: boolean;
+  v1OperationalStatus: OperationalStatus;
   v1?: {
     prefix: string;
     locator: RepositoryLocator;

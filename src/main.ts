@@ -28,9 +28,19 @@ import { repositoryDurablePayload } from "../core/repository-durable-payload";
 import { validateRepositoryStatePayload, writeRepositoryStateTransaction } from "../core/repository-state-transaction";
 import { advanceIngestedCommitState } from "../core/ingested-state";
 import { mergeVerifiedRegisterObservations, type VerifiedRegisterObservation } from "../core/remote-merge-state";
+import { assertPluginDataContainsNoOperationalState, type PersistedRepositorySelection } from "../core/plugin-data";
+import type { DurableOutboxEntry } from "../core/durable-outbox";
+import { SyncDashboardModal } from "./sync-dashboard-modal";
+import { buildRedactedDiagnosticBundle } from "../core/diagnostic-bundle";
+import { diagnosticCategory } from "../core/diagnostics";
+import { repositoryHealthLabel, type OperationalStatus, type PathDecisionRecord } from "../core/operational-status";
 
 interface PersistedPluginData {
+  schemaVersion?: 2;
   settings?: Partial<S3SyncSettings>;
+  repositorySelection?: PersistedRepositorySelection & { prefix: string };
+  preferences?: { dashboardExpanded?: boolean };
+  // 仅用于从旧版本一次性迁移，v2 不再写入该字段。
   syncData?: Partial<S3SyncData>;
 }
 
@@ -51,7 +61,32 @@ export default class S3SyncPlugin extends Plugin {
     await this.loadPluginData();
 
     this.statusEl = this.addStatusBarItem();
+    this.statusEl.addEventListener("click", () => new SyncDashboardModal(this).open());
     this.updateStatus();
+
+    this.addCommand({
+      id: "s3-sync-dashboard",
+      name: "S3 Sync：状态与诊断",
+      callback: () => new SyncDashboardModal(this).open(),
+    });
+
+    this.addCommand({
+      id: "s3-sync-now",
+      name: "S3 Sync：立即同步",
+      callback: () => void this.runManualSyncV1(),
+    });
+
+    this.addCommand({
+      id: "s3-sync-preview",
+      name: "S3 Sync：仅预览",
+      callback: () => void this.previewSyncV1(),
+    });
+
+    this.addCommand({
+      id: "s3-sync-full-audit",
+      name: "S3 Sync：完整校验",
+      callback: () => void this.runFullAuditV1(),
+    });
 
     this.addCommand({
       id: "s3-sync-open-conflicts",
@@ -157,6 +192,115 @@ export default class S3SyncPlugin extends Plugin {
 
   getEffectivePrefix(): string {
     return resolveEffectivePrefix(this.settings.prefix, this.app.vault.getName());
+  }
+
+  getOperationalStatus(): OperationalStatus {
+    const base = this.data.v1OperationalStatus;
+    const recoveryRecords = Object.values(this.data.v1RecoveryRecords);
+    return {
+      ...base,
+      pendingApply: Object.keys(this.data.v1PendingApply).length,
+      outbox: this.data.v1DurableOutbox.filter((entry) => entry.state !== "published").length,
+      localConcurrentRecords: Object.keys(this.data.v1LocalConcurrentRecords).length,
+      recoveryFiles: recoveryRecords.filter((record) => record.cleanupState !== "cleaned").length,
+      postCaptureEdits: recoveryRecords.filter((record) => record.postCaptureEdit).length,
+      conflicts: Object.values(this.data.conflicts).filter((conflict) => !conflict.resolved).length,
+      recoveryRequired: base.recoveryRequired || this.data.v1ApplyJournals.some((journal) => journal.state === "recovery-required"),
+      repositoryIdentityValid: base.repositoryIdentityValid && !this.data.v1ReattachRequired,
+    };
+  }
+
+  openConflictModal(): void { new ConflictModal(this).open(); }
+
+  async runManualSyncV1(): Promise<void> {
+    if (!this.data.v1 || this.data.v1ReattachRequired) {
+      new Notice("S3 Sync：需要先完成非破坏性仓库接入或恢复诊断。");
+      return;
+    }
+    this.updateOperationalStatus({ phase: "pulling", lastError: undefined });
+    try {
+      await this.pullMissingFilesV1();
+      this.updateOperationalStatus({ lastSuccessfulPull: Date.now(), phase: "scanning" });
+      const active = this.app.workspace.getActiveFile();
+      if (active && (this.data.v1DirtyIntents[active.path] || latestVaultEvent(this.data.v1VaultEvents, active.path))) {
+        this.updateOperationalStatus({ phase: "publishing" });
+        await this.publishActiveFileV1();
+        this.updateOperationalStatus({ lastSuccessfulPublish: Date.now() });
+      }
+      this.updateOperationalStatus({ phase: "idle" });
+    } catch (error) {
+      this.recordOperationalError(error);
+    }
+    this.updateStatus();
+  }
+
+  async previewSyncV1(): Promise<void> {
+    const state = this.data.v1;
+    if (!state) { new Notice("S3 Sync：尚未选择 v1 仓库。"); return; }
+    this.updateOperationalStatus({ phase: "previewing", decisions: [], lastError: undefined });
+    try {
+      await this.assertV1RepositoryBinding(state);
+      const pulled = await new V1RepositoryService(this.settings, state.prefix).listResolvedVaultPutsWithDiagnostics(state.repositoryId, state.descriptorHash);
+      const decisions: PathDecisionRecord[] = [];
+      const remotePaths = new Set<string>();
+      for (const remote of pulled.files) {
+        remotePaths.add(remote.path);
+        const existing = getTFile(this.app.vault, remote.path);
+        const local = existing ? await captureStableVaultFile(this.app.vault, remote.path) : undefined;
+        if (existing && !local) decisions.push({ path: remote.path, decision: "unknown", reason: "本地文件未稳定或无法读取" });
+        else if (!local) decisions.push({ path: remote.path, decision: "remote-put", reason: "本地缺失，仅计划安全创建" });
+        else if (local.hash === remote.hash) decisions.push({ path: remote.path, decision: "same", reason: "本地与远端字节相同" });
+        else if (this.data.v1DirtyIntents[remote.path] || latestVaultEvent(this.data.v1VaultEvents, remote.path)) decisions.push({ path: remote.path, decision: "conflict", reason: "本地已有未发布意图" });
+        else decisions.push({ path: remote.path, decision: "remote-put", reason: "需经过前像与 no-clobber 守卫" });
+      }
+      for (const blocked of pulled.blocked) decisions.push({ path: blocked.path, decision: "unknown", reason: this.errorMessage(blocked.reason) });
+      for (const path of Object.keys(this.data.files)) {
+        if (!remotePaths.has(path) && getTFile(this.app.vault, path)) decisions.push({ path, decision: "local-put", reason: "远端没有已解析值；不会推断远端删除" });
+      }
+      this.updateOperationalStatus({ phase: "idle", decisions: decisions.sort((left, right) => left.path.localeCompare(right.path)) });
+      new SyncDashboardModal(this).open();
+    } catch (error) {
+      this.recordOperationalError(error);
+    }
+    this.updateStatus();
+  }
+
+  async runFullAuditV1(): Promise<void> {
+    const state = this.data.v1;
+    if (!state) { new Notice("S3 Sync：尚未选择 v1 仓库。"); return; }
+    this.updateOperationalStatus({ phase: "auditing", audit: { state: "running", completedObjects: 0, totalObjects: 0, missingClosure: [], resumable: true } });
+    try {
+      await this.assertV1RepositoryBinding(state);
+      const result = await new V1RepositoryService(this.settings, state.prefix).fullAudit(state.repositoryId, state.descriptorHash);
+      const now = Date.now();
+      this.updateOperationalStatus({
+        phase: "idle",
+        lastSuccessfulAudit: now,
+        audit: { state: "complete", completedObjects: result.verifiedObjects, totalObjects: result.verifiedObjects, missingClosure: [], resumable: false, completedAt: now },
+      });
+      await this.saveSyncData();
+      new Notice(`S3 Sync 完整校验通过：${result.verifiedObjects} 个对象，${result.commits} 个 Commit。`);
+    } catch (error) {
+      this.updateOperationalStatus({ audit: { ...this.data.v1OperationalStatus.audit, state: "failed", resumable: true } });
+      this.recordOperationalError(error);
+    }
+    this.updateStatus();
+  }
+
+  exportRedactedDiagnostics(): string {
+    const status = this.getOperationalStatus();
+    return JSON.stringify(buildRedactedDiagnosticBundle({
+      generatedAt: Date.now(),
+      repositoryId: this.data.v1?.repositoryId,
+      normalizedPrefix: this.data.v1?.prefix,
+      pathSalt: this.data.v1?.repositoryId ?? this.runtimeContractSessionId,
+      sensitiveValues: [this.settings.accessKeyId, this.settings.secretAccessKey],
+      status: status as unknown as Record<string, unknown>,
+      events: [
+        ...status.decisions.map((decision) => ({ at: Date.now(), category: decision.decision === "conflict" ? "conflict" as const : "local-path" as const, stage: decision.decision, message: decision.reason, path: decision.path })),
+        ...(status.lastError ? [{ at: Date.now(), category: status.lastError.category, stage: status.phase, message: status.lastError.message }] : []),
+      ],
+    }), null, 2);
   }
 
   async testS3Connection(): Promise<void> {
@@ -715,9 +859,21 @@ export default class S3SyncPlugin extends Plugin {
     if (!this.statusEl) {
       return;
     }
-    const conflictCount = Object.values(this.data.conflicts).filter((conflict) => !conflict.resolved).length;
-    const queueCount = this.engine?.hasQueuedWork() ? "有待同步" : "空闲";
-    this.statusEl.setText(`S3 Sync：${queueCount}${conflictCount > 0 ? `，冲突 ${conflictCount}` : ""}`);
+    const status = this.getOperationalStatus();
+    this.statusEl.setText(`S3 Sync：${status.phase} · ${repositoryHealthLabel(status)}${status.conflicts > 0 ? ` · 冲突 ${status.conflicts}` : ""}${status.outbox > 0 ? ` · Outbox ${status.outbox}` : ""}`);
+  }
+
+  private updateOperationalStatus(patch: Partial<OperationalStatus>): void {
+    this.data.v1OperationalStatus = { ...this.data.v1OperationalStatus, ...patch };
+  }
+
+  private recordOperationalError(error: unknown): void {
+    const candidate = error as { code?: string; status?: number };
+    this.updateOperationalStatus({
+      phase: "idle",
+      lastError: { category: diagnosticCategory(candidate), message: this.errorMessage(error) },
+    });
+    new Notice(`S3 Sync：${this.errorMessage(error)}`);
   }
 
   private rebuildEngine(): void {
@@ -736,6 +892,10 @@ export default class S3SyncPlugin extends Plugin {
     this.settings = {
       ...DEFAULT_SETTINGS,
       ...(persisted?.settings ?? {}),
+      configProfile: {
+        ...DEFAULT_SETTINGS.configProfile,
+        ...(persisted?.settings?.configProfile ?? {}),
+      },
     };
 
     const defaultData = createDefaultData();
@@ -792,6 +952,15 @@ export default class S3SyncPlugin extends Plugin {
       }
     }
 
+    const selectedRepository = persisted?.repositorySelection
+      ? {
+        ...persisted.repositorySelection,
+        writerFrontiers: {},
+        writerId: "pending-durable-state",
+        nextSequence: "00000000000000000001",
+        previousCommitHash: null,
+      }
+      : undefined;
     this.data = {
       ...defaultData,
       ...(persisted?.syncData ?? {}),
@@ -807,16 +976,48 @@ export default class S3SyncPlugin extends Plugin {
       v1SparseSeenCommits: persisted?.syncData?.v1SparseSeenCommits ?? {},
       v1ObservedRegisters: persisted?.syncData?.v1ObservedRegisters ?? {},
       v1PendingApply: persisted?.syncData?.v1PendingApply ?? {},
+      v1LocalConcurrentRecords: persisted?.syncData?.v1LocalConcurrentRecords ?? {},
+      v1PublishedReconciles: persisted?.syncData?.v1PublishedReconciles ?? [],
+      v1DurableOutbox: persisted?.syncData?.v1DurableOutbox ?? [],
+      v1RecoveryRecords: persisted?.syncData?.v1RecoveryRecords ?? {},
+      v1ReattachRequired: persisted?.syncData?.v1ReattachRequired ?? false,
+      v1OperationalStatus: persisted?.syncData?.v1OperationalStatus ?? defaultData.v1OperationalStatus,
+      v1: persisted?.syncData?.v1 ?? selectedRepository,
     };
-    await this.restoreV1DurableState();
+    try {
+      await this.restoreV1DurableState();
+    } catch (error) {
+      this.data.v1ReattachRequired = true;
+      this.data.v1OperationalStatus = {
+        ...this.data.v1OperationalStatus,
+        repositoryIdentityValid: false,
+        recoveryRequired: true,
+        lastError: { category: "repository-identity", message: this.errorMessage(error) },
+      };
+    }
   }
 
   private async savePluginData(): Promise<void> {
     await this.persistV1DurableState();
-    await this.saveData({
+    const state = this.data.v1;
+    const envelope: PersistedPluginData = {
+      schemaVersion: 2,
       settings: this.settings,
-      syncData: this.data,
-    });
+      ...(state ? {
+        repositorySelection: {
+          prefix: state.prefix,
+          locator: state.locator,
+          repositoryId: state.repositoryId,
+          descriptorHash: state.descriptorHash,
+          repositoryFingerprint: state.repositoryFingerprint,
+          configDir: state.configDir,
+          historicalConfigDirs: [...state.historicalConfigDirs],
+        },
+      } : {}),
+      preferences: {},
+    };
+    assertPluginDataContainsNoOperationalState(envelope);
+    await this.saveData(envelope);
   }
 
   private async persistV1DurableState(): Promise<void> {
@@ -836,7 +1037,11 @@ export default class S3SyncPlugin extends Plugin {
       ...identity,
       dirtyIntents: this.data.v1DirtyIntents,
       projections,
-      outboxRefs: [],
+      outboxRefs: this.data.v1DurableOutbox.map(durableOutboxReference),
+      durableOutbox: this.data.v1DurableOutbox,
+      localConcurrentRecords: this.data.v1LocalConcurrentRecords,
+      publishedReconciles: this.data.v1PublishedReconciles,
+      recoveryRecords: this.data.v1RecoveryRecords,
       sparseSeenCommits: this.data.v1SparseSeenCommits,
       observedRegisters: this.data.v1ObservedRegisters,
       pendingApply: this.data.v1PendingApply,
@@ -845,6 +1050,10 @@ export default class S3SyncPlugin extends Plugin {
       vaultGenerations: this.data.v1VaultGenerations,
       recoveryCandidates: this.data.v1RecoveryCandidates,
       applyJournals: this.data.v1ApplyJournals,
+      files: this.data.files,
+      conflicts: this.data.conflicts,
+      operationalStatus: this.data.v1OperationalStatus,
+      reattachRequired: this.data.v1ReattachRequired,
     })) as StateJsonValue;
     await writeRepositoryStateTransaction(store, payload);
   }
@@ -853,7 +1062,10 @@ export default class S3SyncPlugin extends Plugin {
     const state = this.data.v1;
     if (!state || typeof state.repositoryFingerprint !== "string" || !state.locator) return;
     const snapshot = await (await this.v1DurableStore(state)).load();
-    if (!snapshot) return;
+    if (!snapshot) {
+      this.data.v1ReattachRequired = true;
+      return;
+    }
     const durable = validateRepositoryStatePayload(snapshot.payload);
     if (durable.repositoryFingerprint !== state.repositoryFingerprint) throw new Error("durable state repository fingerprint mismatch");
     const payload = snapshot.payload as Record<string, StateJsonValue>;
@@ -864,9 +1076,23 @@ export default class S3SyncPlugin extends Plugin {
       previousCommitHash: durable.previousCommitHash,
       writerFrontiers: durable.writerFrontiers,
     };
-    this.data.v1SparseSeenCommits = JSON.parse(JSON.stringify(payload.sparseSeenCommits));
-    this.data.v1ObservedRegisters = JSON.parse(JSON.stringify(payload.observedRegisters));
-    this.data.v1PendingApply = JSON.parse(JSON.stringify(payload.pendingApply));
+    this.data.v1SparseSeenCommits = clonePayload(payload.sparseSeenCommits, {});
+    this.data.v1ObservedRegisters = clonePayload(payload.observedRegisters, {});
+    this.data.v1PendingApply = clonePayload(payload.pendingApply, {});
+    this.data.v1DirtyIntents = clonePayload(payload.dirtyIntents, {});
+    this.data.v1ProjectedHeads = clonePayload(payload.projectedHeads, {});
+    this.data.v1VaultEvents = clonePayload(payload.vaultEvents, []);
+    this.data.v1VaultGenerations = clonePayload(payload.vaultGenerations, {});
+    this.data.v1RecoveryCandidates = clonePayload(payload.recoveryCandidates, {});
+    this.data.v1ApplyJournals = clonePayload(payload.applyJournals, []);
+    this.data.v1LocalConcurrentRecords = clonePayload(payload.localConcurrentRecords, {});
+    this.data.v1PublishedReconciles = clonePayload(payload.publishedReconciles, []);
+    this.data.v1DurableOutbox = clonePayload(payload.durableOutbox, []);
+    this.data.v1RecoveryRecords = clonePayload(payload.recoveryRecords, {});
+    this.data.files = clonePayload(payload.files, {});
+    this.data.conflicts = clonePayload(payload.conflicts, {});
+    this.data.v1OperationalStatus = clonePayload(payload.operationalStatus, this.data.v1OperationalStatus);
+    this.data.v1ReattachRequired = clonePayload(payload.reattachRequired, false);
   }
 
   private async v1DurableStore(state: NonNullable<S3SyncData["v1"]>): Promise<DurableStateStore<StateJsonValue>> {
@@ -950,4 +1176,19 @@ function sameHeads(left: readonly string[], right: readonly string[]): boolean {
   const normalizedLeft = [...new Set(left)].sort();
   const normalizedRight = [...new Set(right)].sort();
   return normalizedLeft.length === normalizedRight.length && normalizedLeft.every((head, index) => head === normalizedRight[index]);
+}
+
+function durableOutboxReference(entry: DurableOutboxEntry) {
+  return {
+    id: entry.id,
+    writerId: entry.writerId,
+    sequence: entry.sequence,
+    commitHash: entry.commitHash,
+    stagedPath: entry.objects.at(-1)?.contentRef ?? "missing",
+    captureGeneration: entry.captureGeneration,
+  };
+}
+
+function clonePayload<T>(value: StateJsonValue | undefined, fallback: T): T {
+  return value === undefined ? fallback : JSON.parse(JSON.stringify(value)) as T;
 }

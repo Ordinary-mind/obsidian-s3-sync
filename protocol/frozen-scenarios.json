@@ -1,0 +1,33 @@
+{
+  "designSection": 21,
+  "scenarios": [
+    { "id": 1, "test": "test/core/editor-latch.test.ts" },
+    { "id": 2, "test": "test/core/stable-capture.test.ts" },
+    { "id": 3, "test": "test/core/durable-state.test.ts" },
+    { "id": 4, "test": "test/simulation/multi-client.test.ts" },
+    { "id": 5, "test": "test/core/safe-apply.test.ts" },
+    { "id": 6, "test": "test/core/presence.test.ts" },
+    { "id": 7, "test": "test/core/register.test.ts" },
+    { "id": 8, "test": "test/simulation/multi-client.test.ts" },
+    { "id": 9, "test": "test/core/hash-cache.test.ts" },
+    { "id": 10, "test": "test/core/remote-pull.test.ts" },
+    { "id": 11, "test": "test/core/remote-merge-state.test.ts" },
+    { "id": 12, "test": "test/simulation/multi-client.test.ts" },
+    { "id": 13, "test": "test/core/config-batch-apply.test.ts" },
+    { "id": 14, "test": "test/core/config-scope.test.ts" },
+    { "id": 15, "test": "test/core/repository-e2e.test.ts" },
+    { "id": 16, "test": "test/core/vault-onboarding.test.ts" },
+    { "id": 17, "test": "test/core/reattach.test.ts" },
+    { "id": 18, "test": "test/adapters/local-file-adapter.test.ts" },
+    { "id": 19, "test": "test/core/structural-conflict.test.ts" },
+    { "id": 20, "test": "test/core/repository-wizard.test.ts" },
+    { "id": 21, "test": "test/core/safe-apply.test.ts" },
+    { "id": 22, "test": "test/core/config-scope.test.ts" },
+    { "id": 23, "test": "test/core/config-scan.test.ts" },
+    { "id": 24, "test": "test/core/apply-plan.test.ts" },
+    { "id": 25, "test": "test/core/repository-binding.test.ts" },
+    { "id": 26, "test": "test/core/editor-latch.test.ts" },
+    { "id": 27, "test": "test/simulation/multi-client.test.ts" },
+    { "id": 28, "test": "test/core/config-delete.test.ts" }
+  ]
+}

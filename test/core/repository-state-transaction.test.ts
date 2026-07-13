@@ -3,6 +3,12 @@ import { DurableStateStore, type DurableStateFileAdapter, type StateJsonValue } 
 import { createRepositoryLocator, repositoryFingerprint } from "../../core/locator";
 import { repositoryDurablePayload } from "../../core/repository-durable-payload";
 import { writeRepositoryStateTransaction } from "../../core/repository-state-transaction";
+import {
+  beginDurableOutboxPublicationTransaction,
+  confirmDurableOutboxPublishedTransaction,
+  freezeDurableOutboxStateTransaction,
+} from "../../core/repository-state-transaction";
+import type { DurableOutboxEntry } from "../../core/durable-outbox";
 
 class Files implements DurableStateFileAdapter {
   readonly values = new Map<string, string>();
@@ -17,7 +23,7 @@ describe("atomic repository state transaction", () => {
   const locator = createRepositoryLocator({ endpoint: "https://s3.example.com", region: "test", bucket: "vault", forcePathStyle: true, prefix: "team" });
 
   function payload(sequence: string, count: number): StateJsonValue {
-    return { ...(repositoryDurablePayload({ repositoryId, descriptorHash, repositoryFingerprint: repositoryFingerprint(locator, repositoryId, descriptorHash), locator, configDir: ".obsidian", historicalConfigDirs: [], writerId, nextSequence: sequence, previousCommitHash: null, writerFrontiers: {} }) as Record<string, StateJsonValue>), dirtyIntents: { "a.md": { generation: count } }, projections: { "a.md": { projectedHeads: [], projectedValueHash: null, generation: count } }, outboxRefs: [], sparseSeenCommits: {}, observedRegisters: {}, pendingApply: {} };
+    return { ...(repositoryDurablePayload({ repositoryId, descriptorHash, repositoryFingerprint: repositoryFingerprint(locator, repositoryId, descriptorHash), locator, configDir: ".obsidian", historicalConfigDirs: [], writerId, nextSequence: sequence, previousCommitHash: null, writerFrontiers: {} }) as Record<string, StateJsonValue>), dirtyIntents: { "a.md": { generation: count } }, projections: { "a.md": { projectedHeads: [], projectedValueHash: null, generation: count } }, outboxRefs: [], durableOutbox: [], publishedReconciles: [], localConcurrentRecords: {}, recoveryRecords: {}, sparseSeenCommits: {}, observedRegisters: {}, pendingApply: {} };
   }
 
   it("commits dirty intent, projection, writer sequence, and Outbox references in one generation", async () => {
@@ -51,4 +57,46 @@ describe("atomic repository state transaction", () => {
     observed.observedRegisters = { "vault:a.md": { key: "vault:b.md", heads: [], pending: [], invalid: [], disposition: "resolved", valueHash: null } };
     await expect(writeRepositoryStateTransaction(store, observed)).rejects.toThrow("observed register");
   });
+
+  it("freezes the writer cursor and Outbox atomically, then confirms without clearing dirty state", async () => {
+    const store = new DurableStateStore<StateJsonValue>(new Files());
+    await writeRepositoryStateTransaction(store, payload("00000000000000000001", 1));
+    const frozen = outbox("b".repeat(64), "00000000000000000001", null);
+    const captured = await freezeDurableOutboxStateTransaction(store, frozen);
+    expect(captured.payload).toMatchObject({
+      nextSequence: "00000000000000000002",
+      previousCommitHash: frozen.commitHash,
+      dirtyIntents: { "a.md": { generation: 1 } },
+      durableOutbox: [{ state: "queued", captureGeneration: 1 }],
+    });
+    await beginDurableOutboxPublicationTransaction(store, frozen.id);
+    const confirmed = await confirmDurableOutboxPublishedTransaction(store, frozen.id, frozen.commitHash, {});
+    expect(confirmed.payload).toMatchObject({
+      dirtyIntents: { "a.md": { generation: 1 } },
+      durableOutbox: [{ state: "published" }],
+      publishedReconciles: [{ outboxId: frozen.id, state: "pending", publishedVersionId: `${frozen.commitHash}:0:0` }],
+    });
+  });
+
+  it("rejects skipped or replaced reservations without changing the durable generation", async () => {
+    const store = new DurableStateStore<StateJsonValue>(new Files());
+    await writeRepositoryStateTransaction(store, payload("00000000000000000001", 1));
+    await expect(freezeDurableOutboxStateTransaction(store, outbox("b".repeat(64), "00000000000000000002", null))).rejects.toThrow("writer cursor");
+    await expect(store.load()).resolves.toMatchObject({ generation: 1, payload: { nextSequence: "00000000000000000001", durableOutbox: [] } });
+  });
 });
+
+function outbox(commitHash: string, sequence: string, previousCommitHash: string | null): DurableOutboxEntry {
+  return {
+    id: commitHash,
+    writerId: "123e4567-e89b-42d3-a456-426614174001",
+    sequence,
+    previousCommitHash,
+    commitHash,
+    captureGeneration: 1,
+    state: "queued",
+    writerDisposition: "active",
+    objects: [{ kind: "commit", key: "commit", hash: commitHash, size: 1, contentRef: `staged/${commitHash}` }],
+    mutations: [{ registerKey: "vault:a.md", versionId: `${commitHash}:0:0`, valueHash: "c".repeat(64), stagedContentRef: `staged/${"c".repeat(64)}` }],
+  };
+}

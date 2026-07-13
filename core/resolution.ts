@@ -1,13 +1,24 @@
 export interface ConflictResolutionIntent {
   path: string;
   parents: string[];
-  selectedValueHash: string;
+  selectedValue: { kind: "put"; hash: string; stagedRef?: string } | { kind: "delete" };
+  selectedValueHash?: string;
 }
 
-export function captureConflictResolution(path: string, observedHeads: readonly string[], selectedValueHash: string): ConflictResolutionIntent {
+export function captureConflictResolution(
+  path: string,
+  observedHeads: readonly string[],
+  selected: string | { kind: "put"; hash: string; stagedRef?: string } | { kind: "delete" },
+): ConflictResolutionIntent {
   const parents = [...new Set(observedHeads)].sort();
   if (parents.length === 0) throw new Error("conflict resolution requires at least one observed head");
-  return Object.freeze({ path, parents, selectedValueHash });
+  const selectedValue = typeof selected === "string" ? { kind: "put" as const, hash: selected } : { ...selected };
+  return Object.freeze({
+    path,
+    parents,
+    selectedValue,
+    ...(selectedValue.kind === "put" ? { selectedValueHash: selectedValue.hash } : {}),
+  });
 }
 
 export function isResolutionCurrent(intent: ConflictResolutionIntent, observedHeads: readonly string[]): boolean {

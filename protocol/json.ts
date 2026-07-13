@@ -41,6 +41,31 @@ export function parseBoundedProtocolJson(
 }
 
 export function parseCanonicalProtocolJson(bytes: Uint8Array, maxBytes: number): Record<string, unknown> {
+  const value = parseBoundedJson(bytes, maxBytes, "object");
+  const structureViolations = validateParsedJsonLimits(value);
+  if (structureViolations.length > 0) {
+    throw new ProtocolJsonError(structureViolations[0], "JSON body exceeds a protocol structure limit");
+  }
+  const source = decodeBoundedUtf8(bytes, maxBytes);
+  if (canonicalizeProtocolJson(value) !== source) {
+    throw new ProtocolJsonError("non-canonical-json", "JSON body is not RFC 8785 canonical");
+  }
+  return value as Record<string, unknown>;
+}
+
+export function parseBoundedJson(bytes: Uint8Array, maxBytes: number, root: "object" | "array" | "any" = "any"): unknown {
+  const source = decodeBoundedUtf8(bytes, maxBytes);
+  const value = new StrictJsonParser(source).parse();
+  if (root === "object" && (!value || typeof value !== "object" || Array.isArray(value))) {
+    throw new ProtocolJsonError("root-not-object", "JSON must have an object root");
+  }
+  if (root === "array" && !Array.isArray(value)) {
+    throw new ProtocolJsonError("invalid-json", "JSON must have an array root");
+  }
+  return value;
+}
+
+function decodeBoundedUtf8(bytes: Uint8Array, maxBytes: number): string {
   if (bytes.byteLength > maxBytes) {
     throw new ProtocolJsonError("body-too-large", `JSON body exceeds ${maxBytes} bytes`);
   }
@@ -54,19 +79,7 @@ export function parseCanonicalProtocolJson(bytes: Uint8Array, maxBytes: number):
   } catch {
     throw new ProtocolJsonError("invalid-utf8", "JSON body is not valid UTF-8");
   }
-
-  const value = new StrictJsonParser(source).parse();
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new ProtocolJsonError("root-not-object", "protocol JSON must have an object root");
-  }
-  const structureViolations = validateParsedJsonLimits(value);
-  if (structureViolations.length > 0) {
-    throw new ProtocolJsonError(structureViolations[0], "JSON body exceeds a protocol structure limit");
-  }
-  if (canonicalizeProtocolJson(value) !== source) {
-    throw new ProtocolJsonError("non-canonical-json", "JSON body is not RFC 8785 canonical");
-  }
-  return value as Record<string, unknown>;
+  return source;
 }
 
 export function canonicalizeProtocolJson(value: unknown): string {

@@ -14,6 +14,7 @@ import { assertDescriptorDirectoryBinding, type PersistedRepositoryBinding } fro
 import { verifyWriterFrontiers, type CommitFrontierAnchor, type WriterFrontiers } from "../core/commit-frontier";
 import type { S3SyncSettings } from "./types";
 import type { VerifiedRegisterObservation as RemoteRegisterObservation } from "../core/remote-merge-state";
+import { auditRemoteRepository } from "../core/remote-audit";
 
 export class V1RepositoryService {
   private readonly locator: Readonly<RepositoryLocator>;
@@ -171,6 +172,14 @@ export class V1RepositoryService {
       concurrent: states.filter((state) => state.disposition === "concurrent").length,
       pending: states.filter((state) => state.disposition === "pending").length,
       invalid: states.filter((state) => state.disposition === "invalid").length,
+    };
+  }
+  async fullAudit(repositoryId: string, descriptorHash: string): Promise<{ verifiedObjects: number; commits: number; registers: number }> {
+    const result = await auditRemoteRepository(this.store(), this.prefix, repositoryId, descriptorHash);
+    return {
+      verifiedObjects: result.verifiedObjects,
+      commits: result.commitKeys.length,
+      registers: result.repository.allRegisters(repositoryId).size,
     };
   }
   private store(): S3ObjectStore {

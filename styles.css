@@ -36,3 +36,23 @@
   overflow-wrap: anywhere;
   word-break: break-all;
 }
+
+.s3-sync-status-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px;
+}
+
+.s3-sync-status-label {
+  color: var(--text-muted);
+}
+
+.s3-sync-status-value,
+.s3-sync-decision {
+  font-family: var(--font-monospace);
+  overflow-wrap: anywhere;
+}
+
+.s3-sync-error {
+  color: var(--text-error);
+}
