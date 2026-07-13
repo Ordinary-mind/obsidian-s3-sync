@@ -18,7 +18,7 @@ export class S3ObjectStore implements ObjectStore {
   async get(key: string): Promise<Uint8Array> {
     const result = await this.client.send(new GetObjectCommand({ Bucket: this.options.bucket, Key: key }));
     if (!result.Body) throw new Error("S3 GetObject response has no body");
-    return bodyToBytes(result.Body);
+    return result.Body.transformToByteArray();
   }
   async head(key: string): Promise<{ size: number }> {
     const result = await this.client.send(new HeadObjectCommand({ Bucket: this.options.bucket, Key: key }));
