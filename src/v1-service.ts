@@ -6,6 +6,7 @@ import { createRepositoryDescriptor } from "../core/repository-bootstrap";
 import { probeWritableObjectStore } from "../core/connection-probe";
 import { buildVaultPutPublishEnvelope } from "../core/vault-publish-envelope";
 import { publishEnvelope } from "../core/remote-publish";
+import { downloadVerifiedBlob } from "../core/remote-blob";
 import type { StableCapture } from "../core/stable-capture";
 import { validateRepositoryEndpoint } from "../core/locator";
 import type { S3SyncSettings } from "./types";
@@ -50,6 +51,18 @@ export class V1RepositoryService {
     const state = repository.register(repositoryId, "vault", path);
     if (state.disposition !== "resolved") throw new Error(`cannot publish ${path}: remote register is ${state.disposition}`);
     return state.heads;
+  }
+  async listResolvedVaultPuts(repositoryId: string, descriptorHash: string): Promise<Array<{ path: string; hash: string; size: number; bytes: Uint8Array }>> {
+    const repository = await this.pullAllCommits(repositoryId, descriptorHash);
+    const results: Array<{ path: string; hash: string; size: number; bytes: Uint8Array }> = [];
+    for (const [key, state] of repository.allRegisters(repositoryId)) {
+      if (!key.startsWith("vault:") || state.disposition !== "resolved" || state.heads.length !== 1) continue;
+      const version = repository.version(state.heads[0]);
+      if (!version?.blob) continue;
+      const bytes = await downloadVerifiedBlob(this.store(), this.prefix, repositoryId, version.blob);
+      results.push({ path: version.logicalKey, hash: version.blob.hash, size: version.blob.size, bytes });
+    }
+    return results.sort((left, right) => left.path.localeCompare(right.path));
   }
   async pullCommit(repositoryId: string, descriptorHash: string, commitKey: string, repository = new InMemoryRepositoryCore()): Promise<InMemoryRepositoryCore> {
     await pullCommitIntoRepository(this.store(), repository, this.prefix, repositoryId, descriptorHash, commitKey);

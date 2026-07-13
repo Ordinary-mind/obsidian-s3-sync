@@ -7,7 +7,7 @@ import { RuntimeContractModal } from "./runtime-contract-modal";
 import type { SyncEngine } from "./sync-engine";
 import { V1RepositoryService } from "./v1-service";
 import type { S3SyncData, S3SyncSettings, SyncSummary } from "./types";
-import { getTFile, resolveEffectivePrefix } from "./utils";
+import { ensureParentFolder, getTFile, resolveEffectivePrefix } from "./utils";
 import { captureStableVaultFile } from "./vault-stable-capture";
 import { recordPublishedWriterCommit, reserveWriterCommit } from "../core/writer-session";
 
@@ -60,6 +60,12 @@ export default class S3SyncPlugin extends Plugin {
       id: "s3-sync-v1-publish-active-file",
       name: "S3 Sync v1: publish active file",
       callback: () => void this.publishActiveFileV1(),
+    });
+
+    this.addCommand({
+      id: "s3-sync-v1-pull-missing-files",
+      name: "S3 Sync v1: pull missing files",
+      callback: () => void this.pullMissingFilesV1(),
     });
 
     this.addCommand({
@@ -189,6 +195,28 @@ export default class S3SyncPlugin extends Plugin {
       new Notice(`S3 Sync v1 published: ${file.path}`);
     } catch (error) {
       new Notice(`S3 Sync v1 publish failed: ${this.errorMessage(error)}`);
+      console.error(error);
+    }
+  }
+
+  private async pullMissingFilesV1(): Promise<void> {
+    try {
+      const state = this.data.v1;
+      if (!state || state.prefix !== this.getEffectivePrefix()) throw new Error("select a v1 repository for the current Prefix first");
+      const files = await new V1RepositoryService(this.settings, state.prefix).listResolvedVaultPuts(state.repositoryId, state.descriptorHash);
+      let created = 0;
+      for (const remote of files) {
+        if (this.app.vault.getAbstractFileByPath(remote.path)) continue;
+        await ensureParentFolder(this.app.vault, remote.path);
+        if (this.app.vault.getAbstractFileByPath(remote.path)) continue;
+        await this.app.vault.createBinary(remote.path, remote.bytes.buffer.slice(remote.bytes.byteOffset, remote.bytes.byteOffset + remote.bytes.byteLength));
+        this.data.files[remote.path] = { hash: remote.hash, size: remote.size, updatedAt: new Date().toISOString() };
+        created += 1;
+      }
+      await this.saveSyncData();
+      new Notice(`S3 Sync v1 pulled ${created} missing file(s)`);
+    } catch (error) {
+      new Notice(`S3 Sync v1 pull failed: ${this.errorMessage(error)}`);
       console.error(error);
     }
   }
