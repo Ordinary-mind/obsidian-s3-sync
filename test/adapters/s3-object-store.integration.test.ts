@@ -5,7 +5,7 @@ import { S3ObjectStore } from "../../adapters/s3-object-store";
 const text = new TextEncoder();
 const decode = new TextDecoder();
 
-describe("S3 ObjectStore contract", () => {
+describe(`${process.env.S3_TEST_PROVIDER ?? "S3"} ObjectStore contract`, () => {
   const store = new S3ObjectStore({
     endpoint: process.env.S3_ENDPOINT!,
     region: process.env.S3_REGION!,

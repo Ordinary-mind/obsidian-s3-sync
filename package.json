@@ -11,7 +11,7 @@
     "test:watch": "vitest",
     "test:types": "tsc -p tsconfig.test.json --noEmit",
     "test:s3-contract": "vitest run --config vitest.minio.config.ts",
-    "test:s3-aws": "npm run test:s3-contract",
+    "test:s3-aws": "vitest run --config vitest.aws.config.ts",
     "test:s3-minio": "npm run test:s3-contract",
     "test:ci": "npm test && npm run test:types && npm run build && git diff --exit-code -- main.js"
   },
