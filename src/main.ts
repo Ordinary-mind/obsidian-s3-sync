@@ -123,10 +123,29 @@ export default class S3SyncPlugin extends Plugin {
 
   async testS3Connection(): Promise<void> {
     try {
-      const service = new V1RepositoryService(this.settings, this.getEffectivePrefix());
-      await service.discover();
+      const prefix = this.getEffectivePrefix();
+      const service = new V1RepositoryService(this.settings, prefix);
+      const repositories = await service.discover();
       await service.probeWritableConnection(crypto.randomUUID());
-      new Notice(`S3 Sync 连接成功，当前 Prefix：${this.getEffectivePrefix()}`);
+      if (repositories.length === 1) {
+        const existing = this.data.v1;
+        this.data.v1 = existing?.prefix === prefix && existing.repositoryId === repositories[0].repositoryId
+          ? existing
+          : {
+            prefix,
+            repositoryId: repositories[0].repositoryId,
+            descriptorHash: repositories[0].descriptorHash,
+            writerId: crypto.randomUUID(),
+            nextSequence: "00000000000000000001",
+            previousCommitHash: null,
+          };
+        await this.saveSyncData();
+        new Notice(`S3 Sync connected and selected repository: ${repositories[0].repositoryId}`);
+        return;
+      }
+      new Notice(repositories.length === 0
+        ? `S3 Sync connected. No repository exists at Prefix: ${prefix}`
+        : `S3 Sync connected. Found ${repositories.length} repositories; select one explicitly.`);
     } catch (error) {
       new Notice(`S3 Sync 连接失败：${this.errorMessage(error)}`);
       console.error(error);
