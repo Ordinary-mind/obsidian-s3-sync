@@ -51,6 +51,12 @@ export default class S3SyncPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "s3-sync-v1-select-repository",
+      name: "S3 Sync v1: select discovered repository",
+      callback: () => void this.selectV1Repository(),
+    });
+
+    this.addCommand({
       id: "s3-sync-v1-create-repository",
       name: "S3 Sync v1: create repository",
       callback: () => void this.createV1Repository(),
@@ -160,6 +166,27 @@ export default class S3SyncPlugin extends Plugin {
       new Notice(`S3 Sync v1 repository created: ${result.repositoryId}`);
     } catch (error) {
       new Notice(`S3 Sync v1 repository creation failed: ${this.errorMessage(error)}`);
+      console.error(error);
+    }
+  }
+
+  private async selectV1Repository(): Promise<void> {
+    try {
+      const prefix = this.getEffectivePrefix();
+      const repositories = await new V1RepositoryService(this.settings, prefix).discover();
+      if (repositories.length !== 1) throw new Error(`expected exactly one repository, found ${repositories.length}`);
+      this.data.v1 = {
+        prefix,
+        repositoryId: repositories[0].repositoryId,
+        descriptorHash: repositories[0].descriptorHash,
+        writerId: crypto.randomUUID(),
+        nextSequence: "00000000000000000001",
+        previousCommitHash: null,
+      };
+      await this.saveSyncData();
+      new Notice(`S3 Sync v1 repository selected: ${repositories[0].repositoryId}`);
+    } catch (error) {
+      new Notice(`S3 Sync v1 repository selection failed: ${this.errorMessage(error)}`);
       console.error(error);
     }
   }
