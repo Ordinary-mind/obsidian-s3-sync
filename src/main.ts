@@ -11,6 +11,8 @@ import { ensureParentFolder, getTFile, resolveEffectivePrefix } from "./utils";
 import { captureStableVaultFile } from "./vault-stable-capture";
 import { recordPublishedWriterCommit, reserveWriterCommit } from "../core/writer-session";
 import { decideResolvedRemotePut } from "../core/pull-decision";
+import { conflictId } from "../core/conflict-id";
+import { remoteConflictCopyPath } from "../core/conflict-copy";
 
 interface PersistedPluginData {
   settings?: Partial<S3SyncSettings>;
@@ -266,7 +268,14 @@ export default class S3SyncPlugin extends Plugin {
         const capture = existing ? await captureStableVaultFile(this.app.vault, remote.path) : undefined;
         const decision = decideResolvedRemotePut({ localExists: !!existing, projectedHash: this.data.files[remote.path]?.hash, currentHash: capture?.hash, remoteHash: remote.hash });
         if (decision === "conflict") {
-          this.recordV1Conflict(remote.path, this.data.files[remote.path]?.hash ?? null, capture?.hash ?? null, remote.hash);
+          const conflict = this.recordV1Conflict(remote.path, this.data.files[remote.path]?.hash ?? null, capture?.hash ?? null, remote.hash);
+          const copyPath = remoteConflictCopyPath(conflict, remote.hash);
+          if (!this.app.vault.getAbstractFileByPath(copyPath)) {
+            await ensureParentFolder(this.app.vault, copyPath);
+            const bytes = new Uint8Array(remote.bytes.byteLength);
+            bytes.set(remote.bytes);
+            await this.app.vault.createBinary(copyPath, bytes.buffer);
+          }
           skipped += 1;
           continue;
         }
@@ -514,8 +523,8 @@ export default class S3SyncPlugin extends Plugin {
     });
   }
 
-  private recordV1Conflict(path: string, baseHash: string | null, localHash: string | null, remoteHash: string): void {
-    const id = `v1:${path}:${baseHash ?? "none"}:${localHash ?? "none"}:${remoteHash}`;
+  private recordV1Conflict(path: string, baseHash: string | null, localHash: string | null, remoteHash: string): string {
+    const id = conflictId(this.data.v1?.repositoryId ?? "unknown", "vault", [path], [baseHash ?? "none", localHash ?? "none", remoteHash]);
     this.data.conflicts[id] = {
       id,
       path,
@@ -527,6 +536,7 @@ export default class S3SyncPlugin extends Plugin {
       detectedAt: new Date().toISOString(),
       resolved: false,
     };
+    return id;
   }
 
   private errorMessage(error: unknown): string {
