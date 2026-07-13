@@ -52,6 +52,14 @@ export class V1RepositoryService {
     if (state.disposition !== "resolved") throw new Error(`cannot publish ${path}: remote register is ${state.disposition}`);
     return state.heads;
   }
+  async resolvedVaultPut(repositoryId: string, descriptorHash: string, path: string): Promise<{ heads: string[]; hash: string } | undefined> {
+    const repository = await this.pullAllCommits(repositoryId, descriptorHash);
+    const state = repository.register(repositoryId, "vault", path);
+    if (state.disposition !== "resolved") throw new Error(`cannot publish ${path}: remote register is ${state.disposition}`);
+    if (state.heads.length === 0) return undefined;
+    const version = repository.version(state.heads[0]);
+    return version?.blob ? { heads: state.heads, hash: version.blob.hash } : undefined;
+  }
   async listResolvedVaultPuts(repositoryId: string, descriptorHash: string): Promise<Array<{ path: string; hash: string; size: number; bytes: Uint8Array }>> {
     const repository = await this.pullAllCommits(repositoryId, descriptorHash);
     const results: Array<{ path: string; hash: string; size: number; bytes: Uint8Array }> = [];

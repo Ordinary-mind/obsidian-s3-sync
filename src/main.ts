@@ -222,7 +222,12 @@ export default class S3SyncPlugin extends Plugin {
       const capture = await captureStableVaultFile(this.app.vault, file.path);
       if (!capture) throw new Error("active file changed during capture or is not a regular file");
       const service = new V1RepositoryService(this.settings, state.prefix);
-      const parents = await service.resolvedVaultHeads(state.repositoryId, state.descriptorHash, file.path);
+      const remote = await service.resolvedVaultPut(state.repositoryId, state.descriptorHash, file.path);
+      const projectedHash = this.data.files[file.path]?.hash;
+      if (projectedHash && projectedHash !== capture.hash && remote && remote.hash !== projectedHash) {
+        throw new Error("local and remote content both changed; resolve the conflict before publishing");
+      }
+      const parents = remote?.heads ?? [];
       const reservation = reserveWriterCommit(state);
       const commitHash = await service.publishVaultPut({
         repositoryId: state.repositoryId,
