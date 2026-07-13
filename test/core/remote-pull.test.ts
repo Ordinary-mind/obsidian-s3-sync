@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { changeChunkKey, configTreeKey } from "../../protocol/keys";
 import { sha256Hex } from "../../protocol/hash";
 import { canonicalizeProtocolJson } from "../../protocol/json";
-import { pullCommitIntoRepository } from "../../core/remote-pull";
+import { pullCommitIntoRepository, pullCommitSetIntoRepository } from "../../core/remote-pull";
 import { InMemoryRepositoryCore } from "../../core/repository";
 import { objectBodyFromBytes } from "../../core/object-store";
 
@@ -19,6 +19,10 @@ describe("remote Commit pull", () => {
     const repository = new InMemoryRepositoryCore();
     await pullCommitIntoRepository(store, repository, "", vector.commit.object.repositoryId, vector.commit.object.descriptorHash, commitKey);
     expect(repository.register(vector.commit.object.repositoryId, "vault", "notes/first.md").heads).toHaveLength(1);
+    const missingCommitKey = `${root}/commits/${vector.commit.object.writerId}/00000000000000000002-${"f".repeat(64)}.json`;
+    const isolated = await pullCommitSetIntoRepository(store, "", vector.commit.object.repositoryId, vector.commit.object.descriptorHash, [missingCommitKey, commitKey], { configDir: ".obsidian", historicalConfigDirs: [] });
+    expect(isolated.repository.register(vector.commit.object.repositoryId, "vault", "notes/first.md").heads).toHaveLength(1);
+    expect(isolated.blockedCommitKeys).toEqual([expect.objectContaining({ key: missingCommitKey })]);
   });
 
   it("fetches and verifies the referenced ConfigTree before admitting a Config snapshot", async () => {

@@ -1,8 +1,8 @@
 import { S3ObjectStore } from "../adapters/s3-object-store";
 import { discoverRepositoryDescriptors } from "../core/discovery";
 import { InMemoryRepositoryCore } from "../core/repository";
-import { pullCommitIntoRepository } from "../core/remote-pull";
-import { createRepositoryDescriptor } from "../core/repository-bootstrap";
+import { pullCommitIntoRepository, pullCommitSetIntoRepository } from "../core/remote-pull";
+import { createRepositoryDescriptor, readRepositoryDescriptorAnchor } from "../core/repository-bootstrap";
 import { probeWritableObjectStore } from "../core/connection-probe";
 import { buildVaultPutPublishEnvelope } from "../core/vault-publish-envelope";
 import { publishEnvelope } from "../core/remote-publish";
@@ -10,6 +10,8 @@ import { downloadVerifiedBlob } from "../core/remote-blob";
 import { resolveVaultBlobDependencies } from "../core/remote-dependencies";
 import type { StableCapture } from "../core/stable-capture";
 import { createRepositoryLocator, type RepositoryLocator } from "../core/locator";
+import { assertDescriptorDirectoryBinding, type PersistedRepositoryBinding } from "../core/repository-binding";
+import { verifyWriterFrontiers, type CommitFrontierAnchor, type WriterFrontiers } from "../core/commit-frontier";
 import type { S3SyncSettings } from "./types";
 
 export class V1RepositoryService {
@@ -36,6 +38,13 @@ export class V1RepositoryService {
     const key = [this.prefix.replace(/\/$/, ""), ".obsidian-s3-sync/v1/probes", `${probeId}.bin`].filter(Boolean).join("/");
     await probeWritableObjectStore(this.store(), key, new TextEncoder().encode(probeId), this.store());
   }
+  async assertDescriptorBinding(
+    repositoryId: string,
+    descriptorHash: string,
+    binding: Pick<PersistedRepositoryBinding, "configDir" | "historicalConfigDirs">,
+  ): Promise<void> {
+    assertDescriptorDirectoryBinding(binding, await this.requireDescriptor(repositoryId, descriptorHash));
+  }
   async publishVaultPut(input: {
     repositoryId: string;
     descriptorHash: string;
@@ -47,11 +56,19 @@ export class V1RepositoryService {
     path: string;
     parents: string[];
     capture: StableCapture;
-  }): Promise<string> {
+    writerFrontiers: WriterFrontiers;
+  }): Promise<CommitFrontierAnchor> {
     await this.requireDescriptor(input.repositoryId, input.descriptorHash);
+    await verifyWriterFrontiers(this.store(), input.repositoryId, input.descriptorHash, input.writerFrontiers);
     const envelope = buildVaultPutPublishEnvelope({ ...input, prefix: this.prefix });
     await publishEnvelope(this.store(), envelope);
-    return envelope.commit.hash;
+    return {
+      key: envelope.commit.key,
+      writerId: input.writerId,
+      sequence: input.sequence,
+      hash: envelope.commit.hash,
+      previousCommitHash: input.previousCommitHash,
+    };
   }
   async resolvedVaultHeads(repositoryId: string, descriptorHash: string, path: string): Promise<string[]> {
     const repository = await this.pullAllCommits(repositoryId, descriptorHash);
@@ -60,12 +77,19 @@ export class V1RepositoryService {
     return state.heads;
   }
   async resolvedVaultPut(repositoryId: string, descriptorHash: string, path: string): Promise<{ heads: string[]; hash: string } | undefined> {
-    const repository = await this.pullAllCommits(repositoryId, descriptorHash);
+    return (await this.resolvedVaultPutWithAnchors(repositoryId, descriptorHash, path)).value;
+  }
+  async resolvedVaultPutWithAnchors(repositoryId: string, descriptorHash: string, path: string): Promise<{
+    value: { heads: string[]; hash: string } | undefined;
+    acceptedCommits: CommitFrontierAnchor[];
+  }> {
+    const pulled = await this.pullAllCommitsWithAnchors(repositoryId, descriptorHash);
+    const repository = pulled.repository;
     const state = repository.register(repositoryId, "vault", path);
     if (state.disposition !== "resolved") throw new Error(`cannot publish ${path}: remote register is ${state.disposition}`);
-    if (state.heads.length === 0) return undefined;
+    if (state.heads.length === 0) return { value: undefined, acceptedCommits: pulled.acceptedCommits };
     const version = repository.version(state.heads[0]);
-    return version?.blob ? { heads: state.heads, hash: version.blob.hash } : undefined;
+    return { value: version?.blob ? { heads: state.heads, hash: version.blob.hash } : undefined, acceptedCommits: pulled.acceptedCommits };
   }
   async listResolvedVaultPuts(repositoryId: string, descriptorHash: string): Promise<Array<{ path: string; hash: string; size: number; bytes: Uint8Array; heads: string[] }>> {
     return (await this.listResolvedVaultPutsWithDiagnostics(repositoryId, descriptorHash)).files;
@@ -73,8 +97,11 @@ export class V1RepositoryService {
   async listResolvedVaultPutsWithDiagnostics(repositoryId: string, descriptorHash: string): Promise<{
     files: Array<{ path: string; hash: string; size: number; bytes: Uint8Array; heads: string[] }>;
     blocked: Array<{ path: string; heads: string[]; reason: unknown }>;
+    blockedCommitKeys: Array<{ key: string; reason: unknown }>;
+    acceptedCommits: CommitFrontierAnchor[];
   }> {
-    const repository = await this.pullAllCommits(repositoryId, descriptorHash);
+    const pulled = await this.pullAllCommitsWithDiagnostics(repositoryId, descriptorHash);
+    const repository = pulled.repository;
     const dependencies: Array<{ path: string; hash: string; size: number; heads: string[] }> = [];
     for (const [key, state] of repository.allRegisters(repositoryId)) {
       if (!key.startsWith("vault:") || state.disposition !== "resolved" || state.heads.length !== 1) continue;
@@ -86,6 +113,8 @@ export class V1RepositoryService {
     return {
       files: result.available.sort((left, right) => left.path.localeCompare(right.path)),
       blocked: result.blocked.sort((left, right) => left.path.localeCompare(right.path)),
+      blockedCommitKeys: pulled.blockedCommitKeys,
+      acceptedCommits: pulled.acceptedCommits,
     };
   }
   async pullCommit(repositoryId: string, descriptorHash: string, commitKey: string, repository = new InMemoryRepositoryCore()): Promise<InMemoryRepositoryCore> {
@@ -112,6 +141,22 @@ export class V1RepositoryService {
     }
     return repository;
   }
+  async pullAllCommitsWithDiagnostics(repositoryId: string, descriptorHash: string): Promise<{
+    repository: InMemoryRepositoryCore;
+    blockedCommitKeys: Array<{ key: string; reason: unknown }>;
+    acceptedCommits: CommitFrontierAnchor[];
+  }> {
+    const descriptor = await this.requireDescriptor(repositoryId, descriptorHash);
+    return pullCommitSetIntoRepository(this.store(), this.prefix, repositoryId, descriptorHash, await this.listCommitKeys(repositoryId), descriptor);
+  }
+  private async pullAllCommitsWithAnchors(repositoryId: string, descriptorHash: string): Promise<{
+    repository: InMemoryRepositoryCore;
+    acceptedCommits: CommitFrontierAnchor[];
+  }> {
+    const pulled = await this.pullAllCommitsWithDiagnostics(repositoryId, descriptorHash);
+    if (pulled.blockedCommitKeys.length > 0) throw pulled.blockedCommitKeys[0].reason;
+    return { repository: pulled.repository, acceptedCommits: pulled.acceptedCommits };
+  }
   async inspect(repositoryId: string, descriptorHash: string): Promise<{ registers: number; resolved: number; concurrent: number; pending: number; invalid: number }> {
     const repository = await this.pullAllCommits(repositoryId, descriptorHash);
     const states = [...repository.allRegisters(repositoryId).values()];
@@ -127,10 +172,6 @@ export class V1RepositoryService {
     return new S3ObjectStore({ endpoint: this.locator.endpoint, region: this.locator.region, bucket: this.locator.bucket, forcePathStyle: this.locator.forcePathStyle, credentials: { accessKeyId: this.settings.accessKeyId, secretAccessKey: this.settings.secretAccessKey } });
   }
   private async requireDescriptor(repositoryId: string, descriptorHash: string): Promise<{ configDir: string; historicalConfigDirs: string[] }> {
-    const candidates = (await this.discover()).filter((descriptor) => descriptor.repositoryId === repositoryId);
-    if (candidates.length !== 1 || candidates[0].descriptorHash !== descriptorHash) {
-      throw new Error("repository descriptor changed or is no longer readable");
-    }
-    return { configDir: candidates[0].configDir, historicalConfigDirs: [...candidates[0].historicalConfigDirs] };
+    return readRepositoryDescriptorAnchor(this.store(), this.prefix, repositoryId, descriptorHash);
   }
 }

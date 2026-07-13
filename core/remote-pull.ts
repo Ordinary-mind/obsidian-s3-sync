@@ -5,8 +5,14 @@ import { downloadConfigTree, type ConfigTreeBinding } from "./config-tree";
 import { readObjectBytes, type ObjectStore } from "./object-store";
 import { receiveKeyedCommitBytes } from "./receive-repository";
 import { InMemoryRepositoryCore } from "./repository";
+import { sha256Hex } from "../protocol/hash";
+import type { CommitFrontierAnchor } from "./commit-frontier";
 
 export async function pullCommitIntoRepository(store: ObjectStore, repository: InMemoryRepositoryCore, prefix: string, repositoryId: string, descriptorHash: string, commitKey: string, configTreeBinding?: ConfigTreeBinding): Promise<string[]> {
+  return (await pullCommitWithAnchor(store, repository, prefix, repositoryId, descriptorHash, commitKey, configTreeBinding)).versionIds;
+}
+
+async function pullCommitWithAnchor(store: ObjectStore, repository: InMemoryRepositoryCore, prefix: string, repositoryId: string, descriptorHash: string, commitKey: string, configTreeBinding?: ConfigTreeBinding): Promise<{ versionIds: string[]; anchor: CommitFrontierAnchor }> {
   const commitBytes = await readObjectBytes(store, commitKey, { maximumBytes: 256 * 1024 });
   const commit = parseAndValidateProtocolObject("commit", commitBytes) as unknown as ProtocolCommit;
   const chunkKeys = commit.changeChunkHashes.map((hash) => changeChunkKey(prefix, repositoryId, hash));
@@ -23,5 +29,31 @@ export async function pullCommitIntoRepository(store: ObjectStore, repository: I
     const tree = await downloadConfigTree(store, prefix, repositoryId, descriptorHash, hash, configTreeBinding);
     configTreesByHash.set(hash, tree);
   }));
-  return receiveKeyedCommitBytes(repository, repositoryId, descriptorHash, commitKey, commitBytes, chunkKeys, chunkBytes, configTreesByHash, configTreeBinding);
+  const versionIds = receiveKeyedCommitBytes(repository, repositoryId, descriptorHash, commitKey, commitBytes, chunkKeys, chunkBytes, configTreesByHash, configTreeBinding);
+  return {
+    versionIds,
+    anchor: { key: commitKey, writerId: commit.writerId, sequence: commit.sequence, hash: sha256Hex(commitBytes), previousCommitHash: commit.previousCommitHash },
+  };
+}
+
+export async function pullCommitSetIntoRepository(
+  store: ObjectStore,
+  prefix: string,
+  repositoryId: string,
+  descriptorHash: string,
+  commitKeys: readonly string[],
+  configTreeBinding: ConfigTreeBinding,
+): Promise<{ repository: InMemoryRepositoryCore; blockedCommitKeys: Array<{ key: string; reason: unknown }>; acceptedCommits: CommitFrontierAnchor[] }> {
+  const repository = new InMemoryRepositoryCore();
+  const blockedCommitKeys: Array<{ key: string; reason: unknown }> = [];
+  const acceptedCommits: CommitFrontierAnchor[] = [];
+  for (const key of [...new Set(commitKeys)].sort()) {
+    try {
+      const pulled = await pullCommitWithAnchor(store, repository, prefix, repositoryId, descriptorHash, key, configTreeBinding);
+      acceptedCommits.push(pulled.anchor);
+    } catch (reason) {
+      blockedCommitKeys.push({ key, reason });
+    }
+  }
+  return { repository, blockedCommitKeys, acceptedCommits };
 }

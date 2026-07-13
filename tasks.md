@@ -202,11 +202,11 @@
 ### 仓库与 Key
 
 - [x] 实现 RepositoryLocator、仓库指纹和 repositoryId 根路径。
-- [ ] RepositoryDescriptor/Locator 持久化规范 configDir、historicalConfigDirs 和 descriptorHash；实际 vault.configDir、本机历史集合、descriptor bytes 或 Tree/Chunk/Commit descriptorHash 不一致时拒绝绑定、发布和应用。
+- [x] RepositoryDescriptor/Locator 持久化规范 configDir、historicalConfigDirs 和 descriptorHash；实际 vault.configDir、本机历史集合、descriptor bytes 或 Tree/Chunk/Commit descriptorHash 不一致时拒绝绑定、发布和应用。
 - [x] 实现 Prefix 下 repositoryId 发现：只接受精确深度的 canonical UUIDv4/format.json，逐项 GET 并校验 Key/descriptor/Hash；畸形或缺失候选仅诊断，多个合法仓库必须显式选择。
 - [x] 实现固定 RepositoryDescriptor/`format.json` 编码：仅创建者用 PutImmutable 写，加入者只读；条件失败只 GET 比对，永不无条件覆盖。
-- [ ] 空仓库保存 descriptor anchor；非空仓库保存每个已知 writer 的连续 frontier 分支 tip Hash 集合，并在发布前逐个 GET、验证 Key 和正文 Hash，HEAD/ETag 不足以通过。
-- [ ] List 缺失不视为损坏；已观察 integrity anchor 或已知 Commit 经重试仍无法直接 HEAD/GET 时停止发布。
+- [x] 空仓库保存 descriptor anchor；非空仓库保存每个已知 writer 的连续 frontier 分支 tip Hash 集合，并在发布前逐个 GET、验证 Key 和正文 Hash，HEAD/ETag 不足以通过。
+- [x] List 缺失不视为损坏；已观察 integrity anchor 或已知 Commit 经重试仍无法直接 HEAD/GET 时停止发布。
 - [x] 实现 Blob、ConfigTree、Change Chunk 和 Commit Key builder。
 - [x] Key builder 对空 Prefix 不产生前导 `/`，非空 Prefix 只连接一个 `/`；固定向量覆盖空/Unicode Prefix 和完整 Key 1,024/1,025 bytes。
 - [x] 内容寻址 Key 的分片目录严格使用 Hash 前两个小写字符。
@@ -250,7 +250,7 @@
 - [x] 不同 repositoryId 在同 Prefix 完全隔离。
 - [x] Commit 先可见、依赖暂不可见时只重试。
 - [x] 任一 Change Chunk 缺失/损坏或跨 Chunk 规则失败时，Commit 的所有 Mutation 都不创建；完整结构信封通过后再按 Mutation 验证 Blob/Tree/parent。
-- [ ] 单个 Vault Blob 或 ConfigTree 内容依赖缺失/损坏只阻塞对应寄存器，其他 Mutation 可归并；缺依赖值绝不按空内容应用。
+- [x] 单个 Vault Blob 或 ConfigTree 内容依赖缺失/损坏只阻塞对应寄存器，其他 Mutation 可归并；缺依赖值绝不按空内容应用。
 - [x] parent 来自其他路径、其他仓库或其他 channel 时隔离。
 - [x] writer 同 sequence 两个 Hash 均参与归并并触发身份轮换。
 - [x] sequence 最大值或 fork 排空后轮换 writerId，下一本地 generation 仍可把旧 writer 的精确 Version ID 作为 localPredecessor，previousCommitHash 则在新 writer 上从 null 开始。

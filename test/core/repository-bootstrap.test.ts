@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createRepositoryDescriptor } from "../../core/repository-bootstrap";
+import { createRepositoryDescriptor, readRepositoryDescriptorAnchor } from "../../core/repository-bootstrap";
 import { objectBodyFromBytes } from "../../core/object-store";
 
 describe("repository bootstrap", () => {
@@ -28,6 +28,12 @@ describe("repository bootstrap", () => {
     });
     expect(result.descriptorHash).toMatch(/^[0-9a-f]{64}$/);
     expect(new TextDecoder().decode(objects.get(result.key))).toContain('"canonicalJson":"RFC8785"');
+    const directOnly = {
+      getStream: async (key: string) => objectBodyFromBytes(objects.get(key) ?? new TextEncoder().encode("missing")),
+      list: async () => { throw new Error("List must not be used for a persisted anchor"); },
+    };
+    await expect(readRepositoryDescriptorAnchor(directOnly, "vault-a", result.repositoryId, result.descriptorHash)).resolves.toEqual({ configDir: ".obsidian", historicalConfigDirs: [] });
+    await expect(readRepositoryDescriptorAnchor(directOnly, "vault-a", result.repositoryId, "a".repeat(64))).rejects.toMatchObject({ kind: "integrity" });
   });
 
   it("rejects an invalid descriptor before it reaches ObjectStore", async () => {

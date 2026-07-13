@@ -19,6 +19,9 @@ import { bindRootDeletePredecessor, clearVaultEventsThroughGeneration, latestVau
 import { isVaultPathExcluded } from "../core/scope";
 import { advanceApplyJournal, type ApplyJournal } from "../core/apply-journal";
 import { isOwnApplyEvent } from "../core/apply-operation";
+import { createRepositoryLocator } from "../core/locator";
+import { assertPersistedRepositoryBinding, createPersistedRepositoryBinding } from "../core/repository-binding";
+import { advanceWriterFrontiers, type CommitFrontierAnchor } from "../core/commit-frontier";
 
 interface PersistedPluginData {
   settings?: Partial<S3SyncSettings>;
@@ -157,17 +160,22 @@ export default class S3SyncPlugin extends Plugin {
       await service.probeWritableConnection(crypto.randomUUID());
       if (repositories.length === 1) {
         const existing = this.data.v1;
-        this.data.v1 = existing?.prefix === prefix && existing.repositoryId === repositories[0].repositoryId
-          ? existing
+        const binding = createPersistedRepositoryBinding(
+          this.currentV1Locator(prefix),
+          repositories[0].repositoryId,
+          repositories[0].descriptorHash,
+          repositories[0].configDir,
+          repositories[0].historicalConfigDirs,
+        );
+        this.data.v1 = existing?.repositoryFingerprint === binding.repositoryFingerprint
+          ? { ...existing, ...binding, prefix, writerFrontiers: existing.writerFrontiers ?? {} }
           : {
+            ...binding,
             prefix,
-            repositoryId: repositories[0].repositoryId,
-            descriptorHash: repositories[0].descriptorHash,
+            writerFrontiers: {},
             writerId: crypto.randomUUID(),
             nextSequence: "00000000000000000001",
             previousCommitHash: null,
-            configDir: repositories[0].configDir,
-            historicalConfigDirs: [...repositories[0].historicalConfigDirs],
           };
         await this.saveSyncData();
         new Notice(`S3 Sync connected and selected repository: ${repositories[0].repositoryId}`);
@@ -204,14 +212,18 @@ export default class S3SyncPlugin extends Plugin {
         this.app.vault.configDir,
       );
       this.data.v1 = {
+        ...createPersistedRepositoryBinding(
+          this.currentV1Locator(this.getEffectivePrefix()),
+          result.repositoryId,
+          result.descriptorHash,
+          this.app.vault.configDir,
+          [],
+        ),
         prefix: this.getEffectivePrefix(),
-        repositoryId: result.repositoryId,
-        descriptorHash: result.descriptorHash,
+        writerFrontiers: {},
         writerId: crypto.randomUUID(),
         nextSequence: "00000000000000000001",
         previousCommitHash: null,
-        configDir: this.app.vault.configDir,
-        historicalConfigDirs: [],
       };
       await this.saveSyncData();
       new Notice(`S3 Sync v1 repository created: ${result.repositoryId}`);
@@ -227,14 +239,18 @@ export default class S3SyncPlugin extends Plugin {
       const repositories = await new V1RepositoryService(this.settings, prefix).discover();
       if (repositories.length !== 1) throw new Error(`expected exactly one repository, found ${repositories.length}`);
       this.data.v1 = {
+        ...createPersistedRepositoryBinding(
+          this.currentV1Locator(prefix),
+          repositories[0].repositoryId,
+          repositories[0].descriptorHash,
+          repositories[0].configDir,
+          repositories[0].historicalConfigDirs,
+        ),
         prefix,
-        repositoryId: repositories[0].repositoryId,
-        descriptorHash: repositories[0].descriptorHash,
+        writerFrontiers: {},
         writerId: crypto.randomUUID(),
         nextSequence: "00000000000000000001",
         previousCommitHash: null,
-        configDir: repositories[0].configDir,
-        historicalConfigDirs: [...repositories[0].historicalConfigDirs],
       };
       await this.saveSyncData();
       new Notice(`S3 Sync v1 repository selected: ${repositories[0].repositoryId}`);
@@ -246,11 +262,11 @@ export default class S3SyncPlugin extends Plugin {
 
   private async publishActiveFileV1(): Promise<void> {
     try {
-      const state = this.data.v1;
+      let state = this.data.v1;
       if (!state || state.prefix !== this.getEffectivePrefix()) {
         throw new Error("create or select a v1 repository for the current Prefix first");
       }
-      this.assertV1ConfigDirBinding(state);
+      await this.assertV1RepositoryBinding(state);
       const file = this.app.workspace.getActiveFile();
       if (!file) throw new Error("no active file to publish");
       const dirtyIntent = this.data.v1DirtyIntents[file.path];
@@ -267,7 +283,9 @@ export default class S3SyncPlugin extends Plugin {
         throw new Error("active editor generation has not reached stable disk bytes");
       }
       const service = new V1RepositoryService(this.settings, state.prefix);
-      const remote = await service.resolvedVaultPut(state.repositoryId, state.descriptorHash, file.path);
+      const pulled = await service.resolvedVaultPutWithAnchors(state.repositoryId, state.descriptorHash, file.path);
+      state = await this.persistObservedCommitFrontiers(state, pulled.acceptedCommits);
+      const remote = pulled.value;
       const projectedHash = this.data.files[file.path]?.hash;
       if (projectedHash && projectedHash !== capture.hash && remote && remote.hash !== projectedHash) {
         this.recordV1Conflict(file.path, projectedHash, capture.hash, remote.hash, remote.heads);
@@ -276,7 +294,7 @@ export default class S3SyncPlugin extends Plugin {
       }
       const parents = dirtyIntent?.basisHeads ?? vaultEvent?.basisHeads ?? remote?.heads ?? [];
       const reservation = reserveWriterCommit(state);
-      const commitHash = await service.publishVaultPut({
+      const published = await service.publishVaultPut({
         repositoryId: state.repositoryId,
         descriptorHash: state.descriptorHash,
         writerId: state.writerId,
@@ -287,8 +305,15 @@ export default class S3SyncPlugin extends Plugin {
         path: file.path,
         parents,
         capture,
+        writerFrontiers: state.writerFrontiers,
       });
-      this.data.v1 = { ...state, ...recordPublishedWriterCommit(state, commitHash, () => crypto.randomUUID()) };
+      const commitHash = published.hash;
+      this.data.v1 = {
+        ...state,
+        ...recordPublishedWriterCommit(state, commitHash, () => crypto.randomUUID()),
+        writerFrontiers: advanceWriterFrontiers(state.writerFrontiers, [published]),
+      };
+      await this.savePluginData();
       this.data.files[file.path] = { hash: capture.hash, size: capture.size, updatedAt: new Date().toISOString() };
       this.data.v1ProjectedHeads[file.path] = [`${commitHash}:0:0`];
       if (dirtyIntent?.localCandidates.length) {
@@ -311,10 +336,12 @@ export default class S3SyncPlugin extends Plugin {
 
   private async pullMissingFilesV1(): Promise<void> {
     try {
-      const state = this.data.v1;
+      let state = this.data.v1;
       if (!state || state.prefix !== this.getEffectivePrefix()) throw new Error("select a v1 repository for the current Prefix first");
-      this.assertV1ConfigDirBinding(state);
-      const files = await new V1RepositoryService(this.settings, state.prefix).listResolvedVaultPuts(state.repositoryId, state.descriptorHash);
+      await this.assertV1RepositoryBinding(state);
+      const pulled = await new V1RepositoryService(this.settings, state.prefix).listResolvedVaultPutsWithDiagnostics(state.repositoryId, state.descriptorHash);
+      state = await this.persistObservedCommitFrontiers(state, pulled.acceptedCommits);
+      const files = pulled.files;
       let created = 0;
       let updated = 0;
       let skipped = 0;
@@ -388,10 +415,32 @@ export default class S3SyncPlugin extends Plugin {
     }
   }
 
-  private assertV1ConfigDirBinding(state: NonNullable<S3SyncData["v1"]>): void {
-    if (state.configDir && state.configDir !== this.app.vault.configDir) {
-      throw new Error("vault.configDir changed; create a new repository generation before publishing or applying");
-    }
+  private currentV1Locator(prefix: string) {
+    return createRepositoryLocator(
+      {
+        endpoint: this.settings.endpoint,
+        region: this.settings.region,
+        bucket: this.settings.bucket,
+        forcePathStyle: this.settings.forcePathStyle,
+        prefix,
+      },
+      this.settings.endpoint.startsWith("http://127.0.0.1") || this.settings.endpoint.startsWith("http://localhost"),
+    );
+  }
+
+  private async assertV1RepositoryBinding(state: NonNullable<S3SyncData["v1"]>): Promise<void> {
+    assertPersistedRepositoryBinding(state, this.currentV1Locator(this.getEffectivePrefix()), this.app.vault.configDir, state.historicalConfigDirs);
+    await new V1RepositoryService(this.settings, state.prefix).assertDescriptorBinding(state.repositoryId, state.descriptorHash, state);
+  }
+
+  private async persistObservedCommitFrontiers(
+    state: NonNullable<S3SyncData["v1"]>,
+    commits: readonly CommitFrontierAnchor[],
+  ): Promise<NonNullable<S3SyncData["v1"]>> {
+    const updated = { ...state, writerFrontiers: advanceWriterFrontiers(state.writerFrontiers ?? {}, commits) };
+    this.data.v1 = updated;
+    await this.savePluginData();
+    return updated;
   }
 
   private registerV1VaultEvents(): void {
@@ -776,10 +825,13 @@ export default class S3SyncPlugin extends Plugin {
   }
 
   private async resolveV1Conflict(conflict: S3SyncData["conflicts"][string], mode: "local" | "remote"): Promise<void> {
-    const state = this.data.v1;
-    if (!state) throw new Error("v1 repository is not selected");
-    const service = new V1RepositoryService(this.settings, state.prefix);
-    const remote = await service.resolvedVaultPut(state.repositoryId, state.descriptorHash, conflict.path);
+      let state = this.data.v1;
+      if (!state) throw new Error("v1 repository is not selected");
+      await this.assertV1RepositoryBinding(state);
+      const service = new V1RepositoryService(this.settings, state.prefix);
+    const pulled = await service.resolvedVaultPutWithAnchors(state.repositoryId, state.descriptorHash, conflict.path);
+    state = await this.persistObservedCommitFrontiers(state, pulled.acceptedCommits);
+    const remote = pulled.value;
     if (!remote || remote.hash !== conflict.remoteHash || !sameHeads(remote.heads, conflict.v1RemoteHeads ?? [])) throw new Error("remote conflict changed; refresh before resolving");
     if (mode === "remote") {
       const candidate = (await service.listResolvedVaultPuts(state.repositoryId, state.descriptorHash)).find((entry) => entry.path === conflict.path);
@@ -794,8 +846,10 @@ export default class S3SyncPlugin extends Plugin {
       const capture = await captureStableVaultFile(this.app.vault, conflict.path);
       if (!capture || capture.hash !== conflict.localHash) throw new Error("local conflict content changed; refresh before resolving");
       const reservation = reserveWriterCommit(state);
-      const commitHash = await service.publishVaultPut({ repositoryId: state.repositoryId, descriptorHash: state.descriptorHash, writerId: state.writerId, sequence: reservation.sequence, previousCommitHash: reservation.previousCommitHash, createdAt: new Date().toISOString(), clientVersion: this.manifest.version, path: conflict.path, parents: remote.heads, capture });
-      this.data.v1 = { ...state, ...recordPublishedWriterCommit(state, commitHash, () => crypto.randomUUID()) };
+      const published = await service.publishVaultPut({ repositoryId: state.repositoryId, descriptorHash: state.descriptorHash, writerId: state.writerId, sequence: reservation.sequence, previousCommitHash: reservation.previousCommitHash, createdAt: new Date().toISOString(), clientVersion: this.manifest.version, path: conflict.path, parents: remote.heads, capture, writerFrontiers: state.writerFrontiers });
+      const commitHash = published.hash;
+      this.data.v1 = { ...state, ...recordPublishedWriterCommit(state, commitHash, () => crypto.randomUUID()), writerFrontiers: advanceWriterFrontiers(state.writerFrontiers, [published]) };
+      await this.savePluginData();
       this.data.files[conflict.path] = { hash: capture.hash, size: capture.size, updatedAt: new Date().toISOString() };
     }
     this.data.conflicts[conflict.id] = { ...conflict, resolved: true };

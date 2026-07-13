@@ -1,8 +1,8 @@
 import { sha256Hex } from "../protocol/hash";
 import { canonicalizeProtocolJson } from "../protocol/json";
 import { descriptorKey } from "../protocol/keys";
-import { verifyRepositoryDescriptor } from "../protocol/validation";
-import type { ObjectStore } from "./object-store";
+import { verifyRepositoryDescriptor, verifyRepositoryDescriptorAtKey } from "../protocol/validation";
+import { readObjectBytes, type ObjectStore } from "./object-store";
 
 const encoder = new TextEncoder();
 
@@ -39,4 +39,19 @@ export async function createRepositoryDescriptor(
   const key = descriptorKey(input.prefix, input.repositoryId);
   await store.putImmutable(key, bytes);
   return { repositoryId: input.repositoryId, descriptorHash: sha256Hex(bytes), key };
+}
+
+export async function readRepositoryDescriptorAnchor(
+  store: Pick<ObjectStore, "getStream">,
+  prefix: string,
+  repositoryId: string,
+  descriptorHash: string,
+): Promise<{ configDir: string; historicalConfigDirs: string[] }> {
+  const key = descriptorKey(prefix, repositoryId);
+  const bytes = await readObjectBytes(store, key, { maximumBytes: 4 * 1024, expectedHash: descriptorHash });
+  const verified = verifyRepositoryDescriptorAtKey(prefix, key, bytes);
+  return {
+    configDir: verified.descriptor.configDir as string,
+    historicalConfigDirs: [...verified.descriptor.historicalConfigDirs as string[]],
+  };
 }

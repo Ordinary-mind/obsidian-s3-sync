@@ -1,6 +1,8 @@
 import type { EditorDirtyIntent, EditorLocalCandidate } from "../core/editor-latch";
 import type { VaultEventIntent } from "../core/vault-event";
 import type { ApplyJournal } from "../core/apply-journal";
+import type { RepositoryLocator } from "../core/locator";
+import type { WriterFrontiers } from "../core/commit-frontier";
 
 export interface S3SyncSettings {
   endpoint: string;
@@ -49,13 +51,16 @@ export interface S3SyncData {
   v1ApplyJournals: ApplyJournal[];
   v1?: {
     prefix: string;
+    locator: RepositoryLocator;
     repositoryId: string;
     descriptorHash: string;
+    repositoryFingerprint: string;
+    writerFrontiers: WriterFrontiers;
     writerId: string;
     nextSequence: string;
     previousCommitHash: string | null;
-    configDir?: string;
-    historicalConfigDirs?: string[];
+    configDir: string;
+    historicalConfigDirs: string[];
   };
 }
 
