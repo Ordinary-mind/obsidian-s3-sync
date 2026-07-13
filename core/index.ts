@@ -22,3 +22,4 @@ export * from "./repository-bootstrap";
 export * from "./connection-probe";
 export * from "./stable-capture";
 export * from "./blob";
+export * from "./vault-publish-envelope";
