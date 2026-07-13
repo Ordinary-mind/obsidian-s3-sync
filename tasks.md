@@ -60,12 +60,12 @@
 
 - [x] 新建不依赖 `obsidian` 和 AWS SDK 的 `core` 模块。
 - [x] 定义 RepositoryDescriptor、含 descriptorHash 的 RepositoryLocator、BlobRef、ConfigTree、ConfigProfile、ChangeChunk、VaultMutation、ConfigSnapshotMutation 和 Commit 类型。
-- [ ] 实现 RFC 8785 编码和严格 JSON 解析；解析后重新编码必须与原始规范字节相同。
-- [ ] 实现 repositoryId、writerId、sequence、Hash、Version ID 和所有 Key 片段校验。
+- [x] 实现 RFC 8785 编码和严格 JSON 解析；解析后重新编码必须与原始规范字节相同。
+- [x] 实现 repositoryId、writerId、sequence、Hash、Version ID 和所有 Key 片段校验。
 - [x] UUIDv4 生成只接受注入的 CSPRNG（生产 Web Crypto/Node crypto），正确设置 version/variant bits；禁止 Math.random，测试使用确定性 RNG adapter。
 - [x] sequence 使用 BigInt/20 位十进制字符串运算并覆盖 2^53、uint64 最大值与溢出边界，禁止 Number 精度参与 Key 或链判断。
 - [x] 实现 `versionId = commitHash:chunkIndex:mutationIndex`。
-- [ ] 拒绝重复路径、重复 parent、跨 channel 数据、字段组合错误和超限对象。
+- [x] 拒绝重复路径、重复 parent、跨 channel 数据、字段组合错误和超限对象。
 
 ### 远端状态模型
 
