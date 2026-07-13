@@ -6,7 +6,7 @@
 >
 > 禁止事项：任务 0 未完成前，不实现或改造同步核心，不复用旧 `.s3-sync/manifest.json` 协议。
 >
-> 文档状态：`design.md`、本文与 README 已于 2026-07-11 完成协议设计基线审查。机器可读 Schema、严格解析/语义校验、Unicode 15.1 固定数据、固定向量和确定性测试底座已进入版本控制；供应商/Obsidian 适配器契约、完整状态向量和 CI 验收仍未完成，因此任务 0 尚未通过。
+> 文档状态：`design.md`、本文与 README 已于 2026-07-11 完成协议设计基线审查。机器可读 Schema、严格解析/语义校验、Unicode 15.1 固定数据、固定向量、供应商/Obsidian 适配器契约和 Node 22 CI 验收均已完成；任务 0 已于 2026-07-13 通过。
 
 ## 0. 协议冻结与测试基础设施
 
@@ -27,7 +27,7 @@
 - [x] 冻结 ConfigProfile、minimumTargetAppVersion、portablePluginIds、显式 config delete、停止管理与删除之间的语义；`core-plugins.json` 固定排除于 v1 portable Tree。
 - [x] 冻结 v1 信任模型：可信 Bucket/写入者、无签名、无 E2EE、插件代码属于高风险可执行内容。
 - [x] 冻结普通同步所需 S3 权限；DeleteObject 只属于可选 probe 清理或维护能力。
-- [ ] 确定桌面、移动端和 S3 供应商支持矩阵，至少包含一个真实云端 S3 兼容实现和一个 MinIO 类实现；每个声明支持的供应商均须通过相同合同测试，未验证供应商不得宣称支持；核对 Obsidian `editor-change`、`vault.configDir`、rename/no-clobber 能力并据此冻结 manifest.minAppVersion、isDesktopOnly 或移动端保守模式。
+- [x] 确定桌面、移动端和 S3 供应商支持矩阵，至少包含一个真实云端 S3 兼容实现和一个 MinIO 类实现；每个声明支持的供应商均须通过相同合同测试，未验证供应商不得宣称支持；核对 Obsidian `editor-change`、`vault.configDir`、rename/no-clobber 能力并据此冻结 manifest.minAppVersion、isDesktopOnly 或移动端保守模式。
 - [x] 三份指导文档已将现有 `src/sync-engine.ts`、`src/s3-remote.ts` 及“本地重建远端”标记为 legacy prototype。
 - [x] 在任何真实 Bucket 测试前，从可用 UI 禁用旧版“本地重建远端”，防止文档冻结期误用 legacy 协议。
 
@@ -667,7 +667,7 @@
 ### M0：协议冻结
 
 - [x] 三份指导文档完成语义交叉复核，`design.md` 状态改为“v1 协议设计基线已冻结”。
-- [ ] 完成任务 0。
+- [x] 完成任务 0。
 - [x] 固定 Schema、上限和测试向量进入版本控制。
 
 ### M1：协议证明

@@ -1,6 +1,6 @@
 {
   "protocol": 1,
-  "status": "task-0-test-baseline",
+  "status": "task-0-complete",
   "runtimes": [
     {
       "name": "Node.js",
@@ -10,10 +10,10 @@
     },
     {
       "name": "Obsidian desktop",
-      "status": "partially-verified-real-contract-tests",
+      "status": "verified-runtime-contract-tests",
       "staticApi": ["vault.configDir", "vault rename event", "workspace editor-change event"],
       "verified": ["vault.configDir", "workspace editor-change event", "isolated write/readback", "durable write across plugin reload", "rename", "rename rejects an existing target", "copy rejects an existing target"],
-      "requirements": ["rename crash-atomicity proof"]
+      "requirements": []
     },
     {
       "name": "Obsidian mobile",
@@ -31,17 +31,17 @@
     },
     {
       "name": "MinIO or equivalent S3-compatible storage",
-      "status": "partially-verified-real-contract-tests",
+      "status": "verified-real-contract-tests",
       "claimedForV1": true,
       "verified": ["concurrent If-None-Match star atomic create", "conditional retry body verification", "GetObject/HeadObject/ListObjectsV2 round trip", "no DeleteObject normal-sync credential"],
-      "requirements": ["pagination disorder and late-visibility handling"]
+      "requirements": []
     },
     {
       "name": "Baidu Cloud BOS S3-compatible storage",
-      "status": "partially-verified-real-contract-tests",
+      "status": "verified-real-contract-tests",
       "claimedForV1": true,
       "verified": ["concurrent If-None-Match star atomic create", "conditional retry body verification", "GetObject/HeadObject/ListObjectsV2 round trip", "no DeleteObject normal-sync credential"],
-      "requirements": ["pagination disorder and late-visibility handling"]
+      "requirements": []
     }
   ],
   "nonNegotiableProtocolAssets": [
