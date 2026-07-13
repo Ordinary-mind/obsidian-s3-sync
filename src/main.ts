@@ -22,6 +22,7 @@ export default class S3SyncPlugin extends Plugin {
   private syncTimer: number | null = null;
   private statusEl: HTMLElement | null = null;
   private readonly runtimeContractSessionId = crypto.randomUUID();
+  private editorChangeObserved = false;
 
   async onload(): Promise<void> {
     await this.loadPluginData();
@@ -48,6 +49,9 @@ export default class S3SyncPlugin extends Plugin {
     });
 
     this.addSettingTab(new S3SyncSettingTab(this.app, this));
+    this.registerEvent(this.app.workspace.on("editor-change", () => {
+      this.editorChangeObserved = true;
+    }));
 
   }
 
@@ -112,7 +116,13 @@ export default class S3SyncPlugin extends Plugin {
 
   private async runDesktopRuntimeContract(): Promise<void> {
     try {
-      const result = await runDesktopRuntimeContract(this.app.vault.adapter, this.app.vault.configDir, this.manifest.id, this.runtimeContractSessionId);
+      const result = await runDesktopRuntimeContract(
+        this.app.vault.adapter,
+        this.app.vault.configDir,
+        this.manifest.id,
+        this.runtimeContractSessionId,
+        this.editorChangeObserved,
+      );
       new RuntimeContractModal(this.app, result).open();
     } catch (error) {
       new Notice(`S3 Sync v1 runtime contract failed: ${this.errorMessage(error)}`);

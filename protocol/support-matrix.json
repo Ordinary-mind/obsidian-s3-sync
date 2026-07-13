@@ -12,8 +12,8 @@
       "name": "Obsidian desktop",
       "status": "partially-verified-real-contract-tests",
       "staticApi": ["vault.configDir", "vault rename event", "workspace editor-change event"],
-      "verified": ["vault.configDir", "isolated write/readback", "rename", "rename rejects an existing target", "copy rejects an existing target"],
-      "requirements": ["workspace editor-change event proof", "rename crash-atomicity proof", "durable state write proof"]
+      "verified": ["vault.configDir", "isolated write/readback", "durable write across plugin reload", "rename", "rename rejects an existing target", "copy rejects an existing target"],
+      "requirements": ["workspace editor-change event proof", "rename crash-atomicity proof"]
     },
     {
       "name": "Obsidian mobile",

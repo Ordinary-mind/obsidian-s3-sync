@@ -12,6 +12,7 @@ export interface DesktopRuntimeContractResult {
   configDir: string;
   durableWriteReadback: boolean;
   durableAcrossPluginReload: boolean | null;
+  editorChangeObserved: boolean;
   writeReadback: boolean;
   rename: boolean;
   renameRejectsExistingTarget: boolean;
@@ -23,6 +24,7 @@ export async function runDesktopRuntimeContract(
   configDir: string,
   pluginId: string,
   sessionId: string,
+  editorChangeObserved: boolean,
   runId = Date.now().toString(36),
 ): Promise<DesktopRuntimeContractResult> {
   if (!configDir) throw new Error("Vault configDir is empty");
@@ -74,6 +76,7 @@ export async function runDesktopRuntimeContract(
       configDir,
       durableWriteReadback,
       durableAcrossPluginReload,
+      editorChangeObserved,
       writeReadback,
       rename,
       renameRejectsExistingTarget,

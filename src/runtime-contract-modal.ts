@@ -13,6 +13,7 @@ export class RuntimeContractModal extends Modal {
       `configDir=${this.result.configDir}`,
       `durable write/read=${this.result.durableWriteReadback}`,
       `durable across plugin reload=${this.result.durableAcrossPluginReload === null ? "pending reload" : this.result.durableAcrossPluginReload}`,
+      `editor-change observed=${this.result.editorChangeObserved}`,
       `write/read=${this.result.writeReadback}`,
       `rename=${this.result.rename}`,
       `rename no-clobber=${this.result.renameRejectsExistingTarget}`,
