@@ -27,7 +27,7 @@
 - [x] 冻结 ConfigProfile、minimumTargetAppVersion、portablePluginIds、显式 config delete、停止管理与删除之间的语义；`core-plugins.json` 固定排除于 v1 portable Tree。
 - [x] 冻结 v1 信任模型：可信 Bucket/写入者、无签名、无 E2EE、插件代码属于高风险可执行内容。
 - [x] 冻结普通同步所需 S3 权限；DeleteObject 只属于可选 probe 清理或维护能力。
-- [ ] 确定桌面、移动端和 S3 供应商支持矩阵，至少包含 AWS S3 和一个 MinIO 类实现；核对 Obsidian `editor-change`、`vault.configDir`、rename/no-clobber 能力并据此冻结 manifest.minAppVersion、isDesktopOnly 或移动端保守模式。
+- [ ] 确定桌面、移动端和 S3 供应商支持矩阵，至少包含一个真实云端 S3 兼容实现和一个 MinIO 类实现；每个声明支持的供应商均须通过相同合同测试，未验证供应商不得宣称支持；核对 Obsidian `editor-change`、`vault.configDir`、rename/no-clobber 能力并据此冻结 manifest.minAppVersion、isDesktopOnly 或移动端保守模式。
 - [x] 三份指导文档已将现有 `src/sync-engine.ts`、`src/s3-remote.ts` 及“本地重建远端”标记为 legacy prototype。
 - [x] 在任何真实 Bucket 测试前，从可用 UI 禁用旧版“本地重建远端”，防止文档冻结期误用 legacy 协议。
 

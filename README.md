@@ -104,6 +104,8 @@ npm run test:s3-aws
 
 测试 IAM 最小权限为 Bucket 上的 `s3:ListBucket`，以及 `contract/*` 对象上的 `s3:GetObject` 和 `s3:PutObject`。不要授予 `s3:DeleteObject`。可测试 MinIO 时运行 `npm run test:s3-minio`；它使用 Docker Compose 的本地默认凭证，不需要任何云端密钥。
 
+v1 当前声明支持百度云 BOS 与 MinIO。AWS S3 保留为未验证、未声明支持；在通过 `npm run test:s3-aws` 前不得将其列为兼容供应商。未来新增腾讯 COS 或其他 S3 兼容服务时，必须先增加对应的 fail-closed 测试入口并通过同一合同。
+
 百度云 BOS 使用相同的合同，但必须使用专用入口，避免误用 MinIO 默认值或 AWS endpoint：
 
 ```powershell

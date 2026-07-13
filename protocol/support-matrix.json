@@ -25,19 +25,22 @@
   "objectStores": [
     {
       "name": "AWS S3",
-      "status": "pending-real-contract-tests",
-      "requirements": ["concurrent If-None-Match star atomic create", "GetObject/HeadObject/ListObjectsV2 round trip", "lost-response body verification", "no DeleteObject normal-sync credential"]
+      "status": "not-claimed-for-v1",
+      "claimedForV1": false,
+      "requirements": ["run test:s3-aws before declaring AWS S3 support"]
     },
     {
       "name": "MinIO or equivalent S3-compatible storage",
       "status": "partially-verified-real-contract-tests",
-      "verified": ["If-None-Match star atomic create", "GetObject/HeadObject/ListObjectsV2 round trip", "no DeleteObject normal-sync credential"],
+      "claimedForV1": true,
+      "verified": ["concurrent If-None-Match star atomic create", "conditional retry body verification", "GetObject/HeadObject/ListObjectsV2 round trip", "no DeleteObject normal-sync credential"],
       "requirements": ["pagination disorder and late-visibility handling"]
     },
     {
       "name": "Baidu Cloud BOS S3-compatible storage",
       "status": "partially-verified-real-contract-tests",
-      "verified": ["If-None-Match star atomic create", "GetObject/HeadObject/ListObjectsV2 round trip", "no DeleteObject normal-sync credential"],
+      "claimedForV1": true,
+      "verified": ["concurrent If-None-Match star atomic create", "conditional retry body verification", "GetObject/HeadObject/ListObjectsV2 round trip", "no DeleteObject normal-sync credential"],
       "requirements": ["pagination disorder and late-visibility handling"]
     }
   ],
