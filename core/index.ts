@@ -24,3 +24,4 @@ export * from "./stable-capture";
 export * from "./blob";
 export * from "./vault-publish-envelope";
 export * from "./writer-session";
+export * from "./remote-blob";
