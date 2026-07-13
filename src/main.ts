@@ -263,6 +263,7 @@ export default class S3SyncPlugin extends Plugin {
       let created = 0;
       let updated = 0;
       let skipped = 0;
+      let conflicts = 0;
       for (const remote of files) {
         const existing = getTFile(this.app.vault, remote.path);
         const capture = existing ? await captureStableVaultFile(this.app.vault, remote.path) : undefined;
@@ -274,8 +275,13 @@ export default class S3SyncPlugin extends Plugin {
             await ensureParentFolder(this.app.vault, copyPath);
             const bytes = new Uint8Array(remote.bytes.byteLength);
             bytes.set(remote.bytes);
-            await this.app.vault.createBinary(copyPath, bytes.buffer);
+            try {
+              await this.app.vault.createBinary(copyPath, bytes.buffer);
+            } catch (error) {
+              if (!(error instanceof Error) || !error.message.includes("File already exists")) throw error;
+            }
           }
+          conflicts += 1;
           skipped += 1;
           continue;
         }
@@ -297,7 +303,7 @@ export default class S3SyncPlugin extends Plugin {
         this.data.files[remote.path] = { hash: remote.hash, size: remote.size, updatedAt: new Date().toISOString() };
       }
       await this.saveSyncData();
-      new Notice(`S3 Sync v1 pull: created ${created}, updated ${updated}, skipped ${skipped}`);
+      new Notice(`S3 Sync v1 pull: created ${created}, updated ${updated}, conflicts ${conflicts}, skipped ${skipped}`);
     } catch (error) {
       new Notice(`S3 Sync v1 pull failed: ${this.errorMessage(error)}`);
       console.error(error);
