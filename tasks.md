@@ -73,7 +73,7 @@
 - [x] 实现 ConfigTree 单寄存器，不按配置文件独立选择胜者。
 - [x] 实现 parent 依赖 pending；父版本验证前不完成相关寄存器归并。
 - [x] parent 验证必须检查同 repositoryId、同 channel 和同逻辑寄存器。
-- [ ] ConfigSnapshotMutation 按直接父 Tree 验证每个 delete path 的既有管理依据；根 delete 和无父依据 delete 隔离为无效版本，缺任一父/Tree 时保持 pending。
+- [x] ConfigSnapshotMutation 按直接父 Tree 验证每个 delete path 的既有管理依据；根 delete 和无父依据 delete 隔离为无效版本，缺任一父/Tree 时保持 pending。
 - [x] 实现相同 Blob Hash、相同 delete、相同 ConfigTree Hash 的语义折叠。
 - [ ] 实现 put/put、put/delete、多方并发、配置快照并发和并发解决判定。
 - [x] 实现跨寄存器文件/目录前缀结构冲突；保留全部头且不按本地平台选择可物化版本。

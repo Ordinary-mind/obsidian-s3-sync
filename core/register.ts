@@ -1,9 +1,12 @@
+import { validateConfigDeleteLineage, type ConfigTreeForLineage } from "../protocol/semantics";
+
 export interface RegisterVersion {
   versionId: string;
   repositoryId: string;
   channel: "vault" | "config";
   logicalKey: string;
   parents: string[];
+  configTree?: ConfigTreeForLineage;
 }
 
 export interface RegisterState {
@@ -41,7 +44,18 @@ export function reduceRegister(versions: readonly RegisterVersion[]): RegisterSt
   while (changed) {
     changed = false;
     for (const version of byId.values()) {
-      if (!invalid.has(version.versionId) && !verified.has(version.versionId) && version.parents.every((parent) => verified.has(parent))) {
+      if (
+        !invalid.has(version.versionId)
+        && !verified.has(version.versionId)
+        && version.parents.every((parent) => verified.has(parent))
+      ) {
+        const lineage = configDeleteLineage(version, byId);
+        if (lineage === "invalid") {
+          invalid.add(version.versionId);
+          changed = true;
+          continue;
+        }
+        if (lineage === "pending") continue;
         verified.add(version.versionId);
         changed = true;
       }
@@ -53,8 +67,29 @@ export function reduceRegister(versions: readonly RegisterVersion[]): RegisterSt
     const version = byId.get(versionId)!;
     return version.parents.some((parent) => !byId.has(parent) || reachesMissingParent(parent, visiting));
   };
+  const reachesPendingConfigTree = (versionId: string, visiting = new Set<string>()): boolean => {
+    if (visiting.has(versionId)) return false;
+    visiting.add(versionId);
+    const version = byId.get(versionId)!;
+    return (version.channel === "config" && !version.configTree)
+      || version.parents.some((parent) => byId.has(parent) && reachesPendingConfigTree(parent, visiting));
+  };
+  const reachesCycle = (versionId: string, visiting = new Set<string>(), visited = new Set<string>()): boolean => {
+    if (visiting.has(versionId)) return true;
+    if (visited.has(versionId)) return false;
+    visiting.add(versionId);
+    const version = byId.get(versionId)!;
+    const cyclic = version.parents.some((parent) => byId.has(parent) && reachesCycle(parent, visiting, visited));
+    visiting.delete(versionId);
+    visited.add(versionId);
+    return cyclic;
+  };
   for (const version of byId.values()) {
-    if (!verified.has(version.versionId) && !invalid.has(version.versionId) && !reachesMissingParent(version.versionId)) {
+    if (
+      !verified.has(version.versionId)
+      && !invalid.has(version.versionId)
+      && (reachesCycle(version.versionId) || (!reachesMissingParent(version.versionId) && !reachesPendingConfigTree(version.versionId)))
+    ) {
       invalid.add(version.versionId);
     }
   }
@@ -82,5 +117,29 @@ export function groupEquivalentHeads(heads: readonly string[], values: ReadonlyM
 }
 
 function sameVersion(left: RegisterVersion, right: RegisterVersion): boolean {
-  return left.repositoryId === right.repositoryId && left.channel === right.channel && left.logicalKey === right.logicalKey && left.parents.length === right.parents.length && left.parents.every((parent, index) => parent === right.parents[index]);
+  return left.repositoryId === right.repositoryId
+    && left.channel === right.channel
+    && left.logicalKey === right.logicalKey
+    && left.parents.length === right.parents.length
+    && left.parents.every((parent, index) => parent === right.parents[index])
+    && sameConfigTree(left.configTree, right.configTree);
+}
+
+function configDeleteLineage(version: RegisterVersion, byId: ReadonlyMap<string, RegisterVersion>): "valid" | "pending" | "invalid" {
+  if (version.channel !== "config") return "valid";
+  if (!version.configTree) return "pending";
+  const parentTrees = new Map<string, ConfigTreeForLineage>();
+  for (const parentId of version.parents) {
+    const parentTree = byId.get(parentId)?.configTree;
+    if (parentTree) parentTrees.set(parentId, parentTree);
+  }
+  const violations = validateConfigDeleteLineage(version.parents, version.configTree, parentTrees);
+  if (violations.includes("pending-parent-tree")) return "pending";
+  return violations.length === 0 ? "valid" : "invalid";
+}
+
+function sameConfigTree(left?: ConfigTreeForLineage, right?: ConfigTreeForLineage): boolean {
+  if (!left || !right) return left === right;
+  return left.items.length === right.items.length
+    && left.items.every((item, index) => item.path === right.items[index]?.path && item.kind === right.items[index]?.kind);
 }

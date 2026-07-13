@@ -40,6 +40,17 @@ describe("core register reduction", () => {
     expect(reduceRegister([...versions, versions[0]])).toEqual({ heads: ["next"], pending: [], invalid: [] });
   });
 
+  it("keeps Config snapshots pending until their Tree arrives and isolates deletes without parent management", () => {
+    const config = { repositoryId: "repository", channel: "config" as const, logicalKey: "portable" };
+    const parent = { ...config, versionId: "parent", parents: [], configTree: { items: [{ path: "plugins/example/data.json", kind: "put" as const }] } };
+    const validDelete = { ...config, versionId: "delete", parents: ["parent"], configTree: { items: [{ path: "plugins/example/data.json", kind: "delete" as const }] } };
+    const invalidDelete = { ...config, versionId: "invalid", parents: ["parent"], configTree: { items: [{ path: "plugins/other/data.json", kind: "delete" as const }] } };
+
+    expect(reduceRegister([{ ...config, versionId: "missing-tree", parents: [] }])).toEqual({ heads: [], pending: ["missing-tree"], invalid: [] });
+    expect(reduceRegister([parent, validDelete])).toEqual({ heads: ["delete"], pending: [], invalid: [] });
+    expect(reduceRegister([parent, invalidDelete])).toEqual({ heads: ["parent"], pending: [], invalid: ["invalid"] });
+  });
+
   it("groups equivalent heads without discarding their original Version IDs", () => {
     expect(groupEquivalentHeads(["b", "a", "delete"], new Map([["a", "blob:abc"], ["b", "blob:abc"], ["delete", "delete"]]))).toEqual([
       { value: "blob:abc", representative: "a", members: ["a", "b"] },
