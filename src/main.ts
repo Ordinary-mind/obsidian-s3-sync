@@ -304,6 +304,7 @@ export default class S3SyncPlugin extends Plugin {
       }
       await this.saveSyncData();
       new Notice(`S3 Sync v1 pull: created ${created}, updated ${updated}, conflicts ${conflicts}, skipped ${skipped}`);
+      if (conflicts > 0) new ConflictModal(this).open();
     } catch (error) {
       new Notice(`S3 Sync v1 pull failed: ${this.errorMessage(error)}`);
       console.error(error);

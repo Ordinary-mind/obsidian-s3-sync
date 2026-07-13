@@ -38,6 +38,7 @@ export class ConflictModal extends Modal {
       this.addMeta(meta, "远端设备", conflict.remoteUpdatedByDevice ?? "未知");
       this.addMeta(meta, "发现时间", conflict.detectedAt);
 
+      if (conflict.remoteVersion === 0) continue;
       const actions = new Setting(item)
         .addButton((button) => button
           .setButtonText("复制诊断信息")
