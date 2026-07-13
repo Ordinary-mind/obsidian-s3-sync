@@ -25,8 +25,9 @@
   "objectStores": [
     {
       "name": "AWS S3",
-      "status": "pending-real-contract-tests",
-      "requirements": ["If-None-Match star atomic create", "lost-response body verification", "no DeleteObject normal-sync credential"]
+      "status": "partially-verified-real-contract-tests",
+      "verified": ["concurrent If-None-Match star atomic create", "GetObject/HeadObject/ListObjectsV2 round trip", "no DeleteObject normal-sync adapter method"],
+      "requirements": ["lost-response body verification"]
     },
     {
       "name": "MinIO or equivalent S3-compatible storage",

@@ -25,7 +25,7 @@ describe("protocol support matrix", () => {
       expect.arrayContaining([expect.objectContaining({ staticApi: expect.arrayContaining(["vault.configDir"]) })]),
     );
     expect(matrix.objectStores).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: "AWS S3", status: "pending-real-contract-tests" }),
+      expect.objectContaining({ name: "AWS S3", status: "partially-verified-real-contract-tests" }),
       expect.objectContaining({ name: "MinIO or equivalent S3-compatible storage", status: "partially-verified-real-contract-tests" }),
       expect.objectContaining({ name: "Baidu Cloud BOS S3-compatible storage", status: "partially-verified-real-contract-tests" }),
     ]));
