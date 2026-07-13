@@ -10,6 +10,7 @@ import type { S3SyncData, S3SyncSettings, SyncSummary } from "./types";
 import { ensureParentFolder, getTFile, resolveEffectivePrefix } from "./utils";
 import { captureStableVaultFile } from "./vault-stable-capture";
 import { recordPublishedWriterCommit, reserveWriterCommit } from "../core/writer-session";
+import { decideResolvedRemotePut } from "../core/pull-decision";
 
 interface PersistedPluginData {
   settings?: Partial<S3SyncSettings>;
@@ -251,18 +252,35 @@ export default class S3SyncPlugin extends Plugin {
       if (!state || state.prefix !== this.getEffectivePrefix()) throw new Error("select a v1 repository for the current Prefix first");
       const files = await new V1RepositoryService(this.settings, state.prefix).listResolvedVaultPuts(state.repositoryId, state.descriptorHash);
       let created = 0;
+      let updated = 0;
+      let skipped = 0;
       for (const remote of files) {
-        if (this.app.vault.getAbstractFileByPath(remote.path)) continue;
-        await ensureParentFolder(this.app.vault, remote.path);
-        if (this.app.vault.getAbstractFileByPath(remote.path)) continue;
+        const existing = getTFile(this.app.vault, remote.path);
+        const capture = existing ? await captureStableVaultFile(this.app.vault, remote.path) : undefined;
+        const decision = decideResolvedRemotePut({ localExists: !!existing, projectedHash: this.data.files[remote.path]?.hash, currentHash: capture?.hash, remoteHash: remote.hash });
+        if (decision === "conflict") {
+          skipped += 1;
+          continue;
+        }
+        if (decision === "adopt") {
+          this.data.files[remote.path] = { hash: remote.hash, size: remote.size, updatedAt: new Date().toISOString() };
+          continue;
+        }
         const binary = new Uint8Array(remote.bytes.byteLength);
         binary.set(remote.bytes);
-        await this.app.vault.createBinary(remote.path, binary.buffer);
+        if (decision === "create") {
+          await ensureParentFolder(this.app.vault, remote.path);
+          if (this.app.vault.getAbstractFileByPath(remote.path)) { skipped += 1; continue; }
+          await this.app.vault.createBinary(remote.path, binary.buffer);
+          created += 1;
+        } else {
+          await this.app.vault.modifyBinary(existing!, binary.buffer);
+          updated += 1;
+        }
         this.data.files[remote.path] = { hash: remote.hash, size: remote.size, updatedAt: new Date().toISOString() };
-        created += 1;
       }
       await this.saveSyncData();
-      new Notice(`S3 Sync v1 pulled ${created} missing file(s)`);
+      new Notice(`S3 Sync v1 pull: created ${created}, updated ${updated}, skipped ${skipped}`);
     } catch (error) {
       new Notice(`S3 Sync v1 pull failed: ${this.errorMessage(error)}`);
       console.error(error);
