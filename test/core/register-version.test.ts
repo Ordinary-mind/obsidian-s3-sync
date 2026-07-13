@@ -6,6 +6,8 @@ describe("register version builders", () => {
     expect(vaultRegisterVersion("repo", "v", { path: "notes/a.md", kind: "delete", parents: ["parent"] })).toEqual({ repositoryId: "repo", channel: "vault", logicalKey: "notes/a.md", versionId: "v", parents: ["parent"] });
   });
   it("uses one portable register for every Config snapshot", () => {
-    expect(configRegisterVersion("repo", "v", { key: "portable", kind: "snapshot", treeHash: "a".repeat(64), parents: [] }).logicalKey).toBe("portable");
+    const version = configRegisterVersion("repo", "v", { key: "portable", kind: "snapshot", treeHash: "a".repeat(64), parents: [] }, { items: [] });
+    expect(version.logicalKey).toBe("portable");
+    expect(version.configTree).toEqual({ items: [] });
   });
 });
