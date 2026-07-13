@@ -214,19 +214,19 @@
 ### 对象读写
 
 - [x] 实现 Blob 上传、下载、流式 Hash 和可读验证。
-- [ ] Config/Vault put 的声明 size 必须等于实际 Blob bytes；同 Hash 不同 size 只验证匹配引用，不按声明 size 预分配或错误应用。
+- [x] Config/Vault put 的声明 size 必须等于实际 Blob bytes；同 Hash 不同 size 只验证匹配引用，不按声明 size 预分配或错误应用。
 - [x] v1 拒绝超过 5,000,000,000 bytes 的 Blob，不实现 multipart；平台更低上限必须可诊断。
-- [ ] 实现 ConfigTree 编码、上传、下载和完整 profile/item 校验。
+- [x] 实现 ConfigTree 编码、上传、下载和完整 profile/item 校验。
 - [x] ConfigTree validator 按冻结映射验证 baseFiles/themes/snippets/pluginPackages/pluginData 的路径覆盖，拒绝重叠/越界和 package 根 data.json 混入。
 - [x] ConfigTree validator 按固定 case-fold/段前缀规则拒绝映射到 current 内 historicalConfigDir、`.obsidian-s3-sync-local` 或 `plugins/obsidian-s3-sync` 的 item，不使用本机自定义保留根改变协议判定。
-- [ ] 实现多 Change Chunk 编码；同一 Commit 全局禁止重复 Vault path。
-- [ ] Vault Mutation 按固定 case-fold/段前缀规则命中 descriptor current/historical configDir 或 Vault 根 `.s3-sync-conflicts` 时只隔离该寄存器版本，绝不创建/应用；同信封其他合法寄存器可继续。
+- [x] 实现多 Change Chunk 编码；同一 Commit 全局禁止重复 Vault path。
+- [x] Vault Mutation 按固定 case-fold/段前缀规则命中 descriptor current/historical configDir 或 Vault 根 `.s3-sync-conflicts` 时只隔离该寄存器版本，绝不创建/应用；同信封其他合法寄存器可继续。
 - [x] 拒绝空 Change Chunk 和空 Commit；真正空仓库只使用 RepositoryDescriptor anchor。
 - [x] Config Commit 必须恰有一个 Chunk 和一个 ConfigSnapshotMutation。
-- [ ] 校验 Chunk 数组非空、index 连续、跨 Chunk Mutation 全局排序，以及 repositoryId/channel/chunkCount 一致。
+- [x] 校验 Chunk 数组非空、index 连续、跨 Chunk Mutation 全局排序，以及 repositoryId/channel/chunkCount 一致。
 - [ ] Commit 结构信封使用磁盘/增量验证，不能把最多 1,024 个 4 MiB Chunk 同时留在内存；创建任何 Version 前仍须完成全信封校验。
 - [x] 实现 Commit 规范编码、Commit Hash 和 20 位 sequence Key。
-- [ ] sequence 达到 uint64 最大值后轮换 writerId；禁止溢出、回绕或复用。
+- [x] sequence 达到 uint64 最大值后轮换 writerId；禁止溢出、回绕或复用。
 - [x] `parent-reduction` Commit 必须恰有一个 Chunk 和一个 Mutation。
 - [x] 校验两个 channel 的全部 kind：bootstrap=0、change=0..1,024、conflict-resolution=1..1,024、parent-reduction=2..1,024 parents 且 reduction 仅单 Mutation；kind 不参与选胜者。
 - [x] 实现发布顺序：Blob -> ConfigTree -> Change Chunk -> Commit。
@@ -237,25 +237,25 @@
 - [x] 分页发现 writer 和 Commit，不依赖可变 writer registry。
 - [x] 校验 writer sequence、首提交 null previous、后续 previousCommitHash、缺口和分叉。
 - [x] 实现 parent 依赖队列，依赖未齐不应用相关寄存器。
-- [ ] 实现增量轮询和从头完整 Commit 审计；marker 只是缓存。
-- [ ] 实现可恢复的远端完整校验：遍历全部已验证 Commit 及可达 Chunk/Tree/Blob 并重新 GET/Hash；tip anchor 检查不能冒充全仓健康。
+- [x] 实现增量轮询和从头完整 Commit 审计；marker 只是缓存。
+- [x] 实现可恢复的远端完整校验：遍历全部已验证 Commit 及可达 Chunk/Tree/Blob 并重新 GET/Hash；tip anchor 检查不能冒充全仓健康。
 - [x] 实现远端全量重建 API，不依赖本地数据库或 checkpoint。
 - [x] checkpoint 在 v1 后续实现前保持未使用状态。
 
 ### 测试
 
 - [x] 与任务 0 固定测试向量逐字节一致。
-- [ ] 在每个远端写入步骤前后注入崩溃，Commit 可见状态始终完整可重建。
+- [x] 在每个远端写入步骤前后注入崩溃，Commit 可见状态始终完整可重建。
 - [x] 已共享 repositoryId 的两个 writer 并发 bootstrap，结果合并或显式冲突。
-- [ ] 不同 repositoryId 在同 Prefix 完全隔离。
+- [x] 不同 repositoryId 在同 Prefix 完全隔离。
 - [x] Commit 先可见、依赖暂不可见时只重试。
 - [x] 任一 Change Chunk 缺失/损坏或跨 Chunk 规则失败时，Commit 的所有 Mutation 都不创建；完整结构信封通过后再按 Mutation 验证 Blob/Tree/parent。
 - [ ] 单个 Vault Blob 或 ConfigTree 内容依赖缺失/损坏只阻塞对应寄存器，其他 Mutation 可归并；缺依赖值绝不按空内容应用。
 - [x] parent 来自其他路径、其他仓库或其他 channel 时隔离。
-- [ ] writer 同 sequence 两个 Hash 均参与归并并触发身份轮换。
-- [ ] sequence 最大值或 fork 排空后轮换 writerId，下一本地 generation 仍可把旧 writer 的精确 Version ID 作为 localPredecessor，previousCommitHash 则在新 writer 上从 null 开始。
-- [ ] 任意对象被篡改、截断或超限时停止相关寄存器应用。
-- [ ] format.json 被替换、或 Tree/Chunk/Commit descriptorHash 不一致时，新旧客户端都停止该仓库发布/应用，不按新 configDir 重解释旧提交。
+- [x] writer 同 sequence 两个 Hash 均参与归并并触发身份轮换。
+- [x] sequence 最大值或 fork 排空后轮换 writerId，下一本地 generation 仍可把旧 writer 的精确 Version ID 作为 localPredecessor，previousCommitHash 则在新 writer 上从 null 开始。
+- [x] 任意对象被篡改、截断或超限时停止相关寄存器应用。
+- [x] format.json 被替换、或 Tree/Chunk/Commit descriptorHash 不一致时，新旧客户端都停止该仓库发布/应用，不按新 configDir 重解释旧提交。
 
 验收门：删除所有本地状态后，空本地仅靠远端不可变对象能重建相同 Vault 头、配置头和冲突集合。
 

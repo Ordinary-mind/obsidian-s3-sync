@@ -83,7 +83,7 @@ describe("remote Commit pull", () => {
     }, head: async () => ({ size: 0 }), list: async () => ({ keys: [] }), putImmutable: async () => undefined };
     const repository = new InMemoryRepositoryCore();
 
-    await pullCommitIntoRepository(store, repository, "", repositoryId, descriptorHash, commitKey);
+    await pullCommitIntoRepository(store, repository, "", repositoryId, descriptorHash, commitKey, { configDir: ".obsidian", historicalConfigDirs: [] });
 
     expect(repository.register(repositoryId, "config", "portable")).toMatchObject({ heads: [`${commitHash}:0:0`] });
   });

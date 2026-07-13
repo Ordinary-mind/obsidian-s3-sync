@@ -288,7 +288,7 @@ export default class S3SyncPlugin extends Plugin {
         parents,
         capture,
       });
-      this.data.v1 = { ...state, ...recordPublishedWriterCommit(state, commitHash) };
+      this.data.v1 = { ...state, ...recordPublishedWriterCommit(state, commitHash, () => crypto.randomUUID()) };
       this.data.files[file.path] = { hash: capture.hash, size: capture.size, updatedAt: new Date().toISOString() };
       this.data.v1ProjectedHeads[file.path] = [`${commitHash}:0:0`];
       if (dirtyIntent?.localCandidates.length) {
@@ -795,7 +795,7 @@ export default class S3SyncPlugin extends Plugin {
       if (!capture || capture.hash !== conflict.localHash) throw new Error("local conflict content changed; refresh before resolving");
       const reservation = reserveWriterCommit(state);
       const commitHash = await service.publishVaultPut({ repositoryId: state.repositoryId, descriptorHash: state.descriptorHash, writerId: state.writerId, sequence: reservation.sequence, previousCommitHash: reservation.previousCommitHash, createdAt: new Date().toISOString(), clientVersion: this.manifest.version, path: conflict.path, parents: remote.heads, capture });
-      this.data.v1 = { ...state, ...recordPublishedWriterCommit(state, commitHash) };
+      this.data.v1 = { ...state, ...recordPublishedWriterCommit(state, commitHash, () => crypto.randomUUID()) };
       this.data.files[conflict.path] = { hash: capture.hash, size: capture.size, updatedAt: new Date().toISOString() };
     }
     this.data.conflicts[conflict.id] = { ...conflict, resolved: true };

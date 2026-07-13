@@ -179,6 +179,17 @@ describe("v1 protocol semantic envelope", () => {
     ).toContain("vault-global-path-prefix-conflict");
   });
 
+  it("requires UTF-8 global Mutation order across Chunk boundaries", () => {
+    const first = { ...chunk([]), chunkIndex: 0, chunkCount: 2, mutations: [{ path: "notes/z.md", kind: "delete" as const, parents: [] }] };
+    const second = { ...chunk([]), chunkIndex: 1, chunkCount: 2, mutations: [{ path: "notes/a.md", kind: "delete" as const, parents: [] }] };
+    expect(validateCommitEnvelope(
+      descriptorHash,
+      { ...commit("bootstrap"), changeChunkHashes: ["b".repeat(64), "c".repeat(64)] },
+      [first, second],
+      ["b".repeat(64), "c".repeat(64)],
+    )).toContain("vault-global-order");
+  });
+
   it("enforces the first Commit previous hash and the exact sequence range", () => {
     const valid = chunk([]);
     expect(
