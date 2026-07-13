@@ -43,6 +43,12 @@ export class V1RepositoryService {
   }): Promise<void> {
     await publishEnvelope(this.store(), buildVaultPutPublishEnvelope({ ...input, prefix: this.prefix }));
   }
+  async resolvedVaultHeads(repositoryId: string, descriptorHash: string, path: string): Promise<string[]> {
+    const repository = await this.pullAllCommits(repositoryId, descriptorHash);
+    const state = repository.register(repositoryId, "vault", path);
+    if (state.disposition !== "resolved") throw new Error(`cannot publish ${path}: remote register is ${state.disposition}`);
+    return state.heads;
+  }
   async pullCommit(repositoryId: string, descriptorHash: string, commitKey: string, repository = new InMemoryRepositoryCore()): Promise<InMemoryRepositoryCore> {
     await pullCommitIntoRepository(this.store(), repository, this.prefix, repositoryId, descriptorHash, commitKey);
     return repository;
