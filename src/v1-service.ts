@@ -3,6 +3,7 @@ import { discoverRepositoryDescriptors } from "../core/discovery";
 import { InMemoryRepositoryCore } from "../core/repository";
 import { pullCommitIntoRepository } from "../core/remote-pull";
 import { createRepositoryDescriptor } from "../core/repository-bootstrap";
+import { probeWritableObjectStore } from "../core/connection-probe";
 import { validateRepositoryEndpoint } from "../core/locator";
 import type { S3SyncSettings } from "./types";
 
@@ -20,6 +21,10 @@ export class V1RepositoryService {
     const existing = await this.discover();
     if (existing.length > 0) throw new Error("repository already exists at this Prefix; select it instead of creating another");
     return createRepositoryDescriptor(this.store(), { prefix: this.prefix, repositoryId, configDir, historicalConfigDirs });
+  }
+  async probeWritableConnection(probeId: string): Promise<void> {
+    const key = [this.prefix.replace(/\/$/, ""), ".obsidian-s3-sync/v1/probes", `${probeId}.bin`].filter(Boolean).join("/");
+    await probeWritableObjectStore(this.store(), key, new TextEncoder().encode(probeId));
   }
   async pullCommit(repositoryId: string, descriptorHash: string, commitKey: string, repository = new InMemoryRepositoryCore()): Promise<InMemoryRepositoryCore> {
     await pullCommitIntoRepository(this.store(), repository, this.prefix, repositoryId, descriptorHash, commitKey);

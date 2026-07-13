@@ -19,3 +19,4 @@ export * from "./discovery";
 export * from "./remote-publish";
 export * from "./commit-builder";
 export * from "./repository-bootstrap";
+export * from "./connection-probe";

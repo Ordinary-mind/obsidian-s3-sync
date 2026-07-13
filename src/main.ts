@@ -97,7 +97,9 @@ export default class S3SyncPlugin extends Plugin {
 
   async testS3Connection(): Promise<void> {
     try {
-      await new V1RepositoryService(this.settings, this.getEffectivePrefix()).discover();
+      const service = new V1RepositoryService(this.settings, this.getEffectivePrefix());
+      await service.discover();
+      await service.probeWritableConnection(crypto.randomUUID());
       new Notice(`S3 Sync 连接成功，当前 Prefix：${this.getEffectivePrefix()}`);
     } catch (error) {
       new Notice(`S3 Sync 连接失败：${this.errorMessage(error)}`);
