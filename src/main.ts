@@ -43,6 +43,12 @@ export default class S3SyncPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "s3-sync-v1-create-repository",
+      name: "S3 Sync v1: create repository",
+      callback: () => void this.createV1Repository(),
+    });
+
+    this.addCommand({
       id: "s3-sync-v1-run-desktop-runtime-contract",
       name: "S3 Sync v1: run desktop runtime contract",
       callback: () => void this.runDesktopRuntimeContract(),
@@ -91,7 +97,7 @@ export default class S3SyncPlugin extends Plugin {
 
   async testS3Connection(): Promise<void> {
     try {
-      await new V1RepositoryService(this.settings).discover();
+      await new V1RepositoryService(this.settings, this.getEffectivePrefix()).discover();
       new Notice(`S3 Sync 连接成功，当前 Prefix：${this.getEffectivePrefix()}`);
     } catch (error) {
       new Notice(`S3 Sync 连接失败：${this.errorMessage(error)}`);
@@ -101,15 +107,28 @@ export default class S3SyncPlugin extends Plugin {
 
   async discoverV1Repositories(): Promise<void> {
     try {
-      const repositories = await new V1RepositoryService(this.settings).discover();
+      const repositories = await new V1RepositoryService(this.settings, this.getEffectivePrefix()).discover();
       if (repositories.length !== 1) {
         new Notice(`S3 Sync v1：发现 ${repositories.length} 个已验证仓库；多仓库需显式选择`);
         return;
       }
-      const summary = await new V1RepositoryService(this.settings).inspect(repositories[0].repositoryId, repositories[0].descriptorHash);
+      const summary = await new V1RepositoryService(this.settings, this.getEffectivePrefix()).inspect(repositories[0].repositoryId, repositories[0].descriptorHash);
       new Notice(`S3 Sync v1：已只读验证 ${summary.registers} 个寄存器；冲突 ${summary.concurrent}，等待依赖 ${summary.pending}，无效 ${summary.invalid}`);
     } catch (error) {
       new Notice(`S3 Sync v1 仓库发现失败：${this.errorMessage(error)}`);
+      console.error(error);
+    }
+  }
+
+  private async createV1Repository(): Promise<void> {
+    try {
+      const result = await new V1RepositoryService(this.settings, this.getEffectivePrefix()).createRepository(
+        crypto.randomUUID(),
+        this.app.vault.configDir,
+      );
+      new Notice(`S3 Sync v1 repository created: ${result.repositoryId}`);
+    } catch (error) {
+      new Notice(`S3 Sync v1 repository creation failed: ${this.errorMessage(error)}`);
       console.error(error);
     }
   }
