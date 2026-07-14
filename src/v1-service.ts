@@ -178,10 +178,16 @@ export class V1RepositoryService {
       invalid: states.filter((state) => state.disposition === "invalid").length,
     };
   }
-  async fullAudit(repositoryId: string, descriptorHash: string): Promise<{ verifiedObjects: number; commits: number; registers: number }> {
-    const result = await auditRemoteRepository(this.store(), this.prefix, repositoryId, descriptorHash);
+  async fullAudit(
+    repositoryId: string,
+    descriptorHash: string,
+    onProgress?: (progress: { completedObjects: number; totalObjects: number; missingClosure: string[] }) => void,
+  ): Promise<{ verifiedObjects: number; totalObjects: number; missingClosure: string[]; commits: number; registers: number }> {
+    const result = await auditRemoteRepository(this.store(), this.prefix, repositoryId, descriptorHash, { onProgress });
     return {
       verifiedObjects: result.verifiedObjects,
+      totalObjects: result.totalObjects,
+      missingClosure: [...result.missingClosure],
       commits: result.commitKeys.length,
       registers: result.repository.allRegisters(repositoryId).size,
     };

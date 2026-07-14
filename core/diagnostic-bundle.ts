@@ -36,7 +36,7 @@ export function buildRedactedDiagnosticBundle(input: {
     generatedAt: input.generatedAt,
     ...(input.repositoryId ? { repositoryId: input.repositoryId } : {}),
     ...(input.normalizedPrefix !== undefined ? { normalizedPrefix: redactPrefix(input.normalizedPrefix, input.pathSalt) } : {}),
-    status: redactRecord(input.status, sensitive),
+    status: redactRecord(input.status, sensitive, input.pathSalt),
     events: input.events.map((event) => ({
       at: event.at,
       category: event.category,
@@ -66,16 +66,30 @@ export function redactEndpoint(endpoint: string): string {
   }
 }
 
-function redactRecord(value: Record<string, unknown>, sensitive: readonly string[]): Record<string, unknown> {
+function redactRecord(value: Record<string, unknown>, sensitive: readonly string[], pathSalt: string): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, nested] of Object.entries(value)) {
     if (isSensitiveKey(key)) { result[key] = "[redacted]"; continue; }
-    if (typeof nested === "string") result[key] = redactText(nested, sensitive);
-    else if (Array.isArray(nested)) result[key] = nested.map((item) => typeof item === "string" ? redactText(item, sensitive) : "[structured-value-redacted]");
-    else if (isRecord(nested)) result[key] = redactRecord(nested, sensitive);
-    else result[key] = nested;
+    if (isSingularPrivateLocationKey(key)) {
+      result[`${key}Hash`] = typeof nested === "string" ? hashPrivateValue(nested, pathSalt) : "[redacted]";
+      continue;
+    }
+    if (isPrivateLocationCollectionKey(key)) {
+      result[key] = Array.isArray(nested)
+        ? nested.map((item) => typeof item === "string" ? hashPrivateValue(item, pathSalt) : "[redacted]")
+        : "[redacted]";
+      continue;
+    }
+    result[key] = redactValue(nested, sensitive, pathSalt);
   }
   return result;
+}
+
+function redactValue(value: unknown, sensitive: readonly string[], pathSalt: string): unknown {
+  if (typeof value === "string") return redactText(value, sensitive);
+  if (Array.isArray(value)) return value.map((item) => redactValue(item, sensitive, pathSalt));
+  if (isRecord(value)) return redactRecord(value, sensitive, pathSalt);
+  return value;
 }
 
 function redactText(value: string, sensitive: readonly string[]): string {
@@ -92,6 +106,14 @@ function redactPrefix(prefix: string, salt: string): string {
 
 function isSensitiveKey(key: string): boolean {
   return /(secret|password|token|credential|access.?key|body|bytes|content|data\.json)/i.test(key);
+}
+
+function isSingularPrivateLocationKey(key: string): boolean {
+  return /^(?:path|recoveryLocation|normalizedPrefix|prefix)$/i.test(key);
+}
+
+function isPrivateLocationCollectionKey(key: string): boolean {
+  return /^(?:paths|missingClosure)$/i.test(key);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return !!value && typeof value === "object" && !Array.isArray(value); }

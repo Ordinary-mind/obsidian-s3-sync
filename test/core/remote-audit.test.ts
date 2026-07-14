@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { buildBlobObject } from "../../core/blob";
 import { buildVaultChangeEnvelope } from "../../core/commit-builder";
-import { objectBodyFromBytes } from "../../core/object-store";
-import { auditRemoteRepository, pollRemoteCommitKeys } from "../../core/remote-audit";
+import { ObjectStoreError, objectBodyFromBytes } from "../../core/object-store";
+import { auditRemoteRepository, pollRemoteCommitKeys, remoteAuditFailureProgress } from "../../core/remote-audit";
 import { createRepositoryDescriptor } from "../../core/repository-bootstrap";
 import { sha256Hex } from "../../protocol/hash";
 
@@ -33,8 +33,13 @@ describe("recoverable remote repository audit", () => {
     const foreignKey = `.obsidian-s3-sync/v1/repositories/123e4567-e89b-42d3-a456-426614174099/commits/123e4567-e89b-42d3-a456-426614174098/00000000000000000001-${"f".repeat(64)}.json`;
     objects.set(foreignKey, new Uint8Array([9]));
 
-    const audited = await auditRemoteRepository(store, "", repositoryId, descriptor.descriptorHash);
+    const progress: Array<{ completedObjects: number; totalObjects: number; missingClosure: string[] }> = [];
+    const audited = await auditRemoteRepository(store, "", repositoryId, descriptor.descriptorHash, {
+      onProgress: (value) => progress.push(value),
+    });
     expect(audited.verifiedObjects).toBe(4);
+    expect(audited).toMatchObject({ totalObjects: 4, missingClosure: [] });
+    expect(progress.at(-1)).toEqual({ completedObjects: 4, totalObjects: 4, missingClosure: [] });
     expect(audited.repository.register(repositoryId, "vault", "notes/a.md").heads).toHaveLength(1);
     await expect(pollRemoteCommitKeys(store, "", repositoryId, new Set(audited.commitKeys))).resolves.toEqual([]);
     await expect(pollRemoteCommitKeys(store, "", repositoryId)).resolves.toEqual(audited.commitKeys);
@@ -44,6 +49,40 @@ describe("recoverable remote repository audit", () => {
   it("stops a full audit when any reachable immutable object is tampered", async () => {
     const repositoryId = "123e4567-e89b-42d3-a456-426614174000";
     const store = { list: async () => ({ keys: [] }), head: async () => ({ size: 0 }), getStream: async () => objectBodyFromBytes(new Uint8Array([9])), putImmutable: async () => undefined };
-    await expect(auditRemoteRepository(store, "", repositoryId, "a".repeat(64))).rejects.toMatchObject({ kind: "integrity" });
+    const error = await auditRemoteRepository(store, "", repositoryId, "a".repeat(64)).then(
+      () => undefined,
+      (failure: unknown) => failure,
+    );
+    expect(error).toMatchObject({ kind: "integrity", code: "integrity-missing-closure" });
+    expect(remoteAuditFailureProgress(error)).toMatchObject({
+      completedObjects: 0,
+      totalObjects: 1,
+      missingClosure: [expect.stringContaining("/format.json")],
+    });
+  });
+
+  it("retains partial coverage without claiming a missing closure on a temporary list failure", async () => {
+    const repositoryId = "123e4567-e89b-42d3-a456-426614174000";
+    const descriptorBytes = new TextEncoder().encode(JSON.stringify({
+      canonicalJson: "RFC8785",
+      configDir: ".obsidian",
+      hashAlgorithm: "sha256",
+      historicalConfigDirs: [],
+      protocol: 1,
+      repositoryId,
+    }));
+    const descriptorHash = sha256Hex(descriptorBytes);
+    const store = {
+      list: async () => { throw new ObjectStoreError("temporary", "list", { retries: 3, stage: "request" }); },
+      head: async () => ({ size: descriptorBytes.byteLength }),
+      getStream: async () => objectBodyFromBytes(descriptorBytes),
+      putImmutable: async () => undefined,
+    };
+    const error = await auditRemoteRepository(store, "", repositoryId, descriptorHash).then(
+      () => undefined,
+      (failure: unknown) => failure,
+    );
+    expect(error).toMatchObject({ kind: "temporary", code: "audit-network" });
+    expect(remoteAuditFailureProgress(error)).toEqual({ completedObjects: 1, totalObjects: 1, missingClosure: [] });
   });
 });

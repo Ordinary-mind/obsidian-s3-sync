@@ -1,64 +1,260 @@
-import { Modal, Setting } from "obsidian";
+import { Modal, Notice, Setting, setIcon, type ButtonComponent, type IconName } from "obsidian";
 import type S3SyncPlugin from "./main";
-import { mayClaimRepositoryFullyHealthy, repositoryHealthLabel, retryCountdownSeconds } from "../core/operational-status";
+import {
+  auditCoveragePercent,
+  diagnosticCategoryLabel,
+  mayClaimRepositoryFullyHealthy,
+  mayRunMutatingSync,
+  operationalPhaseLabel,
+  pathDecisionLabel,
+  repositoryHealthDisplayLabel,
+  repositoryHealthLabel,
+  retryCountdownSeconds,
+  type OperationalStatus,
+} from "../core/operational-status";
 
 export class SyncDashboardModal extends Modal {
+  private refreshTimer: number | null = null;
+  private operationRunning = false;
+
   constructor(private readonly plugin: S3SyncPlugin) { super(plugin.app); }
 
-  onOpen(): void { this.render(); }
+  onOpen(): void {
+    this.setTitle("S3 Sync 状态与诊断");
+    this.modalEl.addClass("s3-sync-dashboard-modal");
+    this.render();
+    this.refreshTimer = window.setInterval(() => this.render(), 1_000);
+  }
+
+  onClose(): void {
+    if (this.refreshTimer !== null) window.clearInterval(this.refreshTimer);
+    this.refreshTimer = null;
+    this.contentEl.empty();
+  }
 
   private render(): void {
     const status = this.plugin.getOperationalStatus();
+    const health = repositoryHealthLabel(status);
+    const mutatingAllowed = !!this.plugin.data.v1 && mayRunMutatingSync(status);
+    const busy = this.operationRunning || this.plugin.isV1OperationRunning();
     this.contentEl.empty();
-    this.contentEl.createEl("h2", { text: "S3 Sync 状态与诊断" });
-    this.contentEl.createEl("p", { text: `阶段：${status.phase}；健康状态：${repositoryHealthLabel(status)}${mayClaimRepositoryFullyHealthy(status) ? "（完整校验通过）" : ""}` });
+
+    const overview = this.contentEl.createDiv({ cls: "s3-sync-dashboard-overview" });
+    const phase = overview.createDiv({ cls: "s3-sync-dashboard-phase" });
+    phase.createSpan({ cls: "s3-sync-dashboard-phase-label", text: operationalPhaseLabel(status.phase) });
+    phase.createSpan({ cls: `s3-sync-health s3-sync-health-${health}`, text: repositoryHealthDisplayLabel(status) });
+    if (mayClaimRepositoryFullyHealthy(status)) phase.createSpan({ cls: "s3-sync-audit-verified", text: "闭包完整" });
+
+    if (!mutatingAllowed) {
+      const banner = overview.createDiv({ cls: "s3-sync-diagnostics-banner" });
+      const bannerIcon = banner.createSpan({ cls: "s3-sync-inline-icon" });
+      setIcon(bannerIcon, "shield-alert");
+      banner.createSpan({ text: this.plugin.data.v1
+        ? "写操作已暂停，仅保留预览、校验与非破坏性重新接入。"
+        : "尚未选择 v1 仓库。" });
+    }
+
     const summary = this.contentEl.createDiv({ cls: "s3-sync-status-grid" });
     for (const [label, value] of [
       ["最后成功拉取", formatTime(status.lastSuccessfulPull)],
       ["最后成功发布", formatTime(status.lastSuccessfulPublish)],
       ["最后完整审计", formatTime(status.lastSuccessfulAudit)],
-      ["Pending apply", String(status.pendingApply)],
+      ["待应用", String(status.pendingApply)],
       ["Outbox", String(status.outbox)],
       ["本地并发记录", String(status.localConcurrentRecords)],
-      ["恢复文件 / post-capture edit", `${status.recoveryFiles} / ${status.postCaptureEdits}`],
+      ["恢复文件 / 捕获后编辑", `${status.recoveryFiles} / ${status.postCaptureEdits}`],
       ["提交缺口", String(status.commitGaps)],
-      ["冲突", String(status.conflicts)],
+      ["Vault 冲突", String(status.conflicts)],
     ]) {
       summary.createDiv({ cls: "s3-sync-status-label", text: label });
       summary.createDiv({ cls: "s3-sync-status-value", text: value });
     }
-    if (status.retryAt !== undefined) this.contentEl.createEl("p", { text: `第 ${status.retryAttempt} 次退避，约 ${retryCountdownSeconds(status, Date.now()) ?? 0} 秒后重试。` });
-    if (status.lastError) this.contentEl.createEl("p", { cls: "s3-sync-error", text: `${status.lastError.category}：${status.lastError.message}` });
 
-    new Setting(this.contentEl)
-      .addButton((button) => button.setButtonText("立即同步").setCta().onClick(() => void this.run(() => this.plugin.runManualSyncV1())))
-      .addButton((button) => button.setButtonText("仅预览").onClick(() => void this.run(() => this.plugin.previewSyncV1())))
-      .addButton((button) => button.setButtonText("完整校验").onClick(() => void this.run(() => this.plugin.runFullAuditV1())))
-      .addButton((button) => button.setButtonText("查看 Vault 冲突").onClick(() => this.plugin.openConflictModal()));
+    if (status.retryAt !== undefined) {
+      const retry = this.contentEl.createDiv({ cls: "s3-sync-retry-state" });
+      const retryIcon = retry.createSpan({ cls: "s3-sync-inline-icon" });
+      setIcon(retryIcon, "clock-3");
+      retry.createSpan({ text: `第 ${status.retryAttempt} 次退避，${retryCountdownSeconds(status, Date.now()) ?? 0} 秒后重试` });
+    }
+    if (status.lastError) {
+      const error = this.contentEl.createDiv({ cls: "s3-sync-error" });
+      error.createEl("strong", { text: `${diagnosticCategoryLabel(status.lastError.category)}：` });
+      error.createSpan({ text: status.lastError.message });
+    }
 
-    new Setting(this.contentEl)
-      .addButton((button) => button.setButtonText("手动重试").onClick(() => void this.run(() => this.plugin.runManualSyncV1())))
-      .addButton((button) => button.setButtonText("复制脱敏诊断包").onClick(async () => {
-        await navigator.clipboard.writeText(this.plugin.exportRedactedDiagnostics());
-        button.setButtonText("已复制");
+    this.renderActions(status, mutatingAllowed, busy);
+    this.renderAudit(status);
+    this.renderHighRiskOperation(status);
+    this.renderDecisions(status);
+  }
+
+  private renderActions(status: OperationalStatus, mutatingAllowed: boolean, busy: boolean): void {
+    const section = this.contentEl.createDiv({ cls: "s3-sync-dashboard-section s3-sync-dashboard-actions" });
+    section.createEl("h3", { text: "操作" });
+    const primary = new Setting(section).setClass("s3-sync-action-row");
+    primary
+      .addButton((button) => this.actionButton(button, {
+        label: "立即同步",
+        icon: "refresh-cw",
+        tooltip: "立即执行一轮安全同步",
+        disabled: busy || !mutatingAllowed,
+        cta: true,
+        onClick: () => this.run(() => this.plugin.runManualSyncV1()),
+      }))
+      .addButton((button) => this.actionButton(button, {
+        label: "仅预览",
+        icon: "scan-search",
+        tooltip: "只计算逐路径决策，不写入本地或远端",
+        disabled: busy || !this.plugin.data.v1,
+        onClick: () => this.run(() => this.plugin.previewSyncV1(false)),
+      }))
+      .addButton((button) => this.actionButton(button, {
+        label: "完整校验",
+        icon: "shield-check",
+        tooltip: "验证全部可达的不可变仓库对象",
+        disabled: busy || !this.plugin.data.v1,
+        onClick: () => this.run(() => this.plugin.runFullAuditV1()),
+      }))
+      .addButton((button) => this.actionButton(button, {
+        label: "Vault 冲突",
+        icon: "git-merge",
+        tooltip: "查看并处理 Vault 冲突",
+        disabled: busy,
+        onClick: () => this.plugin.openConflictModal(),
       }));
 
-    this.contentEl.createEl("h3", { text: "本轮逐路径决策" });
-    if (status.decisions.length === 0) this.contentEl.createEl("p", { text: "尚无预览结果。" });
+    const secondary = new Setting(section).setClass("s3-sync-action-row");
+    secondary
+      .addButton((button) => this.actionButton(button, {
+        label: "手动重试",
+        icon: "rotate-ccw",
+        tooltip: "跳过当前倒计时并立即重试",
+        disabled: busy || !mutatingAllowed || (status.retryAt === undefined && status.lastError === undefined),
+        onClick: () => this.run(() => this.plugin.retryManualSyncV1()),
+      }))
+      .addButton((button) => this.actionButton(button, {
+        label: "复制脱敏诊断包",
+        icon: "clipboard-copy",
+        tooltip: "复制不含凭证、正文和明文路径的诊断数据",
+        disabled: busy,
+        onClick: async () => {
+          await navigator.clipboard.writeText(this.plugin.exportRedactedDiagnostics());
+          new Notice("S3 Sync：已复制脱敏诊断包。");
+        },
+      }));
+  }
+
+  private renderAudit(status: OperationalStatus): void {
+    const section = this.contentEl.createDiv({ cls: "s3-sync-dashboard-section" });
+    section.createEl("h3", { text: "完整校验" });
+    const coverage = auditCoveragePercent(status.audit);
+    const header = section.createDiv({ cls: "s3-sync-audit-header" });
+    header.createSpan({ text: auditStateLabel(status.audit.state) });
+    header.createSpan({ text: `${status.audit.completedObjects} / ${status.audit.totalObjects} 对象（${coverage}%）` });
+    const progress = section.createEl("progress", { cls: "s3-sync-audit-progress" });
+    progress.max = 100;
+    progress.value = coverage;
+
+    if (status.audit.resumable && status.audit.state !== "running") {
+      section.createDiv({ cls: "s3-sync-audit-resumable", text: "校验已保留部分覆盖率，可从失败状态重新校验。" });
+    }
+    if (status.audit.missingClosure.length > 0) {
+      section.createEl("h4", { text: `缺失闭包（${status.audit.missingClosure.length}）` });
+      const list = section.createEl("ul", { cls: "s3-sync-missing-closure" });
+      for (const key of status.audit.missingClosure) list.createEl("li").createEl("code", { text: key });
+    }
+  }
+
+  private renderHighRiskOperation(status: OperationalStatus): void {
+    if (!status.highRiskOperation) return;
+    const section = this.contentEl.createDiv({ cls: "s3-sync-dashboard-section s3-sync-high-risk" });
+    section.createEl("h3", { text: status.highRiskOperation.kind === "clone" ? "高风险克隆" : "高风险新世代" });
+    const summary = section.createDiv({ cls: "s3-sync-status-grid" });
+    for (const [label, value] of [
+      ["repositoryId", status.highRiskOperation.summary.repositoryId],
+      ["Prefix", status.highRiskOperation.summary.normalizedPrefix || "（根 Prefix）"],
+      ["对象数量", String(status.highRiskOperation.summary.objectCount)],
+      ["对象大小", formatBytes(status.highRiskOperation.summary.totalBytes)],
+      ["恢复位置", status.highRiskOperation.summary.recoveryLocation],
+    ]) {
+      summary.createDiv({ cls: "s3-sync-status-label", text: label });
+      summary.createDiv({ cls: "s3-sync-status-value", text: value });
+    }
+  }
+
+  private renderDecisions(status: OperationalStatus): void {
+    const section = this.contentEl.createDiv({ cls: "s3-sync-dashboard-section" });
+    section.createEl("h3", { text: "本轮逐路径决策" });
+    if (status.decisions.length === 0) {
+      section.createEl("p", { cls: "s3-sync-empty-state", text: "尚无预览结果。" });
+      return;
+    }
+    const list = section.createDiv({ cls: "s3-sync-decision-list" });
     for (const decision of status.decisions) {
-      this.contentEl.createEl("div", { cls: "s3-sync-decision", text: `${decision.decision} · ${decision.path} · ${decision.reason}` });
+      const item = list.createDiv({ cls: `s3-sync-decision s3-sync-decision-${decision.decision}` });
+      item.createSpan({ cls: "s3-sync-decision-kind", text: pathDecisionLabel(decision.decision) });
+      item.createEl("code", { cls: "s3-sync-decision-path", text: decision.path });
+      item.createSpan({ cls: "s3-sync-decision-reason", text: decision.reason });
     }
-    this.contentEl.createEl("h3", { text: "完整校验" });
-    this.contentEl.createEl("p", { text: `${status.audit.state}：${status.audit.completedObjects}/${status.audit.totalObjects}；缺失闭包 ${status.audit.missingClosure.length}${status.audit.resumable ? "；可续检" : ""}` });
-    if (!status.repositoryIdentityValid || status.recoveryRequired) {
-      this.contentEl.createEl("p", { cls: "s3-sync-error", text: "仓库身份或恢复状态需要处理；当前仅允许诊断/非破坏性重新接入，不提供清空后重传。" });
-    }
+  }
+
+  private actionButton(button: ButtonComponent, input: {
+    label: string;
+    icon: IconName;
+    tooltip: string;
+    disabled: boolean;
+    cta?: boolean;
+    onClick: () => void | Promise<void>;
+  }): void {
+    button
+      .setButtonText(input.label)
+      .setTooltip(input.tooltip)
+      .setDisabled(input.disabled)
+      .setClass("s3-sync-action-button")
+      .onClick(input.onClick);
+    if (input.cta) button.setCta();
+    const icon = document.createElement("span");
+    icon.className = "s3-sync-button-icon";
+    setIcon(icon, input.icon);
+    button.buttonEl.prepend(icon);
   }
 
   private async run(operation: () => Promise<void>): Promise<void> {
-    await operation();
+    if (this.operationRunning) return;
+    this.operationRunning = true;
     this.render();
+    try {
+      await operation();
+    } finally {
+      this.operationRunning = false;
+      this.render();
+    }
   }
 }
 
-function formatTime(value: number | undefined): string { return value === undefined ? "从未" : new Date(value).toLocaleString(); }
+function formatTime(value: number | undefined): string {
+  return value === undefined ? "从未" : new Date(value).toLocaleString();
+}
+
+function formatBytes(value: number): string {
+  if (value < 1_024) return `${value} B`;
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let amount = value / 1_024;
+  let unit = units[0];
+  for (let index = 1; index < units.length && amount >= 1_024; index += 1) {
+    amount /= 1_024;
+    unit = units[index];
+  }
+  return `${amount.toFixed(amount >= 10 ? 1 : 2)} ${unit}`;
+}
+
+function auditStateLabel(state: OperationalStatus["audit"]["state"]): string {
+  const labels: Record<OperationalStatus["audit"]["state"], string> = {
+    never: "尚未校验",
+    running: "校验中",
+    complete: "校验完成",
+    cancelled: "校验已中断",
+    failed: "校验失败",
+  };
+  return labels[state];
+}

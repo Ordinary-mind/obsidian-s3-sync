@@ -7,7 +7,7 @@ import { RuntimeContractModal } from "./runtime-contract-modal";
 import type { SyncEngine } from "./sync-engine";
 import { V1RepositoryService } from "./v1-service";
 import type { S3SyncData, S3SyncSettings, SyncSummary } from "./types";
-import { ensureParentFolder, getTFile, resolveEffectivePrefix } from "./utils";
+import { ensureParentFolder, getTFile, isIgnored, parseIgnorePatterns, resolveEffectivePrefix } from "./utils";
 import { captureStableVaultFile } from "./vault-stable-capture";
 import { recordPublishedWriterCommit, reserveWriterCommit } from "../core/writer-session";
 import { decideResolvedRemotePut } from "../core/pull-decision";
@@ -42,9 +42,18 @@ import { publishedReconcileBlocksAutomaticApply, type DurableOutboxEntry } from 
 import { localConcurrentRecordBlocksAutomaticWork } from "../core/local-concurrent-resolution";
 import { SyncDashboardModal } from "./sync-dashboard-modal";
 import { buildRedactedDiagnosticBundle } from "../core/diagnostic-bundle";
-import { diagnosticCategory } from "../core/diagnostics";
-import { repositoryHealthLabel, type OperationalStatus, type PathDecisionRecord } from "../core/operational-status";
+import { diagnosticCategory, type SyncDiagnosticCategory } from "../core/diagnostics";
+import {
+  derivePathDecision,
+  mayRunMutatingSync,
+  operationalStatusBarText,
+  type OperationalStatus,
+  type PathDecisionRecord,
+  type PreviewRemoteState,
+} from "../core/operational-status";
 import { applyVerifiedRepositoryRouteChange } from "../core/repository-reconfigure";
+import { retryDelayMs } from "../core/backoff";
+import { remoteAuditFailureProgress } from "../core/remote-audit";
 
 type PersistedPreferences = Pick<S3SyncSettings,
   | "autoSync"
@@ -76,18 +85,23 @@ interface PersistedPluginData {
   syncData?: Partial<S3SyncData>;
 }
 
+type V1OperationResult = { status: "success" } | { status: "failed"; error: unknown };
+type V1VaultPullDiagnostics = Awaited<ReturnType<V1RepositoryService["listResolvedVaultPutsWithDiagnostics"]>>;
+
 export default class S3SyncPlugin extends Plugin {
   settings: S3SyncSettings = { ...DEFAULT_SETTINGS };
   data: S3SyncData = createDefaultData();
 
   private engine: SyncEngine | null = null;
   private syncTimer: number | null = null;
+  private retryTimer: number | null = null;
   private statusEl: HTMLElement | null = null;
   private readonly runtimeContractSessionId = crypto.randomUUID();
   private editorChangeObserved = false;
   private causalStatePersistence = Promise.resolve();
   private readonly v1ApplyOperations = new Map<string, string>();
   private v1DurableState: { fingerprint: string; store: DurableStateStore<StateJsonValue> } | undefined;
+  private v1SyncRunning = false;
 
   async onload(): Promise<void> {
     await this.loadPluginData();
@@ -174,6 +188,7 @@ export default class S3SyncPlugin extends Plugin {
       const file = info.file;
       if (!file || !this.data.v1) return;
       const path = normalizePath(file.path);
+      if (!this.isV1ManagedVaultPath(path)) return;
       const editorContentHash = sha256Hex(new TextEncoder().encode(editor.getValue()));
       this.data.v1DirtyIntents[path] = captureEditorChange({
         path,
@@ -187,7 +202,9 @@ export default class S3SyncPlugin extends Plugin {
     this.registerV1VaultEvents();
     this.registerDomEvent(document, "visibilitychange", () => {
       if (document.visibilityState === "hidden") this.stopSchedulingAndFlush();
+      else this.resumeV1RetrySchedule();
     });
+    this.resumeV1RetrySchedule();
   }
 
   onunload(): void {
@@ -195,6 +212,7 @@ export default class S3SyncPlugin extends Plugin {
   }
 
   async saveSettings(): Promise<void> {
+    if (!this.settings.autoSync) this.cancelV1Retry(true);
     await this.savePluginData();
   }
 
@@ -319,70 +337,191 @@ export default class S3SyncPlugin extends Plugin {
   getOperationalStatus(): OperationalStatus {
     const base = this.data.v1OperationalStatus;
     const recoveryRecords = Object.values(this.data.v1RecoveryRecords);
+    const strandedApplyJournal = this.data.v1ApplyJournals.some((journal) => this.v1ApplyOperations.get(journal.path) !== journal.operationId);
+    const outboxRecoveryRequired = this.data.v1DurableOutbox.some((entry) => entry.state === "integrity-error" || entry.state === "recovery-required");
+    const recoveryRequired = base.recoveryRequired || strandedApplyJournal || outboxRecoveryRequired
+      || this.data.v1ApplyJournals.some((journal) => journal.state === "recovery-required");
     return {
       ...base,
+      phase: recoveryRequired && !this.v1SyncRunning && base.phase !== "read-only" ? "recovering" : base.phase,
       pendingApply: Object.keys(this.data.v1PendingApply).length,
       outbox: this.data.v1DurableOutbox.filter((entry) => entry.state !== "published").length,
       localConcurrentRecords: Object.keys(this.data.v1LocalConcurrentRecords).length,
       recoveryFiles: recoveryRecords.filter((record) => record.cleanupState !== "cleaned").length,
       postCaptureEdits: recoveryRecords.filter((record) => record.postCaptureEdit).length,
+      commitGaps: Object.keys(this.data.v1SparseSeenCommits).length,
       conflicts: Object.values(this.data.conflicts).filter((conflict) => !conflict.resolved).length,
-      recoveryRequired: base.recoveryRequired || this.data.v1ApplyJournals.some((journal) => journal.state === "recovery-required"),
+      recoveryRequired,
       repositoryIdentityValid: base.repositoryIdentityValid && !this.data.v1ReattachRequired,
     };
   }
 
   openConflictModal(): void { new ConflictModal(this).open(); }
 
+  isV1OperationRunning(): boolean { return this.v1SyncRunning; }
+
   async runManualSyncV1(): Promise<void> {
-    if (!this.data.v1 || this.data.v1ReattachRequired) {
-      new Notice("S3 Sync：需要先完成非破坏性仓库接入或恢复诊断。");
-      return;
-    }
-    this.updateOperationalStatus({ phase: "pulling", lastError: undefined });
-    try {
-      await this.pullMissingFilesV1();
-      this.updateOperationalStatus({ lastSuccessfulPull: Date.now(), phase: "scanning" });
-      const active = this.app.workspace.getActiveFile();
-      if (active && (this.data.v1DirtyIntents[active.path] || latestVaultEvent(this.data.v1VaultEvents, active.path))) {
-        this.updateOperationalStatus({ phase: "publishing" });
-        await this.publishActiveFileV1();
-        this.updateOperationalStatus({ lastSuccessfulPublish: Date.now() });
-      }
-      this.updateOperationalStatus({ phase: "idle" });
-    } catch (error) {
-      this.recordOperationalError(error);
-    }
-    this.updateStatus();
+    this.cancelV1Retry(true);
+    await this.runV1SyncRound(false);
   }
 
-  async previewSyncV1(): Promise<void> {
+  async retryManualSyncV1(): Promise<void> {
+    this.cancelV1Retry(true);
+    await this.runV1SyncRound(false);
+  }
+
+  private async runV1SyncRound(fromRetry: boolean): Promise<void> {
+    const state = this.data.v1;
+    if (!state || this.data.v1ReattachRequired || !mayRunMutatingSync(this.getOperationalStatus())) {
+      if (!fromRetry) new Notice("S3 Sync：仓库当前仅允许诊断或非破坏性重新接入。");
+      return;
+    }
+    if (this.v1SyncRunning) {
+      if (fromRetry) this.deferV1Retry();
+      else new Notice("S3 Sync：已有同步任务正在运行。");
+      return;
+    }
+
+    this.v1SyncRunning = true;
+    this.updateOperationalStatus({ phase: "verifying-repository", retryAt: undefined, lastError: undefined });
+    try {
+      const pull = await this.pullMissingFilesV1(false);
+      if (pull.status === "failed") throw pull.error;
+      this.updateOperationalStatus({ phase: "scanning" });
+
+      const active = this.app.workspace.getActiveFile();
+      if (active && (this.data.v1DirtyIntents[active.path] || latestVaultEvent(this.data.v1VaultEvents, active.path))) {
+        const publish = await this.publishActiveFileV1(false);
+        if (publish.status === "failed") throw publish.error;
+      }
+
+      this.cancelV1Retry(true);
+      this.updateOperationalStatus({ phase: "idle", lastError: undefined });
+      this.queueCausalStatePersistence();
+      new Notice("S3 Sync：同步完成。");
+    } catch (error) {
+      this.recordOperationalError(error, true);
+    } finally {
+      this.v1SyncRunning = false;
+      this.updateStatus();
+    }
+  }
+
+  private async buildV1PathDecisions(
+    state: NonNullable<S3SyncData["v1"]>,
+    pulled: V1VaultPullDiagnostics,
+  ): Promise<PathDecisionRecord[]> {
+    const candidates = new Set<string>();
+    const remoteStates = new Map<string, PreviewRemoteState>();
+    const ignoredPatterns = parseIgnorePatterns(this.settings.ignoredPatterns);
+
+    for (const observation of pulled.observations) {
+      if (!observation.key.startsWith("vault:")) continue;
+      const path = observation.key.slice("vault:".length);
+      candidates.add(path);
+      if (observation.disposition === "concurrent") {
+        remoteStates.set(path, { kind: "conflict", reason: `远端寄存器包含 ${observation.heads.length} 个并发头` });
+      } else if (observation.disposition === "pending") {
+        remoteStates.set(path, { kind: "unknown", reason: `远端寄存器仍有 ${observation.pending.length} 个依赖待验证` });
+      } else if (observation.disposition === "invalid") {
+        remoteStates.set(path, { kind: "unknown", reason: `远端寄存器包含 ${observation.invalid.length} 个无效版本` });
+      } else if (typeof observation.valueHash === "string") {
+        remoteStates.set(path, { kind: "put", hash: observation.valueHash });
+      } else if (observation.valueHash === null) {
+        remoteStates.set(path, { kind: "delete" });
+      } else if (observation.heads.length === 0) {
+        remoteStates.set(path, { kind: "none" });
+      } else {
+        remoteStates.set(path, { kind: "unknown", reason: "远端解析值缺少可验证内容" });
+      }
+    }
+    for (const file of pulled.files) {
+      candidates.add(file.path);
+      remoteStates.set(file.path, { kind: "put", hash: file.hash });
+    }
+    for (const blocked of pulled.blocked) {
+      candidates.add(blocked.path);
+      remoteStates.set(blocked.path, { kind: "unknown", reason: this.errorMessage(blocked.reason) });
+    }
+
+    for (const file of this.app.vault.getFiles()) candidates.add(normalizePath(file.path));
+    for (const path of Object.keys(this.data.files)) candidates.add(path);
+    for (const path of Object.keys(this.data.v1ProjectedHeads)) candidates.add(path);
+    for (const path of Object.keys(this.data.v1DirtyIntents)) candidates.add(path);
+    for (const event of this.data.v1VaultEvents) candidates.add(event.path);
+    for (const path of Object.keys(this.data.v1LocalConcurrentRecords)) candidates.add(path);
+    for (const path of Object.keys(this.data.v1PendingApply)) candidates.add(path);
+    for (const conflict of Object.values(this.data.conflicts)) if (!conflict.resolved) candidates.add(conflict.path);
+    for (const reconcile of this.data.v1PublishedReconciles) {
+      if (reconcile.registerKey.startsWith("vault:")) candidates.add(reconcile.registerKey.slice("vault:".length));
+    }
+
+    const conflictPaths = new Set(Object.values(this.data.conflicts)
+      .filter((conflict) => !conflict.resolved)
+      .map((conflict) => conflict.path));
+
+    const decisions: PathDecisionRecord[] = [];
+    for (const path of [...candidates].sort(compareUtf8)) {
+      const remote = remoteStates.get(path) ?? { kind: "none" as const };
+      const ignored = isVaultPathExcluded(path, this.app.vault.configDir, state.historicalConfigDirs)
+        || isIgnored(path, ignoredPatterns);
+      const abstract = this.app.vault.getAbstractFileByPath(path);
+      const file = abstract instanceof TFile ? abstract : undefined;
+      let localState: "absent" | "present" | "unknown" = abstract === null ? "absent" : file ? "present" : "unknown";
+      let localHash: string | undefined;
+      if (!ignored && file && (remote.kind === "put" || remote.kind === "delete")) {
+        const capture = await captureStableVaultFile(this.app.vault, path);
+        if (capture) localHash = capture.hash;
+        else localState = "unknown";
+      }
+
+      const dirtyIntent = this.data.v1DirtyIntents[path];
+      const vaultEvent = latestVaultEvent(this.data.v1VaultEvents, path);
+      const projected = this.data.files[path];
+      let localIntent: "none" | "put" | "delete" = dirtyIntent
+        ? "put"
+        : vaultEvent?.kind === "delete" ? "delete"
+          : vaultEvent?.kind === "upsert" ? "put" : "none";
+      if (localIntent === "none" && localState === "present") {
+        const matchesUntrackedRemote = !projected && remote.kind === "put" && localHash === remote.hash;
+        if ((!projected && !matchesUntrackedRemote) || (projected && localHash !== undefined && projected.hash !== localHash)) {
+          localIntent = "put";
+        }
+      } else if (localIntent === "none" && localState === "absent" && projected) {
+        localIntent = "delete";
+      }
+
+      if (!ignored && (localConcurrentRecordBlocksAutomaticWork(this.data.v1LocalConcurrentRecords[path]) || conflictPaths.has(path))) {
+        decisions.push({ path, decision: "conflict", reason: "本地并发记录或未解决 Vault 冲突阻止自动选择" });
+        continue;
+      }
+      if (!ignored && publishedReconcileBlocksAutomaticApply(this.data.v1PublishedReconciles, `vault:${path}`)) {
+        decisions.push({ path, decision: "unknown", reason: "已发布变更仍等待本地对账" });
+        continue;
+      }
+      decisions.push(derivePathDecision({ path, ignored, localState, localHash, localIntent, remote }));
+    }
+    return decisions;
+  }
+
+  async previewSyncV1(openDashboard = true): Promise<void> {
     const state = this.data.v1;
     if (!state) { new Notice("S3 Sync：尚未选择 v1 仓库。"); return; }
+    if (this.v1SyncRunning) { new Notice("S3 Sync：已有仓库操作正在运行。"); return; }
+    this.v1SyncRunning = true;
     this.updateOperationalStatus({ phase: "previewing", decisions: [], lastError: undefined });
     try {
       await this.assertV1RepositoryBinding(state);
       const pulled = await new V1RepositoryService(this.settings, state.prefix).listResolvedVaultPutsWithDiagnostics(state.repositoryId, state.descriptorHash);
-      const decisions: PathDecisionRecord[] = [];
-      const remotePaths = new Set<string>();
-      for (const remote of pulled.files) {
-        remotePaths.add(remote.path);
-        const existing = getTFile(this.app.vault, remote.path);
-        const local = existing ? await captureStableVaultFile(this.app.vault, remote.path) : undefined;
-        if (existing && !local) decisions.push({ path: remote.path, decision: "unknown", reason: "本地文件未稳定或无法读取" });
-        else if (!local) decisions.push({ path: remote.path, decision: "remote-put", reason: "本地缺失，仅计划安全创建" });
-        else if (local.hash === remote.hash) decisions.push({ path: remote.path, decision: "same", reason: "本地与远端字节相同" });
-        else if (this.data.v1DirtyIntents[remote.path] || latestVaultEvent(this.data.v1VaultEvents, remote.path)) decisions.push({ path: remote.path, decision: "conflict", reason: "本地已有未发布意图" });
-        else decisions.push({ path: remote.path, decision: "remote-put", reason: "需经过前像与 no-clobber 守卫" });
-      }
-      for (const blocked of pulled.blocked) decisions.push({ path: blocked.path, decision: "unknown", reason: this.errorMessage(blocked.reason) });
-      for (const path of Object.keys(this.data.files)) {
-        if (!remotePaths.has(path) && getTFile(this.app.vault, path)) decisions.push({ path, decision: "local-put", reason: "远端没有已解析值；不会推断远端删除" });
-      }
-      this.updateOperationalStatus({ phase: "idle", decisions: decisions.sort((left, right) => left.path.localeCompare(right.path)) });
-      new SyncDashboardModal(this).open();
+      const decisions = await this.buildV1PathDecisions(state, pulled);
+      this.updateOperationalStatus({ decisions });
+      if (pulled.blockedCommitKeys.length > 0) throw pulled.blockedCommitKeys[0].reason;
+      this.updateOperationalStatus({ phase: "idle" });
+      if (openDashboard) new SyncDashboardModal(this).open();
     } catch (error) {
       this.recordOperationalError(error);
+    } finally {
+      this.v1SyncRunning = false;
     }
     this.updateStatus();
   }
@@ -390,33 +529,75 @@ export default class S3SyncPlugin extends Plugin {
   async runFullAuditV1(): Promise<void> {
     const state = this.data.v1;
     if (!state) { new Notice("S3 Sync：尚未选择 v1 仓库。"); return; }
+    if (this.v1SyncRunning) { new Notice("S3 Sync：已有仓库操作正在运行。"); return; }
+    this.v1SyncRunning = true;
     this.updateOperationalStatus({ phase: "auditing", audit: { state: "running", completedObjects: 0, totalObjects: 0, missingClosure: [], resumable: true } });
     try {
       await this.assertV1RepositoryBinding(state);
-      const result = await new V1RepositoryService(this.settings, state.prefix).fullAudit(state.repositoryId, state.descriptorHash);
+      const result = await new V1RepositoryService(this.settings, state.prefix).fullAudit(
+        state.repositoryId,
+        state.descriptorHash,
+        (progress) => this.updateOperationalStatus({
+          phase: "auditing",
+          audit: { state: "running", ...progress, resumable: true },
+        }),
+      );
       const now = Date.now();
       this.updateOperationalStatus({
         phase: "idle",
         lastSuccessfulAudit: now,
-        audit: { state: "complete", completedObjects: result.verifiedObjects, totalObjects: result.verifiedObjects, missingClosure: [], resumable: false, completedAt: now },
+        audit: {
+          state: "complete",
+          completedObjects: result.verifiedObjects,
+          totalObjects: result.totalObjects,
+          missingClosure: [...result.missingClosure],
+          resumable: false,
+          completedAt: now,
+        },
+        lastError: undefined,
       });
       await this.saveSyncData();
       new Notice(`S3 Sync 完整校验通过：${result.verifiedObjects} 个对象，${result.commits} 个 Commit。`);
     } catch (error) {
-      this.updateOperationalStatus({ audit: { ...this.data.v1OperationalStatus.audit, state: "failed", resumable: true } });
+      const partial = remoteAuditFailureProgress(error);
+      this.updateOperationalStatus({
+        audit: {
+          ...this.data.v1OperationalStatus.audit,
+          ...(partial ?? {}),
+          state: "failed",
+          resumable: true,
+        },
+      });
       this.recordOperationalError(error);
+    } finally {
+      this.v1SyncRunning = false;
     }
     this.updateStatus();
   }
 
   exportRedactedDiagnostics(): string {
     const status = this.getOperationalStatus();
+    const knownPaths = new Set<string>([
+      ...Object.keys(this.data.files),
+      ...Object.keys(this.data.v1DirtyIntents),
+      ...Object.keys(this.data.v1ProjectedHeads),
+      ...Object.keys(this.data.v1PendingApply),
+      ...Object.keys(this.data.v1LocalConcurrentRecords),
+      ...this.data.v1VaultEvents.map((event) => event.path),
+      ...this.data.v1ApplyJournals.map((journal) => journal.path),
+      ...Object.values(this.data.conflicts).map((conflict) => conflict.path),
+      ...Object.values(this.data.v1RecoveryRecords).flatMap((record) => [record.logicalPath, record.contentRef]),
+      this.app.vault.configDir,
+      ...(this.data.v1?.historicalConfigDirs ?? []),
+      this.settings.prefix,
+      this.data.v1?.prefix ?? "",
+    ]);
     return JSON.stringify(buildRedactedDiagnosticBundle({
       generatedAt: Date.now(),
       repositoryId: this.data.v1?.repositoryId,
       normalizedPrefix: this.data.v1?.prefix,
       pathSalt: this.data.v1?.repositoryId ?? this.runtimeContractSessionId,
-      sensitiveValues: [this.settings.accessKeyId, this.settings.secretAccessKey],
+      sensitiveValues: [this.settings.accessKeyId, this.settings.secretAccessKey, ...knownPaths],
       status: status as unknown as Record<string, unknown>,
       events: [
         ...status.decisions.map((decision) => ({ at: Date.now(), category: decision.decision === "conflict" ? "conflict" as const : "local-path" as const, stage: decision.decision, message: decision.reason, path: decision.path })),
@@ -432,6 +613,7 @@ export default class S3SyncPlugin extends Plugin {
       const repositories = await service.discover();
       await service.probeWritableConnection(crypto.randomUUID());
       if (repositories.length === 1) {
+        if (this.data.v1ReattachRequired) throw new Error("检测到本地仓库状态丢失；只能执行非破坏性重新接入");
         const existing = this.data.v1;
         const binding = createPersistedRepositoryBinding(
           this.currentV1Locator(prefix),
@@ -483,6 +665,9 @@ export default class S3SyncPlugin extends Plugin {
 
   private async createV1Repository(): Promise<void> {
     try {
+      if (this.data.v1ReattachRequired || this.data.v1OperationalStatus.recoveryRequired) {
+        throw new Error("检测到需要恢复的仓库状态；不能创建新仓库覆盖现有因果记录");
+      }
       if (this.data.v1) throw new Error("已有仓库绑定；创建新仓库前必须先执行非破坏性重新接入");
       const result = await new V1RepositoryService(this.settings, this.getEffectivePrefix()).createRepository(
         crypto.randomUUID(),
@@ -512,6 +697,9 @@ export default class S3SyncPlugin extends Plugin {
 
   private async selectV1Repository(): Promise<void> {
     try {
+      if (!this.data.v1 && (this.data.v1ReattachRequired || this.data.v1OperationalStatus.recoveryRequired)) {
+        throw new Error("检测到需要恢复的仓库状态；请执行非破坏性重新接入");
+      }
       const prefix = this.getEffectivePrefix();
       const repositories = await new V1RepositoryService(this.settings, prefix).discover();
       if (repositories.length !== 1) throw new Error(`expected exactly one repository, found ${repositories.length}`);
@@ -554,15 +742,25 @@ export default class S3SyncPlugin extends Plugin {
     }
   }
 
-  private async publishActiveFileV1(): Promise<void> {
+  private async publishActiveFileV1(notify = true): Promise<V1OperationResult> {
+    if (notify && this.v1SyncRunning) {
+      const error = new Error("已有同步任务正在运行");
+      new Notice(`S3 Sync：${error.message}。`);
+      return { status: "failed", error };
+    }
+    if (notify) this.cancelV1Retry(true);
+    if (notify) this.v1SyncRunning = true;
     try {
+      if (!mayRunMutatingSync(this.getOperationalStatus())) throw new Error("repository recovery requires diagnostics-only mode");
       let state = this.data.v1;
       if (!state || state.prefix !== this.getEffectivePrefix()) {
         throw new Error("create or select a v1 repository for the current Prefix first");
       }
+      this.updateOperationalStatus({ phase: "verifying-repository", lastError: undefined });
       await this.assertV1RepositoryBinding(state);
       const file = this.app.workspace.getActiveFile();
       if (!file) throw new Error("no active file to publish");
+      if (!this.isV1ManagedVaultPath(file.path)) throw new Error("local-path is outside the managed Vault scope");
       const registerKey = `vault:${file.path}`;
       if (localConcurrentRecordBlocksAutomaticWork(this.data.v1LocalConcurrentRecords[file.path])) {
         throw new Error("LocalConcurrentRecord must be resolved before publishing this path");
@@ -570,8 +768,12 @@ export default class S3SyncPlugin extends Plugin {
       if (publishedReconcileBlocksAutomaticApply(this.data.v1PublishedReconciles, registerKey)) {
         throw new Error("published Mutation still requires local reconciliation");
       }
+      if (Object.values(this.data.conflicts).some((conflict) => !conflict.resolved && conflict.path === file.path)) {
+        throw new Error("Vault conflict must be resolved before publishing this path");
+      }
       const dirtyIntent = this.data.v1DirtyIntents[file.path];
       const vaultEvent = latestVaultEvent(this.data.v1VaultEvents, file.path);
+      this.updateOperationalStatus({ phase: "scanning" });
       const capture = await captureStableVaultFile(this.app.vault, file.path);
       if (!capture) throw new Error("active file changed during capture or is not a regular file");
       if (
@@ -584,7 +786,9 @@ export default class S3SyncPlugin extends Plugin {
         throw new Error("active editor generation has not reached stable disk bytes");
       }
       const service = new V1RepositoryService(this.settings, state.prefix);
+      this.updateOperationalStatus({ phase: "repulling" });
       const pulled = await service.resolvedVaultPutWithAnchors(state.repositoryId, state.descriptorHash, file.path);
+      this.updateOperationalStatus({ phase: "merging" });
       state = await this.persistObservedRemoteState(state, pulled.acceptedCommits, pulled.observations);
       const remote = pulled.value;
       const projectedHash = this.data.files[file.path]?.hash;
@@ -594,7 +798,9 @@ export default class S3SyncPlugin extends Plugin {
         throw new Error("local and remote content both changed; resolve the conflict before publishing");
       }
       const parents = dirtyIntent?.basisHeads ?? vaultEvent?.basisHeads ?? remote?.heads ?? [];
+      this.updateOperationalStatus({ phase: "freezing-outbox" });
       const reservation = reserveWriterCommit(state);
+      this.updateOperationalStatus({ phase: "publishing" });
       const published = await service.publishVaultPut({
         repositoryId: state.repositoryId,
         descriptorHash: state.descriptorHash,
@@ -608,6 +814,7 @@ export default class S3SyncPlugin extends Plugin {
         capture,
         writerFrontiers: state.writerFrontiers,
       });
+      this.updateOperationalStatus({ phase: "verifying-publication" });
       const commitHash = published.hash;
       this.data.v1 = {
         ...state,
@@ -628,35 +835,67 @@ export default class S3SyncPlugin extends Plugin {
       if (parents.length === 0) {
         this.data.v1VaultEvents = bindRootDeletePredecessor(this.data.v1VaultEvents, file.path, vaultEvent?.generation ?? 0, `${commitHash}:0:0`);
       }
+      this.updateOperationalStatus({ lastSuccessfulPublish: Date.now(), ...(notify ? { phase: "idle" as const } : {}) });
       await this.saveSyncData();
-      new Notice(`S3 Sync v1 published: ${file.path}`);
+      if (notify) new Notice(`S3 Sync v1 published: ${file.path}`);
+      return { status: "success" };
     } catch (error) {
-      new Notice(`S3 Sync v1 publish failed: ${this.errorMessage(error)}`);
+      if (notify) this.recordOperationalError(error, true);
       console.error(error);
+      return { status: "failed", error };
+    } finally {
+      if (notify) this.v1SyncRunning = false;
     }
   }
 
-  private async pullMissingFilesV1(): Promise<void> {
+  private async pullMissingFilesV1(notify = true): Promise<V1OperationResult> {
+    if (notify && this.v1SyncRunning) {
+      const error = new Error("已有同步任务正在运行");
+      new Notice(`S3 Sync：${error.message}。`);
+      return { status: "failed", error };
+    }
+    if (notify) this.cancelV1Retry(true);
+    if (notify) this.v1SyncRunning = true;
     try {
+      if (!mayRunMutatingSync(this.getOperationalStatus())) throw new Error("repository recovery requires diagnostics-only mode");
       let state = this.data.v1;
       if (!state || state.prefix !== this.getEffectivePrefix()) throw new Error("select a v1 repository for the current Prefix first");
+      this.updateOperationalStatus({ phase: "verifying-repository", lastError: undefined });
       await this.assertV1RepositoryBinding(state);
+      this.updateOperationalStatus({ phase: "pulling" });
       const pulled = await new V1RepositoryService(this.settings, state.prefix).listResolvedVaultPutsWithDiagnostics(state.repositoryId, state.descriptorHash);
+      this.updateOperationalStatus({ phase: "merging" });
       state = await this.persistObservedRemoteState(state, pulled.acceptedCommits, pulled.blockedCommitKeys.length === 0 ? pulled.observations : undefined);
+      const decisions = await this.buildV1PathDecisions(state, pulled);
+      this.updateOperationalStatus({ decisions });
       if (pulled.blockedCommitKeys.length > 0) throw pulled.blockedCommitKeys[0].reason;
       const files = pulled.files;
+      const decisionByPath = new Map(decisions.map((decision) => [decision.path, decision]));
+      const replaceDecision = (decision: PathDecisionRecord): void => {
+        decisionByPath.set(decision.path, decision);
+        const index = decisions.findIndex((candidate) => candidate.path === decision.path);
+        if (index >= 0) decisions[index] = decision;
+        else decisions.push(decision);
+      };
       let created = 0;
       let updated = 0;
       let skipped = 0;
       let conflicts = 0;
+      this.updateOperationalStatus({ phase: "applying" });
       for (const remote of files) {
         const registerKey = `vault:${remote.path}`;
+        const previewDecision = decisionByPath.get(remote.path)?.decision;
+        if (previewDecision === "ignored" || previewDecision === "unknown" || previewDecision === "tombstone") {
+          skipped += 1;
+          continue;
+        }
         if (!mayApplyRemoteWithEditorIntent(this.data.v1DirtyIntents[remote.path]) || latestVaultEvent(this.data.v1VaultEvents, remote.path)) {
           skipped += 1;
           continue;
         }
         if (localConcurrentRecordBlocksAutomaticWork(this.data.v1LocalConcurrentRecords[remote.path])
-          || publishedReconcileBlocksAutomaticApply(this.data.v1PublishedReconciles, registerKey)) {
+          || publishedReconcileBlocksAutomaticApply(this.data.v1PublishedReconciles, registerKey)
+          || Object.values(this.data.conflicts).some((conflict) => !conflict.resolved && conflict.path === remote.path)) {
           skipped += 1;
           continue;
         }
@@ -664,6 +903,7 @@ export default class S3SyncPlugin extends Plugin {
         const capture = existing ? await captureStableVaultFile(this.app.vault, remote.path) : undefined;
         const decision = decideResolvedRemotePut({ localExists: !!existing, projectedHash: this.data.files[remote.path]?.hash, currentHash: capture?.hash, remoteHash: remote.hash });
         if (decision === "conflict") {
+          replaceDecision({ path: remote.path, decision: "conflict", reason: "应用前复查发现本地与远端内容均已变化" });
           const conflict = this.recordV1Conflict(remote.path, this.data.files[remote.path]?.hash ?? null, capture?.hash ?? null, remote.hash, remote.heads);
           const copyPath = remoteConflictCopyPath(conflict, remote.hash);
           if (!this.app.vault.getAbstractFileByPath(copyPath)) {
@@ -690,7 +930,11 @@ export default class S3SyncPlugin extends Plugin {
         binary.set(remote.bytes);
         if (decision === "create") {
           await ensureParentFolder(this.app.vault, remote.path);
-          if (this.app.vault.getAbstractFileByPath(remote.path)) { skipped += 1; continue; }
+          if (this.app.vault.getAbstractFileByPath(remote.path)) {
+            replaceDecision({ path: remote.path, decision: "unknown", reason: "应用前目标路径被新的本地条目占用" });
+            skipped += 1;
+            continue;
+          }
           await this.withV1ApplyPath(remote.path, remote.hash, () => this.app.vault.createBinary(remote.path, binary.buffer));
           created += 1;
         } else {
@@ -701,12 +945,18 @@ export default class S3SyncPlugin extends Plugin {
         this.data.v1ProjectedHeads[remote.path] = [...remote.heads];
         delete this.data.v1PendingApply[remote.path];
       }
+      decisions.sort((left, right) => compareUtf8(left.path, right.path));
+      this.updateOperationalStatus({ decisions, lastSuccessfulPull: Date.now(), ...(notify ? { phase: "idle" as const } : {}) });
       await this.saveSyncData();
-      new Notice(`S3 Sync v1 pull: created ${created}, updated ${updated}, conflicts ${conflicts}, skipped ${skipped}`);
+      if (notify) new Notice(`S3 Sync v1 pull: created ${created}, updated ${updated}, conflicts ${conflicts}, skipped ${skipped}`);
       if (conflicts > 0) new ConflictModal(this).open();
+      return { status: "success" };
     } catch (error) {
-      new Notice(`S3 Sync v1 pull failed: ${this.errorMessage(error)}`);
+      if (notify) this.recordOperationalError(error, true);
       console.error(error);
+      return { status: "failed", error };
+    } finally {
+      if (notify) this.v1SyncRunning = false;
     }
   }
 
@@ -828,7 +1078,10 @@ export default class S3SyncPlugin extends Plugin {
   }
 
   private isV1ManagedVaultPath(path: string): boolean {
-    return !isVaultPathExcluded(path, this.app.vault.configDir, []);
+    const state = this.data.v1;
+    return !!state
+      && !isVaultPathExcluded(path, this.app.vault.configDir, state.historicalConfigDirs)
+      && !isIgnored(path, parseIgnorePatterns(this.settings.ignoredPatterns));
   }
 
   private recordEditorPutCandidate(path: string, hash: string): void {
@@ -855,6 +1108,10 @@ export default class S3SyncPlugin extends Plugin {
       window.clearTimeout(this.syncTimer);
       this.syncTimer = null;
     }
+    if (this.retryTimer !== null) {
+      window.clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
     this.queueCausalStatePersistence();
   }
 
@@ -867,13 +1124,14 @@ export default class S3SyncPlugin extends Plugin {
       state: "prepared",
     };
     this.data.v1ApplyJournals.push(journal);
+    this.v1ApplyOperations.set(path, journal.operationId);
     try {
       await this.savePluginData();
     } catch (error) {
       this.data.v1ApplyJournals = this.data.v1ApplyJournals.filter((entry) => entry.operationId !== journal.operationId);
+      if (this.v1ApplyOperations.get(path) === journal.operationId) this.v1ApplyOperations.delete(path);
       throw error;
     }
-    this.v1ApplyOperations.set(path, journal.operationId);
     let result: T;
     try {
       result = await operation();
@@ -1015,21 +1273,86 @@ export default class S3SyncPlugin extends Plugin {
     if (!this.statusEl) {
       return;
     }
-    const status = this.getOperationalStatus();
-    this.statusEl.setText(`S3 Sync：${status.phase} · ${repositoryHealthLabel(status)}${status.conflicts > 0 ? ` · 冲突 ${status.conflicts}` : ""}${status.outbox > 0 ? ` · Outbox ${status.outbox}` : ""}`);
+    this.statusEl.setText(operationalStatusBarText(this.getOperationalStatus()));
   }
 
   private updateOperationalStatus(patch: Partial<OperationalStatus>): void {
     this.data.v1OperationalStatus = { ...this.data.v1OperationalStatus, ...patch };
+    this.updateStatus();
   }
 
-  private recordOperationalError(error: unknown): void {
-    const candidate = error as { code?: string; status?: number };
+  private recordOperationalError(error: unknown, allowAutoRetry = false): void {
+    const category: SyncDiagnosticCategory = diagnosticCategory(error);
+    const requiresRecovery = category === "integrity" || category === "repository-identity";
     this.updateOperationalStatus({
-      phase: "idle",
-      lastError: { category: diagnosticCategory(candidate), message: this.errorMessage(error) },
+      phase: requiresRecovery ? "read-only" : "idle",
+      retryAt: undefined,
+      lastError: { category, message: this.errorMessage(error) },
+      recoveryRequired: this.data.v1OperationalStatus.recoveryRequired || requiresRecovery,
+      repositoryIdentityValid: this.data.v1OperationalStatus.repositoryIdentityValid && category !== "repository-identity",
     });
+    if (allowAutoRetry && this.settings.autoSync && (category === "network" || category === "rate-limit")) {
+      this.scheduleV1Retry();
+    } else {
+      if (this.retryTimer !== null) window.clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+      this.updateOperationalStatus({ retryAt: undefined, retryAttempt: 0 });
+    }
+    this.queueCausalStatePersistence();
     new Notice(`S3 Sync：${this.errorMessage(error)}`);
+  }
+
+  private scheduleV1Retry(): void {
+    if (this.retryTimer !== null) window.clearTimeout(this.retryTimer);
+    const attempt = this.data.v1OperationalStatus.retryAttempt + 1;
+    const delay = retryDelayMs(attempt - 1);
+    const retryAt = Date.now() + delay;
+    this.updateOperationalStatus({ phase: "waiting-retry", retryAttempt: attempt, retryAt });
+    this.retryTimer = window.setTimeout(() => {
+      this.retryTimer = null;
+      this.updateOperationalStatus({ retryAt: undefined });
+      void this.runV1SyncRound(true);
+    }, delay);
+  }
+
+  private deferV1Retry(): void {
+    if (!this.settings.autoSync) return;
+    if (this.retryTimer !== null) window.clearTimeout(this.retryTimer);
+    const delay = 1_000;
+    this.updateOperationalStatus({ retryAt: Date.now() + delay });
+    this.retryTimer = window.setTimeout(() => {
+      this.retryTimer = null;
+      this.updateOperationalStatus({ retryAt: undefined });
+      void this.runV1SyncRound(true);
+    }, delay);
+  }
+
+  private cancelV1Retry(resetState: boolean): void {
+    if (this.retryTimer !== null) {
+      window.clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    if (!resetState) return;
+    const phase = this.data.v1OperationalStatus.phase === "waiting-retry" ? "idle" : this.data.v1OperationalStatus.phase;
+    this.updateOperationalStatus({ phase, retryAt: undefined, retryAttempt: 0 });
+  }
+
+  private resumeV1RetrySchedule(): void {
+    const status = this.data.v1OperationalStatus;
+    const retryable = status.lastError?.category === "network" || status.lastError?.category === "rate-limit";
+    if (!this.settings.autoSync || !retryable || status.retryAt === undefined || !Number.isFinite(status.retryAt)
+      || !mayRunMutatingSync(this.getOperationalStatus())) {
+      if (status.retryAt !== undefined && !this.settings.autoSync) this.cancelV1Retry(true);
+      return;
+    }
+    if (this.retryTimer !== null) window.clearTimeout(this.retryTimer);
+    const delay = Math.max(0, Math.min(60_000, status.retryAt - Date.now()));
+    this.updateOperationalStatus({ phase: "waiting-retry" });
+    this.retryTimer = window.setTimeout(() => {
+      this.retryTimer = null;
+      this.updateOperationalStatus({ retryAt: undefined });
+      void this.runV1SyncRound(true);
+    }, delay);
   }
 
   private rebuildEngine(): void {
@@ -1069,6 +1392,15 @@ export default class S3SyncPlugin extends Plugin {
     };
 
     const defaultData = createDefaultData();
+    const persistedOperationalStatus = persisted?.syncData?.v1OperationalStatus;
+    const operationalStatus: OperationalStatus = {
+      ...defaultData.v1OperationalStatus,
+      ...persistedOperationalStatus,
+      audit: {
+        ...defaultData.v1OperationalStatus.audit,
+        ...persistedOperationalStatus?.audit,
+      },
+    };
     const files: S3SyncData["files"] = {};
     const persistedFiles = persisted?.syncData?.files ?? {};
     for (const [path, value] of Object.entries(persistedFiles)) {
@@ -1151,7 +1483,7 @@ export default class S3SyncPlugin extends Plugin {
       v1DurableOutbox: persisted?.syncData?.v1DurableOutbox ?? [],
       v1RecoveryRecords: persisted?.syncData?.v1RecoveryRecords ?? {},
       v1ReattachRequired: persisted?.syncData?.v1ReattachRequired ?? false,
-      v1OperationalStatus: persisted?.syncData?.v1OperationalStatus ?? defaultData.v1OperationalStatus,
+      v1OperationalStatus: operationalStatus,
       v1: persisted?.syncData?.v1 ?? selectedRepository,
     };
     try {
@@ -1191,6 +1523,18 @@ export default class S3SyncPlugin extends Plugin {
           lastError: { category: "local-path", message: this.errorMessage(error) },
         };
       }
+    }
+    if (this.data.v1ReattachRequired) {
+      this.data.v1OperationalStatus = {
+        ...this.data.v1OperationalStatus,
+        phase: "read-only",
+        repositoryIdentityValid: false,
+        recoveryRequired: true,
+        lastError: this.data.v1OperationalStatus.lastError ?? {
+          category: "repository-identity",
+          message: "本地仓库状态缺失或无法验证；需要非破坏性重新接入。",
+        },
+      };
     }
   }
 
@@ -1309,7 +1653,15 @@ export default class S3SyncPlugin extends Plugin {
     this.data.v1RecoveryRecords = clonePayload(payload.recoveryRecords, {});
     this.data.files = clonePayload(payload.files, {});
     this.data.conflicts = clonePayload(payload.conflicts, {});
-    this.data.v1OperationalStatus = clonePayload(payload.operationalStatus, this.data.v1OperationalStatus);
+    const restoredOperationalStatus = clonePayload<OperationalStatus>(payload.operationalStatus, this.data.v1OperationalStatus);
+    this.data.v1OperationalStatus = {
+      ...this.data.v1OperationalStatus,
+      ...restoredOperationalStatus,
+      audit: {
+        ...this.data.v1OperationalStatus.audit,
+        ...restoredOperationalStatus.audit,
+      },
+    };
     this.data.v1ReattachRequired = clonePayload(payload.reattachRequired, false);
   }
 
@@ -1409,4 +1761,16 @@ function durableOutboxReference(entry: DurableOutboxEntry) {
 
 function clonePayload<T>(value: StateJsonValue | undefined, fallback: T): T {
   return value === undefined ? fallback : JSON.parse(JSON.stringify(value)) as T;
+}
+
+const utf8Encoder = new TextEncoder();
+
+function compareUtf8(left: string, right: string): number {
+  const leftBytes = utf8Encoder.encode(left);
+  const rightBytes = utf8Encoder.encode(right);
+  const length = Math.min(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < length; index += 1) {
+    if (leftBytes[index] !== rightBytes[index]) return leftBytes[index] - rightBytes[index];
+  }
+  return leftBytes.length - rightBytes.length;
 }
