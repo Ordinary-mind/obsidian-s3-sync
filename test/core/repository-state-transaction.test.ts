@@ -6,7 +6,10 @@ import { writeRepositoryStateTransaction } from "../../core/repository-state-tra
 import {
   beginDurableOutboxPublicationTransaction,
   clearPublishedLocalConcurrentRecordTransaction,
+  completePublishedConfigOutboxTransaction,
+  completePublishedVaultOutboxTransaction,
   confirmDurableOutboxPublishedTransaction,
+  failDurableOutboxPublicationTransaction,
   freezeDurableOutboxStateTransaction,
   markDurableWriterForkTransaction,
   persistLocalConcurrentRecordTransaction,
@@ -19,6 +22,9 @@ import {
 import type { DurableOutboxEntry } from "../../core/durable-outbox";
 import { markLocalConcurrentSelectionPublished, selectLocalConcurrentRecordResolution } from "../../core/local-concurrent-resolution";
 import { createRecoveryRecord, requestRecoveryCleanup } from "../../core/recovery-record";
+import { createDefaultConfigProfile } from "../../core/config-profile";
+import { buildConfigTreeObject, type ProtocolConfigTree } from "../../core/config-tree";
+import { configBatchPlanHash, type ConfigBatchPlan } from "../../core/config-batch-apply";
 
 class Files implements DurableStateFileAdapter {
   readonly values = new Map<string, string>();
@@ -77,6 +83,92 @@ describe("atomic repository state transaction", () => {
     const observed = payload("00000000000000000001", 1) as Record<string, StateJsonValue>;
     observed.observedRegisters = { "vault:a.md": { key: "vault:b.md", heads: [], pending: [], invalid: [], disposition: "resolved", valueHash: null } };
     await expect(writeRepositoryStateTransaction(store, observed)).rejects.toThrow("observed register");
+  });
+
+  it("persists a bound config projection and rejects corrupt config causal state", async () => {
+    const files = new Files();
+    const store = new DurableStateStore<StateJsonValue>(files);
+    const tree: ProtocolConfigTree = {
+      protocol: 1,
+      repositoryId,
+      descriptorHash,
+      profile: { schema: 1, ...createDefaultConfigProfile("1.8.0"), minimumTargetAppVersion: "1.8.0" },
+      enabledCommunityPlugins: [],
+      items: [],
+    };
+    const treeHash = buildConfigTreeObject("", tree, { configDir: ".obsidian", historicalConfigDirs: [] }, new Map()).hash;
+    const head = `${"b".repeat(64)}:0:0`;
+    const valid = payload("00000000000000000001", 1) as Record<string, StateJsonValue>;
+    valid.configSync = {
+      status: "ready",
+      projectedHeads: [head],
+      projectedTreeHash: treeHash,
+      projectedTree: tree as unknown as StateJsonValue,
+      generation: 1,
+      reloadRequired: false,
+    };
+    await writeRepositoryStateTransaction(store, valid);
+    await expect(new DurableStateStore<StateJsonValue>(files).load()).resolves.toMatchObject({
+      payload: { configSync: { projectedHeads: [head], projectedTreeHash: treeHash } },
+    });
+
+    const corrupt = structuredClone(valid);
+    corrupt.configSync = {
+      ...(corrupt.configSync as Record<string, StateJsonValue>),
+      dirtyIntent: { generation: 2, basisHeads: ["not-a-version"], projectedTreeHash: treeHash },
+    };
+    await expect(writeRepositoryStateTransaction(store, corrupt)).rejects.toThrow("config dirty intent");
+    await expect(store.load()).resolves.toMatchObject({ generation: 1 });
+  });
+
+  it("atomically retains a config batch Journal with its bound target Tree", async () => {
+    const files = new Files();
+    const store = new DurableStateStore<StateJsonValue>(files);
+    const tree: ProtocolConfigTree = {
+      protocol: 1,
+      repositoryId,
+      descriptorHash,
+      profile: { schema: 1, ...createDefaultConfigProfile("1.8.0"), minimumTargetAppVersion: "1.8.0" },
+      enabledCommunityPlugins: [],
+      items: [],
+    };
+    const treeHash = buildConfigTreeObject("", tree, { configDir: ".obsidian", historicalConfigDirs: [] }, new Map()).hash;
+    const plan: ConfigBatchPlan = {
+      id: "batch-1",
+      repositoryFingerprint: repositoryFingerprint(locator, repositoryId, descriptorHash),
+      targetHeads: [`${"b".repeat(64)}:0:0`],
+      projectedHeads: [],
+      projectedTreeHash: null,
+      targetTreeHash: treeHash,
+      operations: [],
+      diff: [],
+      newPluginIds: [],
+    };
+    const state = payload("00000000000000000001", 1) as Record<string, StateJsonValue>;
+    state.configSync = {
+      status: "recovery-required",
+      projectedHeads: [],
+      projectedTreeHash: null,
+      generation: 0,
+      reloadRequired: false,
+      batchJournal: {
+        plan,
+        planHash: configBatchPlanHash(plan),
+        state: "applying",
+        nextOperation: 0,
+        snapshotRefs: {},
+        displacedAfterRefs: [],
+      } as unknown as StateJsonValue,
+      batchTargetTree: tree as unknown as StateJsonValue,
+    };
+    await writeRepositoryStateTransaction(store, state);
+    await expect(new DurableStateStore<StateJsonValue>(files).load()).resolves.toMatchObject({
+      payload: { configSync: { batchJournal: { state: "applying" }, batchTargetTree: { repositoryId } } },
+    });
+
+    const incomplete = structuredClone(state);
+    delete (incomplete.configSync as Record<string, StateJsonValue>).batchTargetTree;
+    await expect(writeRepositoryStateTransaction(store, incomplete)).rejects.toThrow("recovery state is incomplete");
   });
 
   it("freezes the writer cursor and Outbox atomically, then confirms without clearing dirty state", async () => {
@@ -325,6 +417,200 @@ describe("atomic repository state transaction", () => {
     await auditCrashBoundary(files, (store) => rotateDrainedDurableWriterTransaction(store, "123e4567-e89b-42d3-a456-426614174002"));
     const candidate = createRepositoryLocator({ endpoint: "https://route-two.example.com", region: "next", bucket: "vault", forcePathStyle: false, prefix: "team" });
     await auditCrashBoundary(files, (store) => rebindVerifiedRepositoryRouteStateTransaction(store, candidate));
+  });
+
+  it("freezes, retries, confirms, and accounts a Config publication without a cursor reuse window", async () => {
+    const files = new Files();
+    await writeRepositoryStateTransaction(new DurableStateStore<StateJsonValue>(files), payload("00000000000000000001", 1));
+    const tree: ProtocolConfigTree = {
+      protocol: 1,
+      repositoryId,
+      descriptorHash,
+      profile: { schema: 1, ...createDefaultConfigProfile("1.8.0"), minimumTargetAppVersion: "1.8.0" },
+      enabledCommunityPlugins: [],
+      items: [],
+    };
+    const treeHash = buildConfigTreeObject("", tree, { configDir: ".obsidian", historicalConfigDirs: [] }, new Map()).hash;
+    const frozen = outbox("e".repeat(64), "00000000000000000001", null, {
+      registerKey: "config:portable",
+      kind: "config-snapshot",
+      valueHash: treeHash,
+      stagedContentRef: undefined,
+    });
+    const configSync = {
+      status: "local-changes",
+      projectedHeads: [],
+      projectedTreeHash: null,
+      generation: 1,
+      reloadRequired: false,
+      publication: { outboxId: frozen.id, treeHash, tree, projectLocal: true },
+    } as unknown as StateJsonValue;
+
+    await auditCrashBoundary(files, (store) => freezeDurableOutboxStateTransaction(store, frozen, { configSync }));
+    const queued = (await new DurableStateStore<StateJsonValue>(files).load())!;
+    expect(queued.payload).toMatchObject({
+      nextSequence: "00000000000000000002",
+      previousCommitHash: frozen.commitHash,
+      durableOutbox: [{ state: "queued" }],
+      configSync: { publication: { outboxId: frozen.id, projectLocal: true } },
+    });
+
+    await auditCrashBoundary(files, (store) => beginDurableOutboxPublicationTransaction(store, frozen.id));
+    await auditCrashBoundary(files, (store) => failDurableOutboxPublicationTransaction(store, frozen.id, "retryable-error"));
+    await auditCrashBoundary(files, (store) => beginDurableOutboxPublicationTransaction(store, frozen.id));
+    const staleQueued = queued.payload;
+    await expect(writeRepositoryStateTransaction(new DurableStateStore<StateJsonValue>(files), staleQueued))
+      .rejects.toThrow("Outbox state regressed");
+    await auditCrashBoundary(files, (store) => confirmDurableOutboxPublishedTransaction(store, frozen.id, frozen.commitHash, verifiedPatch(frozen)));
+    const confirmed = (await new DurableStateStore<StateJsonValue>(files).load())!;
+    await auditCrashBoundary(files, (store) => completePublishedConfigOutboxTransaction(store, { outboxId: frozen.id, localTreeHash: treeHash }));
+    await expect(new DurableStateStore<StateJsonValue>(files).load()).resolves.toMatchObject({
+      payload: {
+        nextSequence: "00000000000000000002",
+        durableOutbox: [{ state: "published" }],
+        publishedReconciles: [{ outboxId: frozen.id, state: "adopted" }],
+        configSync: {
+          status: "ready",
+          projectedHeads: [`${frozen.commitHash}:0:0`],
+          projectedTreeHash: treeHash,
+          generation: 2,
+        },
+      },
+    });
+    await expect(writeRepositoryStateTransaction(new DurableStateStore<StateJsonValue>(files), confirmed.payload))
+      .rejects.toThrow("restored a completed config publication");
+  });
+
+  it("advances the Config projection but keeps a new dirty generation when local bytes change after freezing", async () => {
+    const store = new DurableStateStore<StateJsonValue>(new Files());
+    await writeRepositoryStateTransaction(store, payload("00000000000000000001", 1));
+    const tree: ProtocolConfigTree = {
+      protocol: 1,
+      repositoryId,
+      descriptorHash,
+      profile: { schema: 1, ...createDefaultConfigProfile("1.8.0"), minimumTargetAppVersion: "1.8.0" },
+      enabledCommunityPlugins: [],
+      items: [],
+    };
+    const treeHash = buildConfigTreeObject("", tree, { configDir: ".obsidian", historicalConfigDirs: [] }, new Map()).hash;
+    const frozen = outbox("f".repeat(64), "00000000000000000001", null, {
+      registerKey: "config:portable",
+      kind: "config-snapshot",
+      valueHash: treeHash,
+      stagedContentRef: undefined,
+    });
+    await freezeDurableOutboxStateTransaction(store, frozen, {
+      configSync: {
+        status: "local-changes",
+        projectedHeads: [],
+        projectedTreeHash: null,
+        generation: 1,
+        reloadRequired: false,
+        publication: { outboxId: frozen.id, treeHash, tree, projectLocal: true },
+      } as unknown as StateJsonValue,
+    });
+    await beginDurableOutboxPublicationTransaction(store, frozen.id);
+    await confirmDurableOutboxPublishedTransaction(store, frozen.id, frozen.commitHash, verifiedPatch(frozen));
+    const changed = await completePublishedConfigOutboxTransaction(store, { outboxId: frozen.id, localTreeHash: "9".repeat(64) });
+    expect(changed.payload).toMatchObject({
+      publishedReconciles: [{ state: "next-generation" }],
+      configSync: {
+        status: "local-changes",
+        projectedHeads: [`${frozen.commitHash}:0:0`],
+        projectedTreeHash: treeHash,
+        dirtyIntent: {
+          generation: 2,
+          basisHeads: [`${frozen.commitHash}:0:0`],
+          projectedTreeHash: treeHash,
+        },
+      },
+    });
+  });
+
+  it("atomically settles a published Vault Outbox with rebased later local intent", async () => {
+    const store = new DurableStateStore<StateJsonValue>(new Files());
+    await writeRepositoryStateTransaction(store, payload("00000000000000000001", 1));
+    const frozen = outbox("7".repeat(64), "00000000000000000001", null, {
+      capturedDirtyGeneration: 1,
+      capturedEventGeneration: 2,
+    });
+    await freezeDurableOutboxStateTransaction(store, frozen);
+    await beginDurableOutboxPublicationTransaction(store, frozen.id);
+    const confirmed = await confirmDurableOutboxPublishedTransaction(store, frozen.id, frozen.commitHash, verifiedPatch(frozen));
+    const nextDirty = {
+      path: "a.md",
+      generation: 3,
+      editorGeneration: 3,
+      expectedContentHash: "d".repeat(64),
+      awaitingLocalWrite: true,
+      basisHeads: ["remote-later"],
+      projectedValueHash: "a".repeat(64),
+      localCandidates: [],
+      editorContents: [],
+    };
+    await writeRepositoryStateTransaction(store, {
+      dirtyIntents: { "a.md": nextDirty },
+      vaultEvents: [
+        { id: "later", kind: "upsert", path: "a.md", generation: 3, basisHeads: ["remote-later"] },
+        { id: "other", kind: "delete", path: "b.md", generation: 1, basisHeads: ["other-head"] },
+      ],
+      vaultGenerations: { "a.md": 3, "b.md": 1 },
+    });
+    const completed = await completePublishedVaultOutboxTransaction(store, {
+      outboxId: frozen.id,
+      registerKey: "vault:a.md",
+      projectionKey: "a.md",
+      localValueHash: "c".repeat(64),
+      syntheticEventId: "synthetic",
+      dirtyIntent: null,
+      vaultEvents: [],
+      vaultGeneration: 2,
+    });
+    expect(completed.payload).toMatchObject({
+      dirtyIntents: { "a.md": { generation: 3, localPredecessorVersion: `${frozen.commitHash}:0:0` } },
+      projections: { "a.md": { projectedHeads: [`${frozen.commitHash}:0:0`], projectedValueHash: "c".repeat(64) } },
+      publishedReconciles: [{ state: "next-generation" }],
+      vaultEvents: [
+        { id: "later", basisHeads: [], localPredecessorVersion: `${frozen.commitHash}:0:0` },
+        { id: "other", path: "b.md", basisHeads: ["other-head"] },
+      ],
+      vaultGenerations: { "a.md": 3, "b.md": 1 },
+    });
+    await expect(writeRepositoryStateTransaction(store, confirmed.payload))
+      .rejects.toThrow("PublishedReconcile state regressed");
+  });
+
+  it("creates a post-publication event with the exact frozen predecessor when local bytes changed", async () => {
+    const store = new DurableStateStore<StateJsonValue>(new Files());
+    await writeRepositoryStateTransaction(store, payload("00000000000000000001", 1));
+    const frozen = outbox("8".repeat(64), "00000000000000000001", null, {
+      capturedDirtyGeneration: 1,
+      capturedEventGeneration: 2,
+    });
+    await freezeDurableOutboxStateTransaction(store, frozen);
+    await beginDurableOutboxPublicationTransaction(store, frozen.id);
+    await confirmDurableOutboxPublishedTransaction(store, frozen.id, frozen.commitHash, verifiedPatch(frozen));
+    const completed = await completePublishedVaultOutboxTransaction(store, {
+      outboxId: frozen.id,
+      registerKey: "vault:a.md",
+      projectionKey: "a.md",
+      localValueHash: "d".repeat(64),
+      syntheticEventId: "post-publication",
+      dirtyIntent: null,
+      vaultEvents: [],
+      vaultGeneration: 2,
+    });
+    expect(completed.payload).toMatchObject({
+      publishedReconciles: [{ state: "next-generation" }],
+      dirtyIntents: {},
+      vaultEvents: [{
+        id: "post-publication",
+        generation: 3,
+        basisHeads: [],
+        localPredecessorVersion: `${frozen.commitHash}:0:0`,
+      }],
+      vaultGenerations: { "a.md": 3 },
+    });
   });
 });
 

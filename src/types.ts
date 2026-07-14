@@ -9,6 +9,7 @@ import type { PersistedLocalConcurrentRecord } from "../core/local-concurrent-re
 import type { DurableOutboxEntry, DurablePublishedReconcile } from "../core/durable-outbox";
 import type { RecoveryRecord } from "../core/recovery-record";
 import type { OperationalStatus } from "../core/operational-status";
+import type { PersistedConfigSyncState } from "./config-center-types";
 
 export interface S3SyncSettings {
   endpoint: string;
@@ -69,6 +70,7 @@ export interface S3SyncData {
   v1RecoveryRecords: Record<string, RecoveryRecord>;
   v1ReattachRequired: boolean;
   v1OperationalStatus: OperationalStatus;
+  v1ConfigSync: PersistedConfigSyncState;
   v1?: {
     prefix: string;
     locator: RepositoryLocator;

@@ -1,6 +1,7 @@
 import type { S3SyncData, S3SyncSettings } from "./types";
 import { randomId } from "./utils";
 import { createDefaultConfigProfile } from "../core/config-profile";
+import { createDefaultConfigSyncState } from "./config-center-types";
 
 export const DEFAULT_SETTINGS: S3SyncSettings = {
   endpoint: "",
@@ -62,5 +63,6 @@ export function createDefaultData(): S3SyncData {
       recoveryRequired: false,
       repositoryIdentityValid: true,
     },
+    v1ConfigSync: createDefaultConfigSyncState(),
   };
 }

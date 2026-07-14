@@ -306,3 +306,349 @@ button.s3-sync-action-button {
     flex: 1 1 140px;
   }
 }
+
+.s3-sync-config-modal {
+  width: min(980px, calc(100vw - 28px));
+  max-width: 980px;
+}
+
+.s3-sync-config-modal .modal-content {
+  padding-top: 0;
+}
+
+.s3-sync-config-tabs {
+  display: flex;
+  gap: 2px;
+  min-height: 38px;
+  margin: 0 0 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.s3-sync-config-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 120px;
+  padding: 7px 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.s3-sync-config-tab:hover,
+.s3-sync-config-tab.is-active {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.s3-sync-config-tab.is-active {
+  border-bottom-color: var(--interactive-accent);
+  font-weight: var(--font-semibold);
+}
+
+.s3-sync-config-status {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px;
+  align-items: start;
+  padding: 10px 12px;
+  border-left: 3px solid var(--text-muted);
+  background: var(--background-secondary);
+}
+
+.s3-sync-config-status-ready {
+  border-left-color: var(--color-green);
+}
+
+.s3-sync-config-status-conflict,
+.s3-sync-config-status-pending,
+.s3-sync-config-status-local-changes,
+.s3-sync-config-status-incompatible {
+  border-left-color: var(--color-orange);
+}
+
+.s3-sync-config-status-apply-failed,
+.s3-sync-config-status-recovery-required,
+.s3-sync-config-status-load-failed {
+  border-left-color: var(--text-error);
+}
+
+.s3-sync-config-reload {
+  grid-column: 1 / -1;
+  color: var(--color-orange);
+}
+
+.s3-sync-config-section {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.s3-sync-config-section:last-child {
+  border-bottom: 0;
+}
+
+.s3-sync-config-section h3,
+.s3-sync-config-section h4 {
+  margin: 0 0 10px;
+}
+
+.s3-sync-config-warning {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--color-orange);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+}
+
+.s3-sync-plugin-scope-header,
+.s3-sync-plugin-scope-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(92px, 110px));
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.s3-sync-plugin-scope-header {
+  min-height: 30px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.s3-sync-plugin-identity {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.s3-sync-plugin-identity code,
+.s3-sync-plugin-identity span {
+  overflow-wrap: anywhere;
+}
+
+.s3-sync-plugin-identity span {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.s3-sync-plugin-scope-toggle .setting-item {
+  padding: 0;
+  border: 0;
+}
+
+.s3-sync-plugin-scope-toggle .setting-item-info {
+  display: none;
+}
+
+.s3-sync-plugin-scope-toggle .setting-item-control {
+  justify-content: center;
+}
+
+.s3-sync-profile-transition {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 14px;
+}
+
+.s3-sync-config-actions .setting-item-control {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.s3-sync-config-tree-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(320px, 1.2fr);
+  gap: 20px;
+}
+
+.s3-sync-config-tree-column {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+
+.s3-sync-config-tree-column > code,
+.s3-sync-config-head code,
+.s3-sync-config-merge-result code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.s3-sync-config-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 4px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+}
+
+.s3-sync-config-head.is-selected {
+  border-color: var(--interactive-accent);
+}
+
+.s3-sync-config-head button {
+  justify-self: start;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-accent);
+  text-align: left;
+  white-space: normal;
+}
+
+.s3-sync-config-head code,
+.s3-sync-config-head span {
+  grid-column: 1 / -1;
+}
+
+.s3-sync-ok {
+  color: var(--color-green);
+}
+
+.s3-sync-plugin-change {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) repeat(3, minmax(110px, 1fr));
+  gap: 5px 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.s3-sync-config-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.s3-sync-config-diff-row {
+  display: grid;
+  grid-template-columns: 92px minmax(180px, 1fr) minmax(140px, max-content);
+  align-items: start;
+  gap: 8px 12px;
+  min-height: 38px;
+  padding: 7px 9px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+}
+
+.s3-sync-config-diff-row code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.s3-sync-config-diff-kind {
+  font-weight: var(--font-semibold);
+}
+
+.s3-sync-config-diff-delete .s3-sync-config-diff-kind {
+  color: var(--text-error);
+}
+
+.s3-sync-config-diff-stop-managing .s3-sync-config-diff-kind {
+  color: var(--color-orange);
+}
+
+.s3-sync-config-diff-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.s3-sync-config-diff-flags span {
+  padding: 1px 5px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.s3-sync-config-recovery {
+  margin-top: 9px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.s3-sync-config-path-list {
+  max-height: 180px;
+  margin: 7px 0 0;
+  overflow: auto;
+}
+
+.s3-sync-config-path-list code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.s3-sync-config-merge-rows {
+  max-height: min(52vh, 560px);
+  overflow: auto;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.s3-sync-config-merge-rows .setting-item-name,
+.s3-sync-config-merge-rows .setting-item-description {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.s3-sync-config-merge-result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+@media (max-width: 720px) {
+  .s3-sync-config-modal {
+    width: calc(100vw - 16px);
+  }
+
+  .s3-sync-config-tabs {
+    overflow-x: auto;
+  }
+
+  .s3-sync-config-tab {
+    min-width: 112px;
+  }
+
+  .s3-sync-config-status,
+  .s3-sync-config-tree-grid,
+  .s3-sync-plugin-change,
+  .s3-sync-config-diff-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .s3-sync-plugin-scope-header {
+    display: none;
+  }
+
+  .s3-sync-plugin-scope-row {
+    grid-template-columns: minmax(140px, 1fr) repeat(3, 54px);
+  }
+
+  .s3-sync-config-diff-flags {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 480px) {
+  .s3-sync-plugin-scope-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .s3-sync-plugin-identity {
+    grid-column: 1 / -1;
+  }
+}

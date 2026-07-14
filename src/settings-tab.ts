@@ -118,6 +118,24 @@ export class S3SyncSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
+    new Setting(containerEl)
+      .setName("配置同步")
+      .setDesc("ConfigTree 只自动下载和验证；应用、插件代码和 plugin data 始终需要显式确认。")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.configSyncEnabled)
+        .onChange(async (value) => {
+          await this.plugin.setConfigSyncEnabled(value);
+          this.display();
+        }));
+
+    new Setting(containerEl)
+      .setName("配置中心")
+      .setDesc(`当前状态：${configStatusLabel(this.plugin.getConfigSyncState().status)}`)
+      .addButton((button) => button
+        .setButtonText("打开配置中心")
+        .setIcon("sliders-horizontal")
+        .onClick(() => this.plugin.openConfigCenter()));
+
     const advancedSetting = new Setting(containerEl)
       .setName("高级设置")
       .setDesc(`当前实际 Prefix：${this.plugin.getEffectivePrefix()}`)
@@ -190,4 +208,11 @@ export class S3SyncSettingTab extends PluginSettingTab {
       });
 
   }
+}
+
+function configStatusLabel(status: ReturnType<S3SyncPlugin["getConfigSyncState"]>["status"]): string {
+  return {
+    disabled: "已关闭", unbound: "未绑定仓库", ready: "可预览", "local-changes": "本地变化", pending: "等待配置依赖",
+    conflict: "ConfigTree 冲突", incompatible: "不兼容", "apply-failed": "应用失败", "recovery-required": "需要恢复", "load-failed": "读取失败",
+  }[status];
 }

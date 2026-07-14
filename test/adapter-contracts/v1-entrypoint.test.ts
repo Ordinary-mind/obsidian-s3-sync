@@ -9,4 +9,12 @@ describe("v1 plugin entrypoint contract", () => {
     expect(source.match(/^\s*this\.rebuildEngine\(\);$/gm) ?? []).toHaveLength(0);
     expect(source).toContain("V1RepositoryService");
   });
+
+  it("routes plugin publications through the durable Outbox", () => {
+    const source = readFileSync(new URL("../../src/main.ts", import.meta.url), "utf8");
+    expect(source).not.toContain(".publishVaultPut(");
+    expect(source).not.toContain(".publishConfigSnapshot(");
+    expect(source).toContain("freezeDurableOutboxStateTransaction(");
+    expect(source).toContain("service.replayDurableOutbox(");
+  });
 });

@@ -28,6 +28,8 @@ export interface DurableOutboxMutation {
   parents: string[];
   valueHash: string | null;
   stagedContentRef?: string;
+  capturedDirtyGeneration?: number;
+  capturedEventGeneration?: number;
 }
 
 export interface DurableOutboxEntry {
@@ -267,6 +269,11 @@ function copyMutation(mutation: DurableOutboxMutation): DurableOutboxMutation {
   }
   if (mutation.kind === "delete" && mutation.valueHash !== null) throw new Error("Outbox delete Mutation cannot have a value hash");
   if (mutation.kind !== "delete" && mutation.valueHash === null) throw new Error("Outbox put Mutation needs a value hash");
+  for (const generation of [mutation.capturedDirtyGeneration, mutation.capturedEventGeneration]) {
+    if (generation !== undefined && (!Number.isSafeInteger(generation) || generation < 0)) {
+      throw new Error("Outbox Mutation capture generation is invalid");
+    }
+  }
   return { ...mutation, parents: [...mutation.parents] };
 }
 

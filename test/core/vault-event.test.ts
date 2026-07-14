@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bindRootDeletePredecessor, clearVaultEventsThroughGeneration, latestVaultEvent, recordVaultEvent, recordVaultRename } from "../../core/vault-event";
+import { bindRootDeletePredecessor, bindVaultEventsAfterPublication, clearVaultEventsThroughGeneration, latestVaultEvent, mergeVaultEventsAfterPublication, recordVaultEvent, recordVaultRename } from "../../core/vault-event";
 import { decideResolvedRemotePut } from "../../core/pull-decision";
 
 describe("v1 Vault causal events", () => {
@@ -50,5 +50,38 @@ describe("v1 Vault causal events", () => {
     const deleted = recordVaultEvent(put, { id: "delete", kind: "delete", path: "new.md", projectedHeads: ["remote-later"] });
     const bound = bindRootDeletePredecessor(deleted, "new.md", 1, "commit:0:0");
     expect(latestVaultEvent(bound, "new.md")).toMatchObject({ basisHeads: [], localPredecessorVersion: "commit:0:0" });
+  });
+
+  it("binds every event after a frozen publication to the exact local predecessor", () => {
+    const first = recordVaultEvent([], { id: "captured", kind: "upsert", path: "a.md", projectedHeads: ["old"] });
+    const later = recordVaultEvent(first, { id: "later", kind: "upsert", path: "a.md", projectedHeads: ["remote"] });
+    const bound = bindVaultEventsAfterPublication(later, "a.md", 1, "published:0:0");
+    expect(bound[0]).toMatchObject({ basisHeads: ["old"] });
+    expect(bound[0].localPredecessorVersion).toBeUndefined();
+    expect(bound[1]).toMatchObject({ basisHeads: [], localPredecessorVersion: "published:0:0" });
+  });
+
+  it("merges events persisted during publication without restoring captured generations", () => {
+    const captured = recordVaultEvent([], { id: "captured", kind: "upsert", path: "a.md", projectedHeads: ["old"] });
+    const unrelated = recordVaultEvent(captured, { id: "other", kind: "delete", path: "b.md", projectedHeads: ["other-old"] });
+    const concurrent = recordVaultEvent(unrelated, {
+      id: "concurrent",
+      kind: "delete",
+      path: "a.md",
+      projectedHeads: ["remote-later"],
+      previousGeneration: 1,
+    });
+    const merged = mergeVaultEventsAfterPublication(
+      concurrent,
+      unrelated,
+      "a.md",
+      1,
+      "published:0:0",
+    );
+    expect(merged.map((event) => event.id)).toEqual(["other", "concurrent"]);
+    expect(latestVaultEvent(merged, "a.md")).toMatchObject({
+      basisHeads: [],
+      localPredecessorVersion: "published:0:0",
+    });
   });
 });

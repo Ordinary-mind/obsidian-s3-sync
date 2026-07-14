@@ -121,6 +121,13 @@ export class SyncDashboardModal extends Modal {
         tooltip: "查看并处理 Vault 冲突",
         disabled: busy,
         onClick: () => this.plugin.openConflictModal(),
+      }))
+      .addButton((button) => this.actionButton(button, {
+        label: "配置中心",
+        icon: "sliders-horizontal",
+        tooltip: "查看 ConfigTree、逐文件差异和信任确认",
+        disabled: busy,
+        onClick: () => this.plugin.openConfigCenter(),
       }));
 
     const secondary = new Setting(section).setClass("s3-sync-action-row");

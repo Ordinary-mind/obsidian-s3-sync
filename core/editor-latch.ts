@@ -13,6 +13,7 @@ export interface EditorDirtyIntent extends EditorLatch {
   path: string;
   editorGeneration: number;
   basisHeads: string[];
+  localPredecessorVersion?: string;
   projectedValueHash: string | undefined;
   localCandidates: EditorLocalCandidate[];
   editorContents: Array<{ generation: number; hash: string }>;

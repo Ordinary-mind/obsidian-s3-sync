@@ -65,6 +65,7 @@ export interface ConfigBatchGuard {
 
 export interface ConfigBatchFileAdapter extends LocalFileAdapter {
   copyToRecoveryNoClobber(path: string, recoveryRef: string): Promise<boolean>;
+  inspectNodeNoFollow(path: string): Promise<"absent" | "file" | "folder" | "blocked-by-file" | "symlink" | "other" | "unknown">;
 }
 
 export interface ConfigBatchStateStore {
@@ -132,13 +133,14 @@ export class SafeConfigBatchApplicator {
     }
     for (const operation of plan.operations) {
       const observation = await this.files.observe(operation.path);
-      if (observation.kind === "unknown" || !matchesExpected(observation, operation.expected)) {
+      if (!(await this.matchesPlanBeforeImage(plan, operation, observation))) {
         await this.state.markConfigDirtyIntent(plan.projectedHeads, plan.projectedTreeHash);
         return { status: "local-change" };
       }
       if (operation.target.kind === "put") await this.options.verifyStaged(operation.target);
     }
-    if (localApplyMode(this.files.capabilities) === "conservative") return { status: "conservative-only" };
+    if (localApplyMode(this.files.capabilities) === "conservative"
+      && !canPerformGuardedConfigBatch(this.files.capabilities)) return { status: "conservative-only" };
 
     let journal: ConfigBatchJournal = {
       plan: { ...copyPlan(plan), operations: orderConfigOperations(plan.operations) },
@@ -209,10 +211,16 @@ export class SafeConfigBatchApplicator {
 
   private async applyOperation(plan: ConfigBatchPlan, operation: ConfigBatchOperation): Promise<void> {
     if (operation.target.kind === "stop-managing") return;
-    const active = await this.files.observe(operation.path);
+    let active = await this.files.observe(operation.path);
     const beforeRef = this.options.displacedBeforeRef(plan, operation.path);
     const displaced = await this.files.observeRecovery(beforeRef);
     if (active.kind !== "unknown" && matchesTarget(active, operation.target)) return;
+    if (operation.expected.kind === "absent" && operation.target.kind === "put" && active.kind === "unknown"
+      && await this.files.inspectNodeNoFollow(operation.path) === "folder") {
+      const removed = await this.files.removeEmptyDirectoryNoFollow(operation.path);
+      if (removed !== "removed" && removed !== "absent") throw new Error("config target directory is not empty");
+      active = await this.files.observe(operation.path);
+    }
     if (operation.expected.kind === "present") {
       if (active.kind === "present" && matchesExpected(active, operation.expected)) {
         await this.files.moveToRecovery(operation.path, beforeRef);
@@ -236,12 +244,19 @@ export class SafeConfigBatchApplicator {
     const operations = rolling.plan.operations.slice(0, Math.min(rolling.nextOperation + 1, rolling.plan.operations.length)).reverse();
     for (const operation of operations) {
       if (operation.target.kind === "stop-managing") continue;
-      const active = await this.files.observe(operation.path);
+      let active = await this.files.observe(operation.path);
       const beforeRef = this.options.displacedBeforeRef(rolling.plan, operation.path);
       const snapshotRef = rolling.snapshotRefs[operation.path];
       const before = await this.files.observeRecovery(beforeRef);
       const snapshot = typeof snapshotRef === "string" ? await this.files.observeRecovery(snapshotRef) : { kind: "absent" as const };
       const expectedRecovery = before.kind === "present" ? before : snapshot;
+
+      if (active.kind === "unknown" && operation.expected.kind === "present" && operation.target.kind === "delete"
+        && await this.files.inspectNodeNoFollow(operation.path) === "folder") {
+        const removed = await this.files.removeEmptyDirectoryNoFollow(operation.path);
+        if (removed !== "removed" && removed !== "absent") return this.requireRecovery(rolling);
+        active = await this.files.observe(operation.path);
+      }
 
       if (active.kind !== "unknown" && matchesExpected(active, operation.expected)) continue;
       const partiallyMoved = active.kind === "absent" && operation.expected.kind === "present" && expectedRecovery.kind === "present";
@@ -272,6 +287,26 @@ export class SafeConfigBatchApplicator {
     await this.state.markRecoveryRequired(failed);
     return { status: "recovery-required", journal: failed };
   }
+
+  private async matchesPlanBeforeImage(
+    plan: ConfigBatchPlan,
+    operation: ConfigBatchOperation,
+    observation: LocalFileObservation,
+  ): Promise<boolean> {
+    if (observation.kind !== "unknown") return matchesExpected(observation, operation.expected);
+    if (operation.expected.kind !== "absent") return false;
+    const node = await this.files.inspectNodeNoFollow(operation.path);
+    if (node === "absent") return true;
+    if (node === "blocked-by-file") {
+      return plan.operations.some((candidate) => operation.path.startsWith(`${candidate.path}/`)
+        && candidate.expected.kind === "present" && candidate.target.kind === "delete");
+    }
+    if (node === "folder" && operation.target.kind === "put") {
+      return plan.operations.some((candidate) => candidate.path.startsWith(`${operation.path}/`)
+        && candidate.expected.kind === "present" && candidate.target.kind === "delete");
+    }
+    return false;
+  }
 }
 
 export function orderConfigOperations(operations: readonly ConfigBatchOperation[]): ConfigBatchOperation[] {
@@ -283,6 +318,15 @@ export function orderConfigOperations(operations: readonly ConfigBatchOperation[
     if (left.target.kind === "put" && right.target.kind === "put" && leftDepth !== rightDepth) return leftDepth - rightDepth;
     return compareUtf8(left.path, right.path);
   });
+}
+
+export function canPerformGuardedConfigBatch(capabilities: ConfigBatchFileAdapter["capabilities"]): boolean {
+  return capabilities.domain === "config"
+    && capabilities.accessMethod === "node-fs"
+    && capabilities.renameToRecovery
+    && capabilities.noClobberInstall
+    && capabilities.recoveryObservation
+    && capabilities.overwritePolicy === "no-clobber";
 }
 
 function operationPriority(operation: ConfigBatchOperation): number {

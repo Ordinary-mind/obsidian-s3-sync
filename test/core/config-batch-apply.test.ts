@@ -12,11 +12,19 @@ class MemoryConfigFiles implements ConfigBatchFileAdapter {
   readonly active = new Map<string, Uint8Array>();
   readonly staged = new Map<string, Uint8Array>();
   readonly recovery = new Map<string, Uint8Array>();
+  readonly folders = new Set<string>();
   readonly log: string[] = [];
   failInstallPath?: string;
   mutateBeforeRollback?: { path: string; bytes: Uint8Array };
 
-  async observe(path: string): Promise<LocalFileObservation> { return observation(this.active.get(path)); }
+  async observe(path: string): Promise<LocalFileObservation> {
+    if (this.active.has(path)) return observation(this.active.get(path));
+    if (this.folders.has(path) || [...this.active.keys()].some((candidate) => candidate.startsWith(`${path}/`))
+      || ancestors(path).some((ancestor) => this.active.has(ancestor))) {
+      return { kind: "unknown", reason: "path is not directly observable as a regular file" };
+    }
+    return { kind: "absent" };
+  }
   async observeRecovery(path: string): Promise<LocalFileObservation> { return observation(this.recovery.get(path)); }
   async copyToRecoveryNoClobber(path: string, ref: string): Promise<boolean> {
     this.log.push(`snapshot:${path}`);
@@ -36,18 +44,33 @@ class MemoryConfigFiles implements ConfigBatchFileAdapter {
       if (this.mutateBeforeRollback) this.active.set(this.mutateBeforeRollback.path, this.mutateBeforeRollback.bytes);
       throw new Error("injected install failure");
     }
-    if (this.active.has(path)) return false;
+    if (this.active.has(path) || this.folders.has(path) || ancestors(path).some((ancestor) => this.active.has(ancestor))) return false;
     const value = this.staged.get(ref); if (!value) throw new Error("missing stage");
+    this.addParentFolders(path);
     this.active.set(path, new Uint8Array(value)); return true;
   }
   async restoreRecoveryNoClobber(ref: string, path: string): Promise<boolean> {
     this.log.push(`restore:${path}`);
     if (this.active.has(path)) return false;
     const value = this.recovery.get(ref); if (!value) return false;
+    this.addParentFolders(path);
     this.active.set(path, new Uint8Array(value)); return true;
   }
   async materializeConservativeCandidate(): Promise<void> { throw new Error("unused"); }
-  async removeEmptyDirectoryNoFollow(): Promise<"absent"> { return "absent"; }
+  async inspectNodeNoFollow(path: string) {
+    if (this.active.has(path)) return "file" as const;
+    if ([...this.active.keys()].some((candidate) => candidate.startsWith(`${path}/`)) || this.folders.has(path)) return "folder" as const;
+    if (ancestors(path).some((ancestor) => this.active.has(ancestor))) return "blocked-by-file" as const;
+    return "absent" as const;
+  }
+  async removeEmptyDirectoryNoFollow(path: string) {
+    if ([...this.active.keys()].some((candidate) => candidate.startsWith(`${path}/`))) return "not-empty" as const;
+    if (!this.folders.delete(path)) return "absent" as const;
+    return "removed" as const;
+  }
+  private addParentFolders(path: string): void {
+    for (const ancestor of ancestors(path)) this.folders.add(ancestor);
+  }
 }
 
 class MemoryConfigState implements ConfigBatchStateStore {
@@ -188,6 +211,30 @@ describe("safe ConfigTree batch apply", () => {
     expect(ordered.map((item) => item.path)).toEqual(["reverse/child", "x/y", "x", "reverse", "z", "z/y"]);
   });
 
+  it("applies file-to-directory and directory-to-file shape changes without following unknown nodes", async () => {
+    const { plan, files } = shapeChangeFixture();
+    const state = new MemoryConfigState(plan);
+    const result = await applicator(files, state, plan.targetTreeHash).apply(plan, confirmation(plan));
+    expect(result.status).toBe("accounted");
+    expect(text(files.active.get("to-dir/child")!)).toBe("new-child");
+    expect(text(files.active.get("to-file")!)).toBe("new-parent");
+    expect(files.active.has("to-dir")).toBe(false);
+    expect(files.active.has("to-file/child")).toBe(false);
+  });
+
+  it("rolls both shape-change directions back after a later install failure", async () => {
+    const { plan, files } = shapeChangeFixture();
+    files.failInstallPath = "to-dir/child";
+    const state = new MemoryConfigState(plan);
+    const result = await applicator(files, state, plan.targetTreeHash).apply(plan, confirmation(plan));
+    expect(result.status).toBe("rolled-back");
+    expect(text(files.active.get("to-dir")!)).toBe("old-parent");
+    expect(text(files.active.get("to-file/child")!)).toBe("old-child");
+    expect(files.active.has("to-dir/child")).toBe(false);
+    expect(files.active.has("to-file")).toBe(false);
+    expect(state.accounted).toBe(0);
+  });
+
   it("never writes formal config through an unverified conservative adapter", async () => {
     const plan = batchPlan();
     const files = seededFiles();
@@ -197,6 +244,16 @@ describe("safe ConfigTree batch apply", () => {
     expect(result.status).toBe("conservative-only");
     expect(files.log).toEqual([]);
     expect(state.accounted).toBe(0);
+  });
+
+  it("allows a guarded desktop config batch without generic file events", async () => {
+    const plan = batchPlan();
+    const files = seededFiles();
+    Object.assign(files.capabilities, { eventsObservable: false });
+    const state = new MemoryConfigState(plan);
+    const result = await applicator(files, state, plan.targetTreeHash).apply(plan, confirmation(plan));
+    expect(result.status).toBe("accounted");
+    expect(state.accounted).toBe(1);
   });
 });
 
@@ -224,6 +281,35 @@ function operation(path: string, before: string, after: string): ConfigBatchOper
     expected: { kind: "present", hash: hash(before), size: bytes(before).byteLength },
     target: { kind: "put", hash: hash(after), size: bytes(after).byteLength, stagedRef: `staged/${path}` },
   };
+}
+
+function present(value: Uint8Array): ConfigBatchOperation["expected"] {
+  return { kind: "present", hash: hashBytes(value), size: value.byteLength };
+}
+
+function put(stagedRef: string, value: Uint8Array): Extract<ConfigBatchOperation["target"], { kind: "put" }> {
+  return { kind: "put", hash: hashBytes(value), size: value.byteLength, stagedRef };
+}
+
+function shapeChangeFixture(): { plan: ConfigBatchPlan; files: MemoryConfigFiles } {
+  const oldParent = bytes("old-parent");
+  const oldChild = bytes("old-child");
+  const newParent = bytes("new-parent");
+  const newChild = bytes("new-child");
+  const operations: ConfigBatchOperation[] = [
+    { path: "to-dir", expected: present(oldParent), target: { kind: "delete" } },
+    { path: "to-dir/child", expected: { kind: "absent" }, target: put("staged/new-child", newChild) },
+    { path: "to-file/child", expected: present(oldChild), target: { kind: "delete" } },
+    { path: "to-file", expected: { kind: "absent" }, target: put("staged/new-parent", newParent) },
+  ];
+  const plan = { ...batchPlan(), operations, diff: [], projectedTreeHash: "a".repeat(64), targetTreeHash: "b".repeat(64) };
+  const files = new MemoryConfigFiles();
+  files.active.set("to-dir", oldParent);
+  files.active.set("to-file/child", oldChild);
+  files.folders.add("to-file");
+  files.staged.set("staged/new-child", newChild);
+  files.staged.set("staged/new-parent", newParent);
+  return { plan, files };
 }
 
 function seededFiles(): MemoryConfigFiles {
@@ -260,5 +346,10 @@ function confirmation(plan: ConfigBatchPlan) {
 function observation(value: Uint8Array | undefined): LocalFileObservation { return value ? { kind: "present", hash: hashBytes(value), size: value.byteLength } : { kind: "absent" }; }
 function bytes(value: string): Uint8Array { return new TextEncoder().encode(value); }
 function text(value: Uint8Array): string { return new TextDecoder().decode(value); }
+
+function ancestors(path: string): string[] {
+  const parts = path.split("/");
+  return parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join("/"));
+}
 function hash(value: string): string { return hashBytes(bytes(value)); }
 function hashBytes(value: Uint8Array): string { return sha256Hex(value); }

@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, normalizePath } from "obsidian";
+import { FileSystemAdapter, Notice, Platform, Plugin, TFile, apiVersion, normalizePath } from "obsidian";
 import { ConflictModal } from "./conflict-modal";
 import { createDefaultData, DEFAULT_SETTINGS } from "./defaults";
 import { S3SyncSettingTab } from "./settings-tab";
@@ -9,23 +9,29 @@ import { V1RepositoryService } from "./v1-service";
 import type { S3SyncData, S3SyncSettings, SyncSummary } from "./types";
 import { ensureParentFolder, getTFile, isIgnored, parseIgnorePatterns, resolveEffectivePrefix } from "./utils";
 import { captureStableVaultFile } from "./vault-stable-capture";
-import { recordPublishedWriterCommit, reserveWriterCommit } from "../core/writer-session";
+import { reserveWriterCommit } from "../core/writer-session";
 import { decideResolvedRemotePut } from "../core/pull-decision";
 import { conflictId } from "../core/conflict-id";
 import { remoteConflictCopyPath } from "../core/conflict-copy";
 import { captureEditorChange, mayApplyRemoteWithEditorIntent, observeEditorDisk } from "../core/editor-latch";
 import { sha256Hex } from "../protocol/hash";
-import { bindRootDeletePredecessor, clearVaultEventsThroughGeneration, latestVaultEvent, recordVaultEvent, recordVaultRename } from "../core/vault-event";
-import { isVaultPathExcluded } from "../core/scope";
+import { bindRootDeletePredecessor, bindVaultEventsAfterPublication, clearVaultEventsThroughGeneration, latestVaultEvent, mergeVaultEventsAfterPublication, recordVaultEvent, recordVaultRename } from "../core/vault-event";
+import { isVaultPathExcluded, localStateRoot } from "../core/scope";
 import { advanceApplyJournal, type ApplyJournal } from "../core/apply-journal";
 import { isOwnApplyEvent } from "../core/apply-operation";
 import { createRepositoryLocator } from "../core/locator";
 import { assertPersistedRepositoryBinding, createPersistedRepositoryBinding } from "../core/repository-binding";
-import { advanceWriterFrontiers, type CommitFrontierAnchor } from "../core/commit-frontier";
+import type { CommitFrontierAnchor } from "../core/commit-frontier";
 import { DurableStateStore, type StateJsonValue } from "../core/durable-state";
 import { openRepositoryStateFiles, scanResidualRepositoryStateRoots } from "../core/local-state-files";
 import { repositoryDurablePayload } from "../core/repository-durable-payload";
 import {
+  beginDurableOutboxPublicationTransaction,
+  completePublishedConfigOutboxTransaction,
+  completePublishedVaultOutboxTransaction,
+  confirmDurableOutboxPublishedTransaction,
+  failDurableOutboxPublicationTransaction,
+  freezeDurableOutboxStateTransaction,
   rebindVerifiedRepositoryRouteStateTransaction,
   validateRepositoryStatePayload,
   writeRepositoryStateTransaction,
@@ -38,7 +44,7 @@ import {
   type CredentialStorage,
   type PersistedRepositorySelection,
 } from "../core/plugin-data";
-import { publishedReconcileBlocksAutomaticApply, type DurableOutboxEntry } from "../core/durable-outbox";
+import { freezeDurableOutbox, nextDurableOutbox, publishedReconcileBlocksAutomaticApply, type DurableOutboxEntry } from "../core/durable-outbox";
 import { localConcurrentRecordBlocksAutomaticWork } from "../core/local-concurrent-resolution";
 import { SyncDashboardModal } from "./sync-dashboard-modal";
 import { buildRedactedDiagnosticBundle } from "../core/diagnostic-bundle";
@@ -54,6 +60,34 @@ import {
 import { applyVerifiedRepositoryRouteChange } from "../core/repository-reconfigure";
 import { retryDelayMs } from "../core/backoff";
 import { remoteAuditFailureProgress } from "../core/remote-audit";
+import { ConfigCenterModal } from "./config-center-modal";
+import type {
+  ConfigApplyOutcome,
+  ConfigApplyPreview,
+  ConfigApplyTrustConfirmation,
+  ConfigCenterSnapshot,
+  ConfigPublicationConfirmation,
+  ConfigTreeSourceView,
+  PersistedConfigSyncState,
+} from "./config-center-types";
+import { createDefaultConfigSyncState } from "./config-center-types";
+import { createConfigWorkspaceRuntime, buildRemoteConfigSources, captureLocalConfigSource, inventoryManifestMap, stageConfigTreeBytes, treeManagedItems, type ConfigWorkspaceRuntime } from "./config-workspace";
+import { buildMultiSourceConfigMerge, configTrustRequirements, deriveConfigRegisterUiState, summarizeConfigPluginChanges } from "../core/config-ui-state";
+import { diffManagedConfigItems } from "../core/config-diff";
+import type { ManagedConfigItem } from "../core/config-snapshot-builder";
+import { validateConfigProfile } from "../core/config-profile";
+import type { ConfigProfile } from "../core/types";
+import { SafeConfigBatchApplicator, configBatchPlanHash, type ConfigBatchOperation, type ConfigBatchPlan, type ConfigBatchResult } from "../core/config-batch-apply";
+import { captureConfigDirtyIntent, configPublicationParents } from "../core/config-causality";
+import { encodeCommunityPluginIds, mergePortableEnabledPluginIds } from "../core/community-plugins";
+import { assessConfigTreeCompatibility } from "../core/config-compatibility";
+import { buildConfigTreeObject, type ProtocolConfigTree } from "../core/config-tree";
+import { buildConfigSnapshotPublishEnvelope } from "../core/config-publish-envelope";
+import { RepositoryOperationLock, type RepositoryOperationOwner } from "../core/repository-operation-lock";
+import { buildVaultPutPublishEnvelope } from "../core/vault-publish-envelope";
+import { ImmutableContentStaging } from "../core/content-staging";
+import { ObsidianContentStagingAdapter } from "../adapters/obsidian-content-staging-adapter";
+import type { StableCapture } from "../core/stable-capture";
 
 type PersistedPreferences = Pick<S3SyncSettings,
   | "autoSync"
@@ -101,7 +135,7 @@ export default class S3SyncPlugin extends Plugin {
   private causalStatePersistence = Promise.resolve();
   private readonly v1ApplyOperations = new Map<string, string>();
   private v1DurableState: { fingerprint: string; store: DurableStateStore<StateJsonValue> } | undefined;
-  private v1SyncRunning = false;
+  private readonly repositoryOperation = new RepositoryOperationLock();
 
   async onload(): Promise<void> {
     await this.loadPluginData();
@@ -132,6 +166,12 @@ export default class S3SyncPlugin extends Plugin {
       id: "s3-sync-full-audit",
       name: "S3 Sync：完整校验",
       callback: () => void this.runFullAuditV1(),
+    });
+
+    this.addCommand({
+      id: "s3-sync-config-center",
+      name: "S3 Sync：配置中心",
+      callback: () => new ConfigCenterModal(this).open(),
     });
 
     this.addCommand({
@@ -217,6 +257,15 @@ export default class S3SyncPlugin extends Plugin {
   }
 
   async updateConnectionSettings(patch: ConnectionSettingsPatch): Promise<void> {
+    this.beginRepositoryOperation("vault");
+    try {
+      await this.updateConnectionSettingsLocked(patch);
+    } finally {
+      this.endRepositoryOperation("vault");
+    }
+  }
+
+  private async updateConnectionSettingsLocked(patch: ConnectionSettingsPatch): Promise<void> {
     const candidateSettings = { ...this.settings, ...patch };
     const state = this.data.v1;
     if (!state) {
@@ -309,6 +358,15 @@ export default class S3SyncPlugin extends Plugin {
   }
 
   async resolveConflict(conflictId: string, mode: "local" | "remote"): Promise<void> {
+    this.beginRepositoryOperation("vault");
+    try {
+      await this.resolveConflictLocked(conflictId, mode);
+    } finally {
+      this.endRepositoryOperation("vault");
+    }
+  }
+
+  private async resolveConflictLocked(conflictId: string, mode: "local" | "remote"): Promise<void> {
     const conflict = this.data.conflicts[conflictId];
     if (conflict?.remoteVersion === 0) {
       await this.resolveV1Conflict(conflict, mode);
@@ -343,7 +401,7 @@ export default class S3SyncPlugin extends Plugin {
       || this.data.v1ApplyJournals.some((journal) => journal.state === "recovery-required");
     return {
       ...base,
-      phase: recoveryRequired && !this.v1SyncRunning && base.phase !== "read-only" ? "recovering" : base.phase,
+      phase: recoveryRequired && !this.repositoryOperation.isRunning() && base.phase !== "read-only" ? "recovering" : base.phase,
       pendingApply: Object.keys(this.data.v1PendingApply).length,
       outbox: this.data.v1DurableOutbox.filter((entry) => entry.state !== "published").length,
       localConcurrentRecords: Object.keys(this.data.v1LocalConcurrentRecords).length,
@@ -358,7 +416,1090 @@ export default class S3SyncPlugin extends Plugin {
 
   openConflictModal(): void { new ConflictModal(this).open(); }
 
-  isV1OperationRunning(): boolean { return this.v1SyncRunning; }
+  openConfigCenter(): void { new ConfigCenterModal(this).open(); }
+
+  isConfigOperationInProgress(): boolean { return this.repositoryOperation.isRunning(); }
+
+  private beginRepositoryOperation(owner: RepositoryOperationOwner): void {
+    if (this.repositoryOperation.tryAcquire(owner)) return;
+    throw new Error(this.repositoryOperation.currentOwner() === "config"
+      ? "已有配置操作正在运行"
+      : "已有 Vault 仓库操作正在运行");
+  }
+
+  private endRepositoryOperation(owner: RepositoryOperationOwner): void {
+    this.repositoryOperation.release(owner);
+  }
+
+  getConfigSyncState(): PersistedConfigSyncState {
+    return structuredClone(this.data.v1ConfigSync);
+  }
+
+  async setConfigSyncEnabled(enabled: boolean): Promise<void> {
+    this.beginRepositoryOperation("config");
+    try {
+      await this.setConfigSyncEnabledLocked(enabled);
+    } finally {
+      this.endRepositoryOperation("config");
+    }
+  }
+
+  private async setConfigSyncEnabledLocked(enabled: boolean): Promise<void> {
+    this.settings.configSyncEnabled = enabled;
+    this.data.v1ConfigSync = {
+      ...this.data.v1ConfigSync,
+      status: enabled ? (this.data.v1 ? "ready" : "unbound") : "disabled",
+      lastError: undefined,
+    };
+    await this.saveSettings();
+  }
+
+  async updateConfigProfile(profile: ConfigProfile): Promise<void> {
+    this.beginRepositoryOperation("config");
+    try {
+      await this.updateConfigProfileLocked(profile);
+    } finally {
+      this.endRepositoryOperation("config");
+    }
+  }
+
+  private async updateConfigProfileLocked(profile: ConfigProfile): Promise<void> {
+    const next = structuredClone(profile);
+    const violations = validateConfigProfile(next, this.manifest.id);
+    if (violations.length > 0) throw new Error(`ConfigProfile 无效：${violations.join(", ")}`);
+    if (JSON.stringify(next) === JSON.stringify(this.settings.configProfile)) return;
+    const generation = this.data.v1ConfigSync.generation + 1;
+    const dirtyIntent = this.data.v1ConfigSync.dirtyIntent
+      ?? (this.data.v1ConfigSync.projectedTreeHash !== null
+        ? captureConfigDirtyIntent({
+          projectedHeads: this.data.v1ConfigSync.projectedHeads,
+          projectedTreeHash: this.data.v1ConfigSync.projectedTreeHash,
+          generation,
+        })
+        : undefined);
+    this.settings.configProfile = next;
+    this.data.v1ConfigSync = {
+      ...this.data.v1ConfigSync,
+      generation,
+      status: this.settings.configSyncEnabled ? "local-changes" : "disabled",
+      ...(dirtyIntent ? { dirtyIntent } : {}),
+      lastError: undefined,
+    };
+    await this.saveSettings();
+  }
+
+  async loadConfigCenterSnapshot(): Promise<ConfigCenterSnapshot> {
+    this.beginRepositoryOperation("config");
+    try {
+      return await this.loadConfigCenterSnapshotLocked();
+    } finally {
+      this.endRepositoryOperation("config");
+    }
+  }
+
+  private async loadConfigCenterSnapshotLocked(): Promise<ConfigCenterSnapshot> {
+    const selected = this.data.v1;
+    if (!selected) {
+      const state = deriveConfigRegisterUiState({
+        enabled: this.settings.configSyncEnabled,
+        repositoryBound: false,
+        remoteDisposition: "empty",
+      });
+      this.data.v1ConfigSync = { ...this.data.v1ConfigSync, status: state.status, lastError: undefined };
+      return emptyConfigCenterSnapshot(state, this.data.v1ConfigSync);
+    }
+    let localSource: ConfigTreeSourceView | undefined;
+    let inventory: ConfigCenterSnapshot["inventory"] = [];
+    let localEnabled: string[] = [];
+    let runtime: ConfigWorkspaceRuntime | undefined;
+    try {
+      runtime = this.configWorkspaceRuntime(selected);
+      await this.assertV1RepositoryBinding(selected);
+      await this.drainDurableOutbox(selected, runtime.staging);
+      await this.reconcilePendingPublishedVaultMutations(this.data.v1 ?? selected);
+      await this.finalizePendingConfigPublication(selected, runtime);
+      const previousItems = persistedConfigTreeItems(this.data.v1ConfigSync.projectedTree);
+      const localCapture = await captureLocalConfigSource({
+        runtime,
+        profile: this.settings.configProfile,
+        previousItems,
+        repositoryId: selected.repositoryId,
+        descriptorHash: selected.descriptorHash,
+        configDir: selected.configDir,
+        historicalConfigDirs: selected.historicalConfigDirs,
+        currentAppVersion: apiVersion,
+        isDesktop: Platform.isDesktop,
+        syncPluginId: this.manifest.id,
+        quietWindow: () => delay(500),
+      });
+      inventory = localCapture.inventory;
+      if (localCapture.result.status !== "captured") {
+        const message = `本地配置扫描未完成：${localCapture.result.reason}${localCapture.result.paths?.length ? `（${localCapture.result.paths.join(", ")}）` : ""}`;
+        const state = deriveConfigRegisterUiState({
+          enabled: this.settings.configSyncEnabled,
+          repositoryBound: true,
+          remoteDisposition: "empty",
+          loadError: message,
+        });
+        this.recordConfigUiState(state.status, message, runtime.recoveryLocation);
+        return { ...emptyConfigCenterSnapshot(state, this.data.v1ConfigSync), inventory, recoveryLocation: runtime.recoveryLocation };
+      }
+      if (!localCapture.source) throw new Error("本地 ConfigTree 视图缺失");
+      localSource = localCapture.source;
+      localEnabled = [...localCapture.result.allEnabledPluginIds];
+
+      if (!this.settings.configSyncEnabled) {
+        const state = deriveConfigRegisterUiState({ enabled: false, repositoryBound: true, remoteDisposition: "empty" });
+        this.recordConfigUiState(state.status, undefined, runtime.recoveryLocation);
+        return {
+          ...emptyConfigCenterSnapshot(state, this.data.v1ConfigSync),
+          local: localSource,
+          inventory,
+          allLocalEnabledPluginIds: localEnabled,
+          recoveryLocation: runtime.recoveryLocation,
+        };
+      }
+
+      if (this.data.v1ConfigSync.projectedTreeHash !== null
+        && localSource.treeHash !== this.data.v1ConfigSync.projectedTreeHash
+        && !this.data.v1ConfigSync.dirtyIntent) {
+        const generation = this.data.v1ConfigSync.generation + 1;
+        this.data.v1ConfigSync = {
+          ...this.data.v1ConfigSync,
+          generation,
+          dirtyIntent: captureConfigDirtyIntent({
+            projectedHeads: this.data.v1ConfigSync.projectedHeads,
+            projectedTreeHash: this.data.v1ConfigSync.projectedTreeHash,
+            generation,
+          }),
+        };
+      }
+
+      const activeState = this.data.v1;
+      if (!activeState || activeState.repositoryFingerprint !== selected.repositoryFingerprint) {
+        throw new Error("仓库绑定在配置加载期间发生变化");
+      }
+      const service = new V1RepositoryService(this.settings, activeState.prefix);
+      const inspection = await service.inspectConfigRegister(activeState.repositoryId, activeState.descriptorHash);
+      const current = await this.persistObservedRemoteState(activeState, inspection.acceptedCommits, inspection.observations);
+      const completeHeads = inspection.heads.filter((head) => head.blockedDependencies.length === 0);
+      const remote = await buildRemoteConfigSources({
+        runtime,
+        heads: completeHeads,
+        localItems: localSource.items,
+        inventory,
+        allLocalEnabledPluginIds: localEnabled,
+        currentAppVersion: apiVersion,
+        isDesktop: Platform.isDesktop,
+        syncPluginId: this.manifest.id,
+      });
+      const resolved = inspection.disposition === "resolved" && remote.length === 1 ? remote[0] : undefined;
+      if (resolved && resolved.treeHash === localSource.treeHash
+        && (this.data.v1ConfigSync.projectedTreeHash !== resolved.treeHash
+          || !sameHeads(this.data.v1ConfigSync.projectedHeads, inspection.headVersionIds)
+          || this.data.v1ConfigSync.dirtyIntent !== undefined)) {
+        this.data.v1ConfigSync = {
+          ...this.data.v1ConfigSync,
+          projectedHeads: [...inspection.headVersionIds],
+          projectedTreeHash: resolved.treeHash,
+          projectedTree: structuredClone(resolved.tree),
+          generation: Math.max(1, this.data.v1ConfigSync.generation + 1),
+          dirtyIntent: undefined,
+        };
+      }
+      const compatible = resolved?.compatibility.status !== "incompatible";
+      const initialLocalConflict = resolved !== undefined
+        && this.data.v1ConfigSync.projectedTreeHash === null
+        && (this.data.v1ConfigSync.generation > 0
+          || localSource.items.length > 0
+          || localSource.tree.enabledCommunityPlugins.length > 0)
+        && resolved.treeHash !== localSource.treeHash;
+      const applyFailure = this.data.v1ConfigSync.status === "recovery-required"
+        ? "recovery-required"
+        : this.data.v1ConfigSync.status === "apply-failed" ? "rolled-back" : undefined;
+      const state = deriveConfigRegisterUiState({
+        enabled: true,
+        repositoryBound: true,
+        remoteDisposition: initialLocalConflict ? "conflict" : inspection.disposition,
+        remoteHeads: inspection.headVersionIds,
+        pendingVersions: inspection.pendingVersionIds,
+        invalidVersions: inspection.invalidVersionIds,
+        localTreeHash: localSource.treeHash,
+        projectedTreeHash: this.data.v1ConfigSync.generation > 0 ? this.data.v1ConfigSync.projectedTreeHash : undefined,
+        compatible,
+        applyFailure,
+      });
+      const blockedDetails = [
+        ...inspection.blockedCommitKeys.map((entry) => `${entry.key}: ${this.errorMessage(entry.reason)}`),
+        ...inspection.heads.flatMap((head) => head.blockedDependencies.map((entry) => `${entry.path}: ${this.errorMessage(entry.reason)}`)),
+      ];
+      this.data.v1 = current;
+      this.recordConfigUiState(state.status, state.status === "load-failed" ? state.message : undefined, runtime.recoveryLocation);
+      this.queueCausalStatePersistence();
+      return {
+        state,
+        local: localSource,
+        remote,
+        ...(resolved ? { resolvedRemoteId: resolved.id } : {}),
+        diff: resolved ? diffManagedConfigItems(localSource.items, resolved.items) : [],
+        inventory,
+        allLocalEnabledPluginIds: localEnabled,
+        projectedHeads: [...this.data.v1ConfigSync.projectedHeads],
+        projectedTreeHash: this.data.v1ConfigSync.projectedTreeHash,
+        recoveryLocation: runtime.recoveryLocation,
+        blockedDetails,
+      };
+    } catch (error) {
+      const message = this.errorMessage(error);
+      const recoveryLocation = runtime?.recoveryLocation
+        ?? this.data.v1ConfigSync.recoveryLocation
+        ?? "尚未建立仓库恢复位置";
+      const state = deriveConfigRegisterUiState({
+        enabled: this.settings.configSyncEnabled,
+        repositoryBound: true,
+        remoteDisposition: "empty",
+        loadError: message,
+      });
+      this.recordConfigUiState("load-failed", message, runtime?.recoveryLocation);
+      this.queueCausalStatePersistence();
+      return {
+        ...emptyConfigCenterSnapshot(state, this.data.v1ConfigSync),
+        ...(localSource ? { local: localSource } : {}),
+        inventory,
+        allLocalEnabledPluginIds: localEnabled,
+        recoveryLocation,
+      };
+    }
+  }
+
+  buildConfigMergeSource(input: {
+    snapshot: ConfigCenterSnapshot;
+    selections: Record<string, string | "stop-managing">;
+    profileSourceId: string;
+    enabledSourceId: string;
+  }): ConfigTreeSourceView {
+    const state = this.data.v1;
+    if (!state || !input.snapshot.local || input.snapshot.state.status !== "conflict") {
+      throw new Error("配置合并需要当前冲突快照");
+    }
+    const sources = [input.snapshot.local, ...input.snapshot.remote];
+    const merged = buildMultiSourceConfigMerge({
+      sources: sources.map((source) => ({
+        id: source.id,
+        profile: source.tree.profile,
+        enabledCommunityPlugins: source.tree.enabledCommunityPlugins,
+        items: source.items,
+      })),
+      selections: input.selections,
+      profileSourceId: input.profileSourceId,
+      enabledSourceId: input.enabledSourceId,
+      syncPluginId: this.manifest.id,
+    });
+    const byId = new Map(sources.map((source) => [source.id, source]));
+    const bytesByPath = new Map<string, Uint8Array>();
+    for (const item of merged.items) {
+      if (item.kind !== "put") continue;
+      const sourceId = input.selections[item.path];
+      const bytes = sourceId && sourceId !== "stop-managing" ? byId.get(sourceId)?.bytesByPath.get(item.path) : undefined;
+      if (!bytes) throw new Error(`合并候选缺少已验证字节：${item.path}`);
+      bytesByPath.set(item.path, new Uint8Array(bytes));
+    }
+    const tree: ProtocolConfigTree = {
+      protocol: 1,
+      repositoryId: state.repositoryId,
+      descriptorHash: state.descriptorHash,
+      profile: { schema: 1, ...structuredClone(merged.profile), minimumTargetAppVersion: merged.profile.minimumTargetAppVersion! },
+      enabledCommunityPlugins: [...merged.enabledCommunityPlugins],
+      items: merged.items.map((item) => item.kind === "delete"
+        ? { path: item.path, kind: "delete" }
+        : { path: item.path, kind: "put", blobHash: item.hash, size: item.size }),
+    };
+    const sizes = new Map(merged.items.filter((item): item is Extract<ManagedConfigItem, { kind: "put" }> => item.kind === "put")
+      .map((item) => [item.hash, item.size]));
+    const treeHash = buildConfigTreeObject("", tree, {
+      configDir: state.configDir,
+      historicalConfigDirs: state.historicalConfigDirs,
+    }, sizes).hash;
+    const manifestBytes = new Map<string, Uint8Array>();
+    for (const pluginId of tree.profile.pluginPackages) {
+      const path = `plugins/${pluginId}/manifest.json`;
+      const bytes = bytesByPath.get(path);
+      if (bytes) manifestBytes.set(path, bytes);
+    }
+    const compatibility = assessConfigTreeCompatibility({
+      tree: { profile: tree.profile, enabledCommunityPlugins: tree.enabledCommunityPlugins, items: merged.items },
+      currentAppVersion: apiVersion,
+      isDesktop: Platform.isDesktop,
+      syncPluginId: this.manifest.id,
+      stagedManifestBytes: manifestBytes,
+      localPluginManifests: inventoryManifestMap(input.snapshot.inventory),
+      localPluginDirectories: input.snapshot.inventory.map((entry) => entry.directoryId),
+      localEnabledPluginIds: input.snapshot.allLocalEnabledPluginIds,
+    });
+    const diff = diffManagedConfigItems(input.snapshot.local.items, merged.items);
+    const writerIds = [...new Set(input.snapshot.remote.flatMap((source) => source.writerIds))].sort(compareUtf8);
+    return {
+      id: `merged:${treeHash}`,
+      kind: "local",
+      label: `合并 ConfigTree ${treeHash.slice(0, 8)}`,
+      treeHash,
+      versionIds: [...input.snapshot.state.remoteHeads],
+      writerIds,
+      tree,
+      items: merged.items,
+      bytesByPath,
+      compatibility,
+      pluginChanges: summarizeConfigPluginChanges({
+        diff,
+        manifests: compatibility.status === "compatible" ? compatibility.manifests : {},
+        sourceWriters: writerIds,
+        compatibilityReasons: compatibility.status === "incompatible" ? compatibility.reasons : [],
+      }),
+    };
+  }
+
+  async publishConfigCandidate(input: {
+    candidate: ConfigTreeSourceView;
+    observedHeads: string[];
+    confirmation: ConfigPublicationConfirmation;
+    projectLocal: boolean;
+    resolveObservedConflict: boolean;
+  }): Promise<void> {
+    this.beginRepositoryOperation("config");
+    try {
+      await this.publishConfigCandidateLocked(input);
+    } finally {
+      this.endRepositoryOperation("config");
+    }
+  }
+
+  private async publishConfigCandidateLocked(input: {
+    candidate: ConfigTreeSourceView;
+    observedHeads: string[];
+    confirmation: ConfigPublicationConfirmation;
+    projectLocal: boolean;
+    resolveObservedConflict: boolean;
+  }): Promise<void> {
+    if (!this.settings.configSyncEnabled) throw new Error("配置同步尚未启用");
+    const state = this.data.v1;
+    if (!state) throw new Error("尚未选择 v1 仓库");
+    if (this.data.v1ConfigSync.status === "recovery-required") throw new Error("配置恢复完成前不能发布新快照");
+    if (input.confirmation.treeHash !== input.candidate.treeHash) throw new Error("配置发布确认已过期");
+    const publicationDiff = diffManagedConfigItems([], input.candidate.items);
+    if (publicationDiff.some((entry) => entry.codeChange) && !input.confirmation.acceptPluginCode) {
+      throw new Error("配置发布需要单独确认插件代码");
+    }
+    if (publicationDiff.some((entry) => entry.sensitive) && !input.confirmation.acceptSensitiveData) {
+      throw new Error("配置发布需要确认 plugin data 明文远端存储风险");
+    }
+    if (input.candidate.compatibility.status === "incompatible") {
+      throw new Error(`目标 ConfigTree 不兼容：${input.candidate.compatibility.reasons.join("; ")}`);
+    }
+
+    const runtime = this.configWorkspaceRuntime(state);
+    try {
+      await this.assertV1RepositoryBinding(state);
+      await this.drainDurableOutbox(state, runtime.staging);
+      await this.reconcilePendingPublishedVaultMutations(this.data.v1 ?? state);
+      await this.finalizePendingConfigPublication(state, runtime);
+      const activeState = this.data.v1;
+      if (!activeState) throw new Error("仓库绑定在配置发布期间丢失");
+      const service = new V1RepositoryService(this.settings, activeState.prefix);
+      const inspection = await service.inspectConfigRegister(activeState.repositoryId, activeState.descriptorHash);
+      const refreshedState = await this.persistObservedRemoteState(activeState, inspection.acceptedCommits, inspection.observations);
+      if (!sameHeads(inspection.headVersionIds, input.observedHeads)) throw new Error("配置快照头已变化，请刷新后重试");
+      if (inspection.disposition === "pending" || inspection.disposition === "invalid") {
+        throw new Error(`配置寄存器当前为 ${inspection.disposition}，不能发布解决版本`);
+      }
+      let candidate = input.candidate;
+      if (input.projectLocal) {
+        const captured = await captureLocalConfigSource({
+          runtime,
+          profile: candidate.tree.profile,
+          previousItems: persistedConfigTreeItems(this.data.v1ConfigSync.projectedTree),
+          repositoryId: refreshedState.repositoryId,
+          descriptorHash: refreshedState.descriptorHash,
+          configDir: refreshedState.configDir,
+          historicalConfigDirs: refreshedState.historicalConfigDirs,
+          currentAppVersion: apiVersion,
+          isDesktop: Platform.isDesktop,
+          syncPluginId: this.manifest.id,
+          quietWindow: () => delay(500),
+        });
+        if (captured.result.status !== "captured" || !captured.source || captured.source.treeHash !== candidate.treeHash) {
+          throw new Error("本地 ConfigTree 已变化，请刷新发布预览");
+        }
+        candidate = captured.source;
+      }
+      const reservation = reserveWriterCommit(refreshedState);
+      const parents = configPublicationParents({
+        projectLocal: input.projectLocal,
+        resolveObservedConflict: input.resolveObservedConflict,
+        projectedHeads: this.data.v1ConfigSync.projectedHeads,
+        projectedTreeHash: this.data.v1ConfigSync.projectedTreeHash,
+        observedHeads: inspection.headVersionIds,
+        dirtyIntent: this.data.v1ConfigSync.dirtyIntent,
+      });
+      const publication = buildConfigSnapshotPublishEnvelope({
+        prefix: refreshedState.prefix,
+        repositoryId: refreshedState.repositoryId,
+        descriptorHash: refreshedState.descriptorHash,
+        writerId: refreshedState.writerId,
+        sequence: reservation.sequence,
+        previousCommitHash: reservation.previousCommitHash,
+        createdAt: new Date().toISOString(),
+        clientVersion: this.manifest.version,
+        parents,
+        tree: candidate.tree,
+        bytesByPath: candidate.bytesByPath,
+        binding: refreshedState,
+      });
+      if (publication.treeHash !== candidate.treeHash) throw new Error("冻结的 ConfigTree Hash 与确认预览不一致");
+      const frozen = await freezeDurableOutbox({
+        envelope: publication.envelope,
+        repositoryFingerprint: refreshedState.repositoryFingerprint,
+        writerId: refreshedState.writerId,
+        sequence: reservation.sequence,
+        previousCommitHash: reservation.previousCommitHash,
+        captureGeneration: this.data.v1ConfigSync.generation,
+        mutations: [{
+          registerKey: "config:portable",
+          versionId: publication.versionId,
+          kind: "config-snapshot",
+          parents: publication.parents,
+          valueHash: publication.treeHash,
+        }],
+      }, runtime.staging);
+      await this.causalStatePersistence;
+      await this.savePluginData();
+      const pendingConfig = {
+        ...this.data.v1ConfigSync,
+        publication: {
+          outboxId: frozen.id,
+          treeHash: publication.treeHash,
+          tree: structuredClone(candidate.tree),
+          projectLocal: input.projectLocal,
+        },
+      };
+      const snapshot = await freezeDurableOutboxStateTransaction(
+        await this.v1DurableStore(refreshedState),
+        frozen,
+        { configSync: JSON.parse(JSON.stringify(pendingConfig)) as StateJsonValue },
+      );
+      this.applyDurableOutboxSnapshot(snapshot.payload, true);
+      await this.drainDurableOutbox(this.data.v1!, runtime.staging);
+      await this.finalizePendingConfigPublication(this.data.v1!, runtime);
+      await this.savePluginData();
+    } catch (error) {
+      this.recordConfigUiState("load-failed", this.errorMessage(error), runtime.recoveryLocation);
+      this.queueCausalStatePersistence();
+      throw error;
+    }
+  }
+
+  async prepareConfigApply(targetTreeHash: string): Promise<ConfigApplyPreview> {
+    const snapshot = await this.loadConfigCenterSnapshot();
+    if (snapshot.state.status === "pending" || snapshot.state.status === "conflict"
+      || snapshot.state.status === "incompatible" || snapshot.state.status === "recovery-required") {
+      throw new Error(`当前配置状态不能应用：${snapshot.state.message}`);
+    }
+    if (!snapshot.local || snapshot.resolvedRemoteId === undefined) throw new Error("没有可应用的已解析远端 ConfigTree");
+    const target = snapshot.remote.find((source) => source.id === snapshot.resolvedRemoteId && source.treeHash === targetTreeHash);
+    if (!target) throw new Error("远端 ConfigTree 已变化，请刷新");
+    if (target.compatibility.status === "incompatible") throw new Error(`目标 ConfigTree 不兼容：${target.compatibility.reasons.join("; ")}`);
+    const state = this.data.v1;
+    if (!state) throw new Error("尚未选择 v1 仓库");
+    const runtime = this.configWorkspaceRuntime(state);
+    const diff = diffManagedConfigItems(snapshot.local.items, target.items);
+    const localByPath = new Map(snapshot.local.items.map((item) => [item.path, item]));
+    const operations: ConfigBatchOperation[] = diff.filter((entry) => entry.kind !== "unchanged").map((entry) => {
+      const before = localByPath.get(entry.path);
+      const expected = before?.kind === "put"
+        ? { kind: "present" as const, hash: before.hash, size: before.size }
+        : { kind: "absent" as const };
+      const after = entry.after;
+      const targetValue = !after
+        ? { kind: "stop-managing" as const }
+        : after.kind === "delete"
+          ? { kind: "delete" as const }
+          : { kind: "put" as const, hash: after.hash, size: after.size, stagedRef: after.stagedRef };
+      const pluginId = /^plugins\/([^/]+)\//.exec(entry.path)?.[1];
+      return {
+        path: entry.path,
+        expected,
+        target: targetValue,
+        ...(pluginId ? { pluginId, loadedPlugin: snapshot.allLocalEnabledPluginIds.includes(pluginId) } : {}),
+      };
+    });
+
+    const desiredEnabledIds = mergePortableEnabledPluginIds({
+      remotePortableEnabled: target.tree.enabledCommunityPlugins,
+      localEnabled: snapshot.allLocalEnabledPluginIds,
+      portablePluginIds: target.tree.profile.portablePluginIds,
+      localPluginDirectories: snapshot.inventory.map((entry) => entry.directoryId),
+      syncPluginId: this.manifest.id,
+    });
+    const desiredEnabledBytes = encodeCommunityPluginIds(desiredEnabledIds);
+    const communityStat = await runtime.port.stat("community-plugins.json");
+    if (communityStat && communityStat.type !== "file") throw new Error("community-plugins.json 不是普通文件");
+    const currentEnabledBytes = communityStat ? await runtime.port.read("community-plugins.json") : undefined;
+    const desiredEnabledHash = sha256Hex(desiredEnabledBytes);
+    const currentEnabledHash = currentEnabledBytes ? sha256Hex(currentEnabledBytes) : undefined;
+    const applyDiff = [...diff];
+    if (currentEnabledHash !== desiredEnabledHash) {
+      const staged = await runtime.staging.stage(singleChunk(desiredEnabledBytes), desiredEnabledBytes.byteLength);
+      operations.push({
+        path: "community-plugins.json",
+        expected: currentEnabledBytes
+          ? { kind: "present", hash: currentEnabledHash!, size: currentEnabledBytes.byteLength }
+          : { kind: "absent" },
+        target: {
+          kind: "put",
+          hash: staged.hash,
+          size: staged.size,
+          stagedRef: `${runtime.statePrefix}/${staged.ref}`,
+        },
+      });
+      applyDiff.push({
+        path: "community-plugins.json",
+        kind: currentEnabledBytes ? "modify" : "add",
+        codeChange: false,
+        sensitive: false,
+      });
+    }
+    const newPluginIds = target.compatibility.risks
+      .filter((risk) => risk.kind === "new-plugin")
+      .map((risk) => risk.pluginId)
+      .sort(compareUtf8);
+    const plan: ConfigBatchPlan = {
+      id: crypto.randomUUID(),
+      repositoryFingerprint: state.repositoryFingerprint,
+      targetHeads: [...target.versionIds],
+      projectedHeads: [...this.data.v1ConfigSync.projectedHeads],
+      projectedTreeHash: this.data.v1ConfigSync.projectedTreeHash ?? snapshot.local.treeHash,
+      targetTreeHash: target.treeHash,
+      operations,
+      diff: applyDiff,
+      newPluginIds,
+    };
+    const planHash = configBatchPlanHash(plan);
+    return {
+      plan,
+      planHash,
+      currentTreeHash: snapshot.local.treeHash,
+      target,
+      requirements: configTrustRequirements({
+        diff: applyDiff,
+        loadedPluginIds: snapshot.allLocalEnabledPluginIds,
+        newPluginIds,
+      }),
+      recoveryLocation: runtime.recoveryLocation,
+    };
+  }
+
+  async applyConfigPreview(preview: ConfigApplyPreview, confirmation: ConfigApplyTrustConfirmation): Promise<ConfigApplyOutcome> {
+    this.beginRepositoryOperation("config");
+    try {
+      return await this.applyConfigPreviewLocked(preview, confirmation);
+    } finally {
+      this.endRepositoryOperation("config");
+    }
+  }
+
+  private async applyConfigPreviewLocked(preview: ConfigApplyPreview, confirmation: ConfigApplyTrustConfirmation): Promise<ConfigApplyOutcome> {
+    if (preview.planHash !== configBatchPlanHash(preview.plan) || confirmation.planHash !== preview.planHash) {
+      throw new Error("配置应用确认已过期");
+    }
+    const state = this.data.v1;
+    if (!state) throw new Error("尚未选择 v1 仓库");
+    const runtime = this.configWorkspaceRuntime(state);
+    try {
+      await this.assertV1RepositoryBinding(state);
+      const initial = await this.inspectCurrentConfigTarget(state, preview.plan.targetTreeHash);
+      if (!initial.targetStillPresent || !sameHeads(initial.inspection.headVersionIds, preview.plan.targetHeads)) {
+        this.recordConfigUiState("local-changes", "远端配置快照头已变化，请重新预览。", runtime.recoveryLocation);
+        await this.savePluginData();
+        return { result: { status: "stale-plan" }, state: this.getConfigSyncState() };
+      }
+      const applicator = this.createConfigBatchApplicator({
+        runtime,
+        state,
+        plan: preview.plan,
+        targetTree: preview.target.tree,
+        targetItems: preview.target.items,
+        currentTreeHash: preview.currentTreeHash,
+      });
+      const result = await applicator.apply(preview.plan, confirmation);
+      this.finishConfigBatch(result, preview.plan, runtime);
+      await this.savePluginData();
+      return { result, state: this.getConfigSyncState() };
+    } catch (error) {
+      this.recordConfigUiState(this.data.v1ConfigSync.batchJournal ? "recovery-required" : "apply-failed", this.errorMessage(error), runtime.recoveryLocation);
+      await this.persistV1DurableState();
+      throw error;
+    }
+  }
+
+  async recoverConfigBatch(action: "continue" | "rollback"): Promise<ConfigApplyOutcome> {
+    this.beginRepositoryOperation("config");
+    try {
+      return await this.recoverConfigBatchLocked(action);
+    } finally {
+      this.endRepositoryOperation("config");
+    }
+  }
+
+  private async recoverConfigBatchLocked(action: "continue" | "rollback"): Promise<ConfigApplyOutcome> {
+    const state = this.data.v1;
+    const journal = this.data.v1ConfigSync.batchJournal;
+    const targetTree = this.data.v1ConfigSync.batchTargetTree;
+    if (!state || !journal) throw new Error("没有可恢复的配置批次");
+    if (!targetTree) throw new Error("配置批次缺少目标 Tree，只能按恢复位置人工处理");
+    const runtime = this.configWorkspaceRuntime(state);
+    try {
+      await this.assertV1RepositoryBinding(state);
+      const applicator = this.createConfigBatchApplicator({
+        runtime,
+        state,
+        plan: journal.plan,
+        targetTree,
+        targetItems: configBatchTargetItems(targetTree, journal.plan),
+        currentTreeHash: null,
+      });
+      const result = await applicator.recover(journal, action);
+      this.finishConfigBatch(result, journal.plan, runtime);
+      await this.savePluginData();
+      return { result, state: this.getConfigSyncState() };
+    } catch (error) {
+      this.recordConfigUiState("recovery-required", this.errorMessage(error), runtime.recoveryLocation);
+      await this.persistV1DurableState();
+      throw error;
+    }
+  }
+
+  private createConfigBatchApplicator(input: {
+    runtime: ConfigWorkspaceRuntime;
+    state: NonNullable<S3SyncData["v1"]>;
+    plan: ConfigBatchPlan;
+    targetTree: ProtocolConfigTree;
+    targetItems: ManagedConfigItem[];
+    currentTreeHash: string | null;
+  }): SafeConfigBatchApplicator {
+    return new SafeConfigBatchApplicator(input.runtime.files, {
+      guard: async () => {
+        const remote = await this.inspectCurrentConfigTarget(input.state, input.plan.targetTreeHash);
+        return {
+          repositoryFingerprint: this.data.v1?.repositoryFingerprint ?? "missing",
+          observedHeads: remote.targetStillPresent ? remote.inspection.headVersionIds : [],
+          projectedTreeHash: this.data.v1ConfigSync.projectedTreeHash ?? input.plan.projectedTreeHash,
+          currentTreeHash: input.currentTreeHash,
+          hasDirtyIntent: this.data.v1ConfigSync.dirtyIntent !== undefined,
+        };
+      },
+      persistJournal: async (journal) => {
+        this.data.v1ConfigSync = {
+          ...this.data.v1ConfigSync,
+          batchJournal: structuredClone(journal),
+          batchTargetTree: structuredClone(input.targetTree),
+          recoveryLocation: input.runtime.recoveryLocation,
+        };
+        await this.persistV1DurableState();
+      },
+      accountProjection: async (targetHeads, targetTreeHash) => {
+        this.settings.configProfile = configProfileFromTree(input.targetTree);
+        this.data.v1ConfigSync = {
+          ...this.data.v1ConfigSync,
+          status: "ready",
+          projectedHeads: [...targetHeads],
+          projectedTreeHash: targetTreeHash,
+          projectedTree: structuredClone(input.targetTree),
+          generation: this.data.v1ConfigSync.generation + 1,
+          dirtyIntent: undefined,
+          lastError: undefined,
+          recoveryLocation: input.runtime.recoveryLocation,
+        };
+        await this.persistV1DurableState();
+      },
+      markConfigDirtyIntent: async (projectedHeads, projectedTreeHash) => {
+        const generation = this.data.v1ConfigSync.generation + 1;
+        this.data.v1ConfigSync = {
+          ...this.data.v1ConfigSync,
+          status: "local-changes",
+          generation,
+          dirtyIntent: this.data.v1ConfigSync.dirtyIntent ?? captureConfigDirtyIntent({ projectedHeads, projectedTreeHash, generation }),
+        };
+        await this.persistV1DurableState();
+      },
+      markRecoveryRequired: async (journal) => {
+        this.data.v1ConfigSync = {
+          ...this.data.v1ConfigSync,
+          status: "recovery-required",
+          batchJournal: structuredClone(journal),
+          batchTargetTree: structuredClone(input.targetTree),
+          recoveryLocation: input.runtime.recoveryLocation,
+          lastError: "配置批次回滚未能安全完成，需要人工恢复。",
+        };
+        await this.persistV1DurableState();
+      },
+    }, {
+      snapshotRef: (plan, path) => `${input.runtime.statePrefix}/recovery/config/${plan.id}/snapshot/${path}`,
+      displacedBeforeRef: (plan, path) => `${input.runtime.statePrefix}/recovery/config/${plan.id}/before/${path}`,
+      displacedAfterRef: (plan, path) => `${input.runtime.statePrefix}/recovery/config/${plan.id}/after/${path}`,
+      verifyStaged: async (target) => {
+        const observed = await input.runtime.files.observe(target.stagedRef);
+        if (observed.kind !== "present" || observed.hash !== target.hash || observed.size !== target.size) {
+          throw new Error("配置暂存文件 Hash 或大小不匹配");
+        }
+      },
+      rebuildCurrentTreeHash: async () => {
+        const rebuilt = await captureLocalConfigSource({
+          runtime: input.runtime,
+          profile: input.targetTree.profile,
+          previousItems: input.targetItems,
+          repositoryId: input.state.repositoryId,
+          descriptorHash: input.state.descriptorHash,
+          configDir: input.state.configDir,
+          historicalConfigDirs: input.state.historicalConfigDirs,
+          currentAppVersion: apiVersion,
+          isDesktop: Platform.isDesktop,
+          syncPluginId: this.manifest.id,
+          quietWindow: () => delay(250),
+        });
+        return rebuilt.result.status === "captured" ? rebuilt.result.treeHash : null;
+      },
+    });
+  }
+
+  private async inspectCurrentConfigTarget(state: NonNullable<S3SyncData["v1"]>, targetTreeHash: string) {
+    const inspection = await new V1RepositoryService(this.settings, state.prefix)
+      .inspectConfigRegister(state.repositoryId, state.descriptorHash);
+    const targetStillPresent = inspection.disposition === "resolved"
+      && inspection.heads.length > 0
+      && inspection.heads.every((head) => head.treeHash === targetTreeHash);
+    return { inspection, targetStillPresent };
+  }
+
+  private async drainDurableOutbox(
+    initialState: NonNullable<S3SyncData["v1"]>,
+    staging: ImmutableContentStaging,
+  ): Promise<void> {
+    if (this.data.v1?.repositoryFingerprint !== initialState.repositoryFingerprint) {
+      throw new Error("durable Outbox repository binding changed");
+    }
+    while (true) {
+      const state = this.data.v1;
+      if (!state) throw new Error("durable Outbox repository binding is missing");
+      const terminalFailure = this.data.v1DurableOutbox.find((entry) => entry.writerId === state.writerId
+        && (entry.state === "integrity-error" || entry.state === "recovery-required"));
+      if (terminalFailure) throw new Error(`durable Outbox ${terminalFailure.id} requires recovery`);
+      let entry = nextDurableOutbox(this.data.v1DurableOutbox, state.writerId);
+      if (!entry) return;
+      const store = await this.v1DurableStore(state);
+      if (entry.state !== "publishing") {
+        const started = await beginDurableOutboxPublicationTransaction(store, entry.id);
+        this.applyDurableOutboxSnapshot(started.payload, false);
+        entry = this.data.v1DurableOutbox.find((candidate) => candidate.id === entry!.id)!;
+      }
+      try {
+        const service = new V1RepositoryService(this.settings, state.prefix);
+        const anchor = await service.replayDurableOutbox({
+          repositoryId: state.repositoryId,
+          descriptorHash: state.descriptorHash,
+          entry,
+          source: staging,
+          writerFrontiers: state.writerFrontiers,
+        });
+        const inspection = await service.inspectConfigRegister(state.repositoryId, state.descriptorHash);
+        if (!inspection.acceptedCommits.some((candidate) => candidate.hash === entry!.commitHash)) {
+          throw new Error("durable Outbox Commit integrity verification did not enter the accepted frontier");
+        }
+        const ingested = advanceIngestedCommitState(
+          { frontiers: state.writerFrontiers, sparseSeenCommits: this.data.v1SparseSeenCommits },
+          inspection.acceptedCommits,
+        );
+        const merged = mergeVerifiedRegisterObservations(inspection.observations, this.data.v1ProjectedHeads);
+        const confirmed = await confirmDurableOutboxPublishedTransaction(store, entry.id, anchor.hash, {
+          observedRegisters: JSON.parse(JSON.stringify(merged.observedRegisters)) as StateJsonValue,
+          pendingApply: JSON.parse(JSON.stringify(merged.pendingApply)) as StateJsonValue,
+          writerFrontiers: JSON.parse(JSON.stringify(ingested.frontiers)) as StateJsonValue,
+          sparseSeenCommits: JSON.parse(JSON.stringify(ingested.sparseSeenCommits)) as StateJsonValue,
+        });
+        this.applyDurableOutboxSnapshot(confirmed.payload, false);
+        this.updateOperationalStatus({ lastSuccessfulPublish: Date.now() });
+      } catch (error) {
+        const category = diagnosticCategory(error);
+        const failure = category === "network" || category === "rate-limit" || category === "authentication"
+          ? "retryable-error"
+          : category === "integrity" ? "integrity-error" : "recovery-required";
+        try {
+          const failed = await failDurableOutboxPublicationTransaction(store, entry.id, failure);
+          this.applyDurableOutboxSnapshot(failed.payload, false);
+        } catch (stateError) {
+          console.error("S3 Sync failed to record durable Outbox failure", stateError);
+        }
+        throw error;
+      }
+    }
+  }
+
+  private async drainDurableOutboxIfPresent(state: NonNullable<S3SyncData["v1"]>): Promise<void> {
+    const staging = this.repositoryContentStaging(state);
+    if (this.data.v1DurableOutbox.some((entry) => entry.writerId === state.writerId && entry.state !== "published")) {
+      await this.drainDurableOutbox(state, staging);
+    }
+    await this.reconcilePendingPublishedVaultMutations(this.data.v1 ?? state);
+  }
+
+  private async freezePublishAndReconcileVaultPut(input: {
+    state: NonNullable<S3SyncData["v1"]>;
+    path: string;
+    parents: string[];
+    capture: StableCapture;
+    captureGeneration: number;
+  }): Promise<{ commitHash: string; versionId: string }> {
+    const reservation = reserveWriterCommit(input.state);
+    const envelope = buildVaultPutPublishEnvelope({
+      prefix: input.state.prefix,
+      repositoryId: input.state.repositoryId,
+      descriptorHash: input.state.descriptorHash,
+      writerId: input.state.writerId,
+      sequence: reservation.sequence,
+      previousCommitHash: reservation.previousCommitHash,
+      createdAt: new Date().toISOString(),
+      clientVersion: this.manifest.version,
+      path: input.path,
+      parents: input.parents,
+      capture: input.capture,
+    });
+    const dirtyGeneration = this.data.v1DirtyIntents[input.path]?.generation;
+    const eventGeneration = latestVaultEvent(this.data.v1VaultEvents, input.path)?.generation;
+    const frozen = await freezeDurableOutbox({
+      envelope,
+      repositoryFingerprint: input.state.repositoryFingerprint,
+      writerId: input.state.writerId,
+      sequence: reservation.sequence,
+      previousCommitHash: reservation.previousCommitHash,
+      captureGeneration: input.captureGeneration,
+      mutations: [{
+        registerKey: `vault:${input.path}`,
+        versionId: `${envelope.commit.hash}:0:0`,
+        kind: "put",
+        parents: [...input.parents],
+        valueHash: input.capture.hash,
+        capturedDirtyGeneration: dirtyGeneration,
+        capturedEventGeneration: eventGeneration,
+      }],
+    }, this.repositoryContentStaging(input.state));
+    await this.causalStatePersistence;
+    await this.savePluginData();
+    const captured = await freezeDurableOutboxStateTransaction(
+      await this.v1DurableStore(input.state),
+      frozen,
+      {
+        dirtyIntents: JSON.parse(JSON.stringify(this.data.v1DirtyIntents)) as StateJsonValue,
+        projections: JSON.parse(JSON.stringify(this.durableVaultProjections())) as StateJsonValue,
+      },
+    );
+    this.applyDurableOutboxSnapshot(captured.payload, false);
+    this.updateOperationalStatus({ phase: "publishing" });
+    await this.drainDurableOutbox(this.data.v1!, this.repositoryContentStaging(this.data.v1!));
+    this.updateOperationalStatus({ phase: "verifying-publication" });
+    await this.causalStatePersistence;
+    await this.reconcilePendingPublishedVaultMutations(this.data.v1!, frozen.id);
+    const reconcile = this.data.v1PublishedReconciles.find((candidate) => candidate.outboxId === frozen.id && candidate.registerKey === `vault:${input.path}`);
+    if (!reconcile || reconcile.state === "pending") throw new Error("Vault publication reconciliation did not complete");
+    return { commitHash: frozen.commitHash, versionId: frozen.mutations[0].versionId };
+  }
+
+  private async reconcilePendingPublishedVaultMutations(
+    state: NonNullable<S3SyncData["v1"]>,
+    onlyOutboxId?: string,
+  ): Promise<void> {
+    for (const pending of [...this.data.v1PublishedReconciles]) {
+      if (pending.state !== "pending" || !pending.registerKey.startsWith("vault:")
+        || (onlyOutboxId !== undefined && pending.outboxId !== onlyOutboxId)) continue;
+      const entry = this.data.v1DurableOutbox.find((candidate) => candidate.id === pending.outboxId);
+      const mutation = entry?.mutations.find((candidate) => candidate.registerKey === pending.registerKey);
+      if (!entry || entry.state !== "published" || !mutation) throw new Error("published Vault Outbox metadata is incomplete");
+      const path = pending.registerKey.slice("vault:".length);
+      const local = this.app.vault.getAbstractFileByPath(path);
+      let localHash: string | null;
+      if (local === null) localHash = null;
+      else if (local instanceof TFile) {
+        const capture = await captureStableVaultFile(this.app.vault, path);
+        if (!capture) continue;
+        localHash = capture.hash;
+      } else continue;
+
+      const capturedDirtyGeneration = mutation.capturedDirtyGeneration ?? 0;
+      const capturedEventGeneration = mutation.capturedEventGeneration ?? 0;
+      const dirty = this.data.v1DirtyIntents[path];
+      const newerDirty = dirty !== undefined && dirty.generation > capturedDirtyGeneration;
+      const rebasedDirty = newerDirty ? {
+        ...dirty,
+        basisHeads: [],
+        localPredecessorVersion: mutation.versionId,
+        projectedValueHash: mutation.valueHash ?? undefined,
+      } : undefined;
+      let events = clearVaultEventsThroughGeneration(this.data.v1VaultEvents, path, capturedEventGeneration);
+      events = bindVaultEventsAfterPublication(events, path, capturedEventGeneration, mutation.versionId);
+      let laterEvent = latestVaultEvent(events, path);
+      const localChanged = localHash !== mutation.valueHash;
+      if (localChanged && !rebasedDirty && !laterEvent) {
+        events = recordVaultEvent(events, {
+          id: crypto.randomUUID(),
+          kind: localHash === null ? "delete" : "upsert",
+          path,
+          projectedHeads: [mutation.versionId],
+          previousGeneration: Math.max(this.data.v1VaultGenerations[path] ?? 0, capturedEventGeneration),
+        });
+        laterEvent = latestVaultEvent(events, path);
+      }
+      const completed = await completePublishedVaultOutboxTransaction(await this.v1DurableStore(state), {
+        outboxId: entry.id,
+        registerKey: mutation.registerKey,
+        projectionKey: path,
+        localValueHash: localHash,
+        syntheticEventId: crypto.randomUUID(),
+        dirtyIntent: rebasedDirty ? JSON.parse(JSON.stringify(rebasedDirty)) as StateJsonValue : null,
+        vaultEvents: JSON.parse(JSON.stringify(events)) as StateJsonValue,
+        vaultGeneration: Math.max(this.data.v1VaultGenerations[path] ?? 0, laterEvent?.generation ?? 0),
+      });
+      const liveDirtyIntents = this.data.v1DirtyIntents;
+      const liveVaultEvents = this.data.v1VaultEvents;
+      const liveVaultGenerations = this.data.v1VaultGenerations;
+      this.applyDurableOutboxSnapshot(completed.payload, false);
+      const record = completed.payload as Record<string, StateJsonValue>;
+      const durableDirtyIntents = clonePayload<typeof this.data.v1DirtyIntents>(record.dirtyIntents, {});
+      const mergedDirtyIntents = { ...durableDirtyIntents, ...liveDirtyIntents };
+      const liveDirty = liveDirtyIntents[path];
+      if (liveDirty && liveDirty.generation > capturedDirtyGeneration) {
+        mergedDirtyIntents[path] = {
+          ...liveDirty,
+          basisHeads: [],
+          localPredecessorVersion: mutation.versionId,
+          projectedValueHash: mutation.valueHash ?? undefined,
+        };
+      } else if (durableDirtyIntents[path]) mergedDirtyIntents[path] = durableDirtyIntents[path];
+      else delete mergedDirtyIntents[path];
+      this.data.v1DirtyIntents = mergedDirtyIntents;
+      this.data.v1VaultEvents = mergeVaultEventsAfterPublication(
+        clonePayload(record.vaultEvents, []),
+        liveVaultEvents,
+        path,
+        capturedEventGeneration,
+        mutation.versionId,
+      );
+      const durableVaultGenerations = clonePayload<Record<string, number>>(record.vaultGenerations, {});
+      this.data.v1VaultGenerations = { ...durableVaultGenerations };
+      for (const [candidatePath, generation] of Object.entries(liveVaultGenerations)) {
+        this.data.v1VaultGenerations[candidatePath] = Math.max(
+          this.data.v1VaultGenerations[candidatePath] ?? 0,
+          generation,
+        );
+      }
+      const projections = clonePayload<Record<string, { projectedHeads: string[]; projectedValueHash: string | null; generation: number }>>(record.projections, {});
+      const projection = projections[path];
+      this.data.v1ProjectedHeads[path] = [...(projection?.projectedHeads ?? [mutation.versionId])];
+      if (mutation.valueHash === null) delete this.data.files[path];
+      else {
+        const blob = entry.objects.find((object) => object.kind === "blob" && object.hash === mutation.valueHash);
+        if (!blob) throw new Error("published Vault Outbox Blob metadata is missing");
+        this.data.files[path] = { hash: mutation.valueHash, size: blob.size, updatedAt: new Date().toISOString() };
+      }
+      delete this.data.v1PendingApply[path];
+      await this.persistV1DurableState();
+    }
+  }
+
+  private async finalizePendingConfigPublication(
+    state: NonNullable<S3SyncData["v1"]>,
+    runtime: ConfigWorkspaceRuntime,
+  ): Promise<void> {
+    const publication = this.data.v1ConfigSync.publication;
+    if (!publication) return;
+    const entry = this.data.v1DurableOutbox.find((candidate) => candidate.id === publication.outboxId);
+    if (!entry || entry.state !== "published") throw new Error("配置发布 Outbox 尚未完成验证");
+    let localTreeHash: string | null = null;
+    if (publication.projectLocal) {
+      const captured = await captureLocalConfigSource({
+        runtime,
+        profile: publication.tree.profile,
+        previousItems: persistedConfigTreeItems(publication.tree),
+        repositoryId: state.repositoryId,
+        descriptorHash: state.descriptorHash,
+        configDir: state.configDir,
+        historicalConfigDirs: state.historicalConfigDirs,
+        currentAppVersion: apiVersion,
+        isDesktop: Platform.isDesktop,
+        syncPluginId: this.manifest.id,
+        quietWindow: () => delay(500),
+      });
+      if (captured.result.status !== "captured" || !captured.source) {
+        const reason = captured.result.status === "captured" ? "ConfigTree 视图缺失" : captured.result.reason;
+        throw new Error(`发布后本地配置复查未完成：${reason}`);
+      }
+      localTreeHash = captured.source.treeHash;
+    }
+    const completed = await completePublishedConfigOutboxTransaction(
+      await this.v1DurableStore(state),
+      { outboxId: publication.outboxId, localTreeHash },
+    );
+    this.applyDurableOutboxSnapshot(completed.payload, true);
+    if (publication.projectLocal) this.settings.configProfile = configProfileFromTree(publication.tree);
+  }
+
+  private applyDurableOutboxSnapshot(payload: StateJsonValue, includeConfigSync: boolean): void {
+    const durable = validateRepositoryStatePayload(payload);
+    const state = this.data.v1;
+    if (!state || state.repositoryFingerprint !== durable.repositoryFingerprint) {
+      throw new Error("durable Outbox state belongs to another repository binding");
+    }
+    const record = payload as Record<string, StateJsonValue>;
+    this.data.v1 = {
+      ...state,
+      writerId: durable.writerId,
+      nextSequence: durable.nextSequence,
+      previousCommitHash: durable.previousCommitHash,
+      writerFrontiers: durable.writerFrontiers,
+    };
+    this.data.v1DurableOutbox = clonePayload(record.durableOutbox, []);
+    this.data.v1PublishedReconciles = clonePayload(record.publishedReconciles, []);
+    this.data.v1SparseSeenCommits = clonePayload(record.sparseSeenCommits, {});
+    this.data.v1ObservedRegisters = clonePayload(record.observedRegisters, {});
+    this.data.v1PendingApply = clonePayload(record.pendingApply, {});
+    if (includeConfigSync) {
+      this.data.v1ConfigSync = {
+        ...createDefaultConfigSyncState(),
+        ...clonePayload<PersistedConfigSyncState>(record.configSync, this.data.v1ConfigSync),
+      };
+    }
+  }
+
+  private finishConfigBatch(result: ConfigBatchResult, plan: ConfigBatchPlan, runtime: ConfigWorkspaceRuntime): void {
+    const changedFormalConfig = plan.operations.some((operation) => operation.target.kind !== "stop-managing");
+    if (result.status === "accounted" || result.status === "adopted-without-write") {
+      this.data.v1ConfigSync = {
+        ...this.data.v1ConfigSync,
+        status: "ready",
+        batchJournal: undefined,
+        batchTargetTree: undefined,
+        reloadRequired: result.status === "accounted" && changedFormalConfig,
+        lastError: undefined,
+      };
+    } else if (result.status === "rolled-back") {
+      this.data.v1ConfigSync = { ...this.data.v1ConfigSync, batchJournal: undefined, batchTargetTree: undefined };
+      this.recordConfigUiState("apply-failed", "配置应用失败，已回滚；恢复副本仍保留。", runtime.recoveryLocation);
+    } else if (result.status === "recovery-required") {
+      this.recordConfigUiState("recovery-required", "配置回滚需要人工恢复。", runtime.recoveryLocation);
+    } else if (result.status === "local-change" || result.status === "stale-plan") {
+      this.recordConfigUiState("local-changes", "确认后本地配置或远端快照头发生变化，请重新预览。", runtime.recoveryLocation);
+    } else if (result.status === "conservative-only") {
+      this.recordConfigUiState("apply-failed", "当前适配器只能生成候选，不能安全写入正式配置路径。", runtime.recoveryLocation);
+    }
+  }
+
+  isV1OperationRunning(): boolean { return this.repositoryOperation.isRunning(); }
 
   async runManualSyncV1(): Promise<void> {
     this.cancelV1Retry(true);
@@ -376,13 +1517,13 @@ export default class S3SyncPlugin extends Plugin {
       if (!fromRetry) new Notice("S3 Sync：仓库当前仅允许诊断或非破坏性重新接入。");
       return;
     }
-    if (this.v1SyncRunning) {
+    if (this.repositoryOperation.isRunning()) {
       if (fromRetry) this.deferV1Retry();
-      else new Notice("S3 Sync：已有同步任务正在运行。");
+      else new Notice("S3 Sync：已有仓库操作正在运行。");
       return;
     }
 
-    this.v1SyncRunning = true;
+    this.repositoryOperation.acquire("vault");
     this.updateOperationalStatus({ phase: "verifying-repository", retryAt: undefined, lastError: undefined });
     try {
       const pull = await this.pullMissingFilesV1(false);
@@ -402,7 +1543,7 @@ export default class S3SyncPlugin extends Plugin {
     } catch (error) {
       this.recordOperationalError(error, true);
     } finally {
-      this.v1SyncRunning = false;
+      this.endRepositoryOperation("vault");
       this.updateStatus();
     }
   }
@@ -507,8 +1648,7 @@ export default class S3SyncPlugin extends Plugin {
   async previewSyncV1(openDashboard = true): Promise<void> {
     const state = this.data.v1;
     if (!state) { new Notice("S3 Sync：尚未选择 v1 仓库。"); return; }
-    if (this.v1SyncRunning) { new Notice("S3 Sync：已有仓库操作正在运行。"); return; }
-    this.v1SyncRunning = true;
+    if (!this.repositoryOperation.tryAcquire("vault")) { new Notice("S3 Sync：已有仓库操作正在运行。"); return; }
     this.updateOperationalStatus({ phase: "previewing", decisions: [], lastError: undefined });
     try {
       await this.assertV1RepositoryBinding(state);
@@ -521,7 +1661,7 @@ export default class S3SyncPlugin extends Plugin {
     } catch (error) {
       this.recordOperationalError(error);
     } finally {
-      this.v1SyncRunning = false;
+      this.endRepositoryOperation("vault");
     }
     this.updateStatus();
   }
@@ -529,8 +1669,7 @@ export default class S3SyncPlugin extends Plugin {
   async runFullAuditV1(): Promise<void> {
     const state = this.data.v1;
     if (!state) { new Notice("S3 Sync：尚未选择 v1 仓库。"); return; }
-    if (this.v1SyncRunning) { new Notice("S3 Sync：已有仓库操作正在运行。"); return; }
-    this.v1SyncRunning = true;
+    if (!this.repositoryOperation.tryAcquire("vault")) { new Notice("S3 Sync：已有仓库操作正在运行。"); return; }
     this.updateOperationalStatus({ phase: "auditing", audit: { state: "running", completedObjects: 0, totalObjects: 0, missingClosure: [], resumable: true } });
     try {
       await this.assertV1RepositoryBinding(state);
@@ -570,7 +1709,7 @@ export default class S3SyncPlugin extends Plugin {
       });
       this.recordOperationalError(error);
     } finally {
-      this.v1SyncRunning = false;
+      this.endRepositoryOperation("vault");
     }
     this.updateStatus();
   }
@@ -607,6 +1746,10 @@ export default class S3SyncPlugin extends Plugin {
   }
 
   async testS3Connection(): Promise<void> {
+    if (!this.repositoryOperation.tryAcquire("vault")) {
+      new Notice("S3 Sync：已有仓库操作正在运行。");
+      return;
+    }
     try {
       const prefix = this.getEffectivePrefix();
       const service = new V1RepositoryService(this.settings, prefix);
@@ -645,10 +1788,16 @@ export default class S3SyncPlugin extends Plugin {
     } catch (error) {
       new Notice(`S3 Sync 连接失败：${this.errorMessage(error)}`);
       console.error(error);
+    } finally {
+      this.endRepositoryOperation("vault");
     }
   }
 
   async discoverV1Repositories(): Promise<void> {
+    if (!this.repositoryOperation.tryAcquire("vault")) {
+      new Notice("S3 Sync：已有仓库操作正在运行。");
+      return;
+    }
     try {
       const repositories = await new V1RepositoryService(this.settings, this.getEffectivePrefix()).discover();
       if (repositories.length !== 1) {
@@ -660,10 +1809,16 @@ export default class S3SyncPlugin extends Plugin {
     } catch (error) {
       new Notice(`S3 Sync v1 仓库发现失败：${this.errorMessage(error)}`);
       console.error(error);
+    } finally {
+      this.endRepositoryOperation("vault");
     }
   }
 
   private async createV1Repository(): Promise<void> {
+    if (!this.repositoryOperation.tryAcquire("vault")) {
+      new Notice("S3 Sync：已有仓库操作正在运行。");
+      return;
+    }
     try {
       if (this.data.v1ReattachRequired || this.data.v1OperationalStatus.recoveryRequired) {
         throw new Error("检测到需要恢复的仓库状态；不能创建新仓库覆盖现有因果记录");
@@ -692,10 +1847,16 @@ export default class S3SyncPlugin extends Plugin {
     } catch (error) {
       new Notice(`S3 Sync v1 repository creation failed: ${this.errorMessage(error)}`);
       console.error(error);
+    } finally {
+      this.endRepositoryOperation("vault");
     }
   }
 
   private async selectV1Repository(): Promise<void> {
+    if (!this.repositoryOperation.tryAcquire("vault")) {
+      new Notice("S3 Sync：已有仓库操作正在运行。");
+      return;
+    }
     try {
       if (!this.data.v1 && (this.data.v1ReattachRequired || this.data.v1OperationalStatus.recoveryRequired)) {
         throw new Error("检测到需要恢复的仓库状态；请执行非破坏性重新接入");
@@ -739,17 +1900,19 @@ export default class S3SyncPlugin extends Plugin {
     } catch (error) {
       new Notice(`S3 Sync v1 repository selection failed: ${this.errorMessage(error)}`);
       console.error(error);
+    } finally {
+      this.endRepositoryOperation("vault");
     }
   }
 
   private async publishActiveFileV1(notify = true): Promise<V1OperationResult> {
-    if (notify && this.v1SyncRunning) {
+    if (notify && !this.repositoryOperation.tryAcquire("vault")) {
       const error = new Error("已有同步任务正在运行");
       new Notice(`S3 Sync：${error.message}。`);
       return { status: "failed", error };
     }
+    if (!notify) this.repositoryOperation.assertHeldBy("vault");
     if (notify) this.cancelV1Retry(true);
-    if (notify) this.v1SyncRunning = true;
     try {
       if (!mayRunMutatingSync(this.getOperationalStatus())) throw new Error("repository recovery requires diagnostics-only mode");
       let state = this.data.v1;
@@ -758,6 +1921,8 @@ export default class S3SyncPlugin extends Plugin {
       }
       this.updateOperationalStatus({ phase: "verifying-repository", lastError: undefined });
       await this.assertV1RepositoryBinding(state);
+      await this.drainDurableOutboxIfPresent(state);
+      state = this.data.v1!;
       const file = this.app.workspace.getActiveFile();
       if (!file) throw new Error("no active file to publish");
       if (!this.isV1ManagedVaultPath(file.path)) throw new Error("local-path is outside the managed Vault scope");
@@ -797,43 +1962,34 @@ export default class S3SyncPlugin extends Plugin {
         await this.saveSyncData();
         throw new Error("local and remote content both changed; resolve the conflict before publishing");
       }
-      const parents = dirtyIntent?.basisHeads ?? vaultEvent?.basisHeads ?? remote?.heads ?? [];
+      const parents = dirtyIntent
+        ? dirtyIntent.localPredecessorVersion ? [dirtyIntent.localPredecessorVersion] : dirtyIntent.basisHeads
+        : vaultEvent ? vaultEvent.localPredecessorVersion ? [vaultEvent.localPredecessorVersion] : vaultEvent.basisHeads
+          : remote?.heads ?? [];
       this.updateOperationalStatus({ phase: "freezing-outbox" });
-      const reservation = reserveWriterCommit(state);
-      this.updateOperationalStatus({ phase: "publishing" });
-      const published = await service.publishVaultPut({
-        repositoryId: state.repositoryId,
-        descriptorHash: state.descriptorHash,
-        writerId: state.writerId,
-        sequence: reservation.sequence,
-        previousCommitHash: reservation.previousCommitHash,
-        createdAt: new Date().toISOString(),
-        clientVersion: this.manifest.version,
+      const published = await this.freezePublishAndReconcileVaultPut({
+        state,
         path: file.path,
         parents,
         capture,
-        writerFrontiers: state.writerFrontiers,
+        captureGeneration: Math.max(
+          dirtyIntent?.generation ?? 0,
+          vaultEvent?.generation ?? 0,
+          this.data.v1VaultGenerations[file.path] ?? 0,
+        ),
       });
-      this.updateOperationalStatus({ phase: "verifying-publication" });
-      const commitHash = published.hash;
-      this.data.v1 = {
-        ...state,
-        ...recordPublishedWriterCommit(state, commitHash, () => crypto.randomUUID()),
-        writerFrontiers: advanceWriterFrontiers(state.writerFrontiers, [published]),
-      };
-      await this.savePluginData();
+      const commitHash = published.commitHash;
       this.data.files[file.path] = { hash: capture.hash, size: capture.size, updatedAt: new Date().toISOString() };
-      this.data.v1ProjectedHeads[file.path] = [`${commitHash}:0:0`];
+      this.data.v1ProjectedHeads[file.path] = [published.versionId];
       delete this.data.v1PendingApply[file.path];
       if (dirtyIntent?.localCandidates.length) {
         this.data.v1RecoveryCandidates[file.path] = dirtyIntent.localCandidates.map((candidate) => ({ ...candidate }));
       }
-      delete this.data.v1DirtyIntents[file.path];
       if (vaultEvent) {
         this.data.v1VaultEvents = clearVaultEventsThroughGeneration(this.data.v1VaultEvents, file.path, vaultEvent.generation);
       }
       if (parents.length === 0) {
-        this.data.v1VaultEvents = bindRootDeletePredecessor(this.data.v1VaultEvents, file.path, vaultEvent?.generation ?? 0, `${commitHash}:0:0`);
+        this.data.v1VaultEvents = bindRootDeletePredecessor(this.data.v1VaultEvents, file.path, vaultEvent?.generation ?? 0, published.versionId);
       }
       this.updateOperationalStatus({ lastSuccessfulPublish: Date.now(), ...(notify ? { phase: "idle" as const } : {}) });
       await this.saveSyncData();
@@ -844,24 +2000,26 @@ export default class S3SyncPlugin extends Plugin {
       console.error(error);
       return { status: "failed", error };
     } finally {
-      if (notify) this.v1SyncRunning = false;
+      if (notify) this.endRepositoryOperation("vault");
     }
   }
 
   private async pullMissingFilesV1(notify = true): Promise<V1OperationResult> {
-    if (notify && this.v1SyncRunning) {
+    if (notify && !this.repositoryOperation.tryAcquire("vault")) {
       const error = new Error("已有同步任务正在运行");
       new Notice(`S3 Sync：${error.message}。`);
       return { status: "failed", error };
     }
+    if (!notify) this.repositoryOperation.assertHeldBy("vault");
     if (notify) this.cancelV1Retry(true);
-    if (notify) this.v1SyncRunning = true;
     try {
       if (!mayRunMutatingSync(this.getOperationalStatus())) throw new Error("repository recovery requires diagnostics-only mode");
       let state = this.data.v1;
       if (!state || state.prefix !== this.getEffectivePrefix()) throw new Error("select a v1 repository for the current Prefix first");
       this.updateOperationalStatus({ phase: "verifying-repository", lastError: undefined });
       await this.assertV1RepositoryBinding(state);
+      await this.drainDurableOutboxIfPresent(state);
+      state = this.data.v1!;
       this.updateOperationalStatus({ phase: "pulling" });
       const pulled = await new V1RepositoryService(this.settings, state.prefix).listResolvedVaultPutsWithDiagnostics(state.repositoryId, state.descriptorHash);
       this.updateOperationalStatus({ phase: "merging" });
@@ -956,7 +2114,7 @@ export default class S3SyncPlugin extends Plugin {
       console.error(error);
       return { status: "failed", error };
     } finally {
-      if (notify) this.v1SyncRunning = false;
+      if (notify) this.endRepositoryOperation("vault");
     }
   }
 
@@ -1484,6 +2642,10 @@ export default class S3SyncPlugin extends Plugin {
       v1RecoveryRecords: persisted?.syncData?.v1RecoveryRecords ?? {},
       v1ReattachRequired: persisted?.syncData?.v1ReattachRequired ?? false,
       v1OperationalStatus: operationalStatus,
+      v1ConfigSync: {
+        ...defaultData.v1ConfigSync,
+        ...(persisted?.syncData?.v1ConfigSync ?? {}),
+      },
       v1: persisted?.syncData?.v1 ?? selectedRepository,
     };
     try {
@@ -1589,12 +2751,7 @@ export default class S3SyncPlugin extends Plugin {
       || typeof state.configDir !== "string" || !Array.isArray(state.historicalConfigDirs)) return;
     const store = await this.v1DurableStore(state);
     const identity = repositoryDurablePayload(state) as Record<string, StateJsonValue>;
-    const projectionPaths = new Set([...Object.keys(this.data.v1ProjectedHeads), ...Object.keys(this.data.files), ...Object.keys(this.data.v1VaultGenerations)]);
-    const projections = Object.fromEntries([...projectionPaths].sort().map((path) => [path, {
-      projectedHeads: [...(this.data.v1ProjectedHeads[path] ?? [])],
-      projectedValueHash: this.data.files[path]?.hash ?? null,
-      generation: this.data.v1VaultGenerations[path] ?? 0,
-    }]));
+    const projections = this.durableVaultProjections();
     const payload = JSON.parse(JSON.stringify({
       ...identity,
       dirtyIntents: this.data.v1DirtyIntents,
@@ -1615,6 +2772,7 @@ export default class S3SyncPlugin extends Plugin {
       files: this.data.files,
       conflicts: this.data.conflicts,
       operationalStatus: this.data.v1OperationalStatus,
+      configSync: this.data.v1ConfigSync,
       reattachRequired: this.data.v1ReattachRequired,
     })) as StateJsonValue;
     await writeRepositoryStateTransaction(store, payload);
@@ -1663,6 +2821,23 @@ export default class S3SyncPlugin extends Plugin {
       },
     };
     this.data.v1ReattachRequired = clonePayload(payload.reattachRequired, false);
+    this.data.v1ConfigSync = {
+      ...createDefaultConfigSyncState(),
+      ...clonePayload<PersistedConfigSyncState>(payload.configSync, this.data.v1ConfigSync),
+    };
+    const batch = this.data.v1ConfigSync.batchJournal;
+    if (batch?.state === "accounted") {
+      this.data.v1ConfigSync = { ...this.data.v1ConfigSync, batchJournal: undefined };
+    } else if (batch) {
+      this.data.v1ConfigSync = {
+        ...this.data.v1ConfigSync,
+        status: "recovery-required",
+        lastError: "检测到未完成的配置批次，需要继续或回滚。",
+      };
+    }
+    if (!this.data.v1ConfigSync.dirtyIntent && this.data.v1ConfigSync.projectedTree) {
+      this.settings.configProfile = configProfileFromTree(this.data.v1ConfigSync.projectedTree);
+    }
   }
 
   private async v1DurableStore(state: NonNullable<S3SyncData["v1"]>): Promise<DurableStateStore<StateJsonValue>> {
@@ -1703,10 +2878,12 @@ export default class S3SyncPlugin extends Plugin {
   }
 
   private async resolveV1Conflict(conflict: S3SyncData["conflicts"][string], mode: "local" | "remote"): Promise<void> {
-      let state = this.data.v1;
-      if (!state) throw new Error("v1 repository is not selected");
-      await this.assertV1RepositoryBinding(state);
-      const service = new V1RepositoryService(this.settings, state.prefix);
+    let state = this.data.v1;
+    if (!state) throw new Error("v1 repository is not selected");
+    await this.assertV1RepositoryBinding(state);
+    await this.drainDurableOutboxIfPresent(state);
+    state = this.data.v1!;
+    const service = new V1RepositoryService(this.settings, state.prefix);
     const pulled = await service.resolvedVaultPutWithAnchors(state.repositoryId, state.descriptorHash, conflict.path);
     state = await this.persistObservedRemoteState(state, pulled.acceptedCommits, pulled.observations);
     const remote = pulled.value;
@@ -1725,16 +2902,57 @@ export default class S3SyncPlugin extends Plugin {
     } else {
       const capture = await captureStableVaultFile(this.app.vault, conflict.path);
       if (!capture || capture.hash !== conflict.localHash) throw new Error("local conflict content changed; refresh before resolving");
-      const reservation = reserveWriterCommit(state);
-      const published = await service.publishVaultPut({ repositoryId: state.repositoryId, descriptorHash: state.descriptorHash, writerId: state.writerId, sequence: reservation.sequence, previousCommitHash: reservation.previousCommitHash, createdAt: new Date().toISOString(), clientVersion: this.manifest.version, path: conflict.path, parents: remote.heads, capture, writerFrontiers: state.writerFrontiers });
-      const commitHash = published.hash;
-      this.data.v1 = { ...state, ...recordPublishedWriterCommit(state, commitHash, () => crypto.randomUUID()), writerFrontiers: advanceWriterFrontiers(state.writerFrontiers, [published]) };
-      await this.savePluginData();
+      await this.freezePublishAndReconcileVaultPut({
+        state,
+        path: conflict.path,
+        parents: remote.heads,
+        capture,
+        captureGeneration: Math.max(
+          this.data.v1DirtyIntents[conflict.path]?.generation ?? 0,
+          latestVaultEvent(this.data.v1VaultEvents, conflict.path)?.generation ?? 0,
+          this.data.v1VaultGenerations[conflict.path] ?? 0,
+        ),
+      });
       this.data.files[conflict.path] = { hash: capture.hash, size: capture.size, updatedAt: new Date().toISOString() };
       delete this.data.v1PendingApply[conflict.path];
     }
     this.data.conflicts[conflict.id] = { ...conflict, resolved: true };
     await this.saveSyncData();
+  }
+
+  private configWorkspaceRuntime(state: NonNullable<S3SyncData["v1"]>): ConfigWorkspaceRuntime {
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof FileSystemAdapter)) throw new Error("配置应用需要桌面 FileSystemAdapter；当前平台只能预览");
+    return createConfigWorkspaceRuntime({ adapter, configDir: state.configDir, repositoryId: state.repositoryId });
+  }
+
+  private repositoryContentStaging(state: NonNullable<S3SyncData["v1"]>): ImmutableContentStaging {
+    return new ImmutableContentStaging(new ObsidianContentStagingAdapter(
+      this.app.vault.adapter,
+      localStateRoot(state.configDir, state.repositoryId),
+    ));
+  }
+
+  private durableVaultProjections(): Record<string, { projectedHeads: string[]; projectedValueHash: string | null; generation: number }> {
+    const paths = new Set([
+      ...Object.keys(this.data.v1ProjectedHeads),
+      ...Object.keys(this.data.files),
+      ...Object.keys(this.data.v1VaultGenerations),
+    ]);
+    return Object.fromEntries([...paths].sort().map((path) => [path, {
+      projectedHeads: [...(this.data.v1ProjectedHeads[path] ?? [])],
+      projectedValueHash: this.data.files[path]?.hash ?? null,
+      generation: this.data.v1VaultGenerations[path] ?? 0,
+    }]));
+  }
+
+  private recordConfigUiState(status: PersistedConfigSyncState["status"], lastError?: string, recoveryLocation?: string): void {
+    this.data.v1ConfigSync = {
+      ...this.data.v1ConfigSync,
+      status,
+      ...(lastError ? { lastError } : { lastError: undefined }),
+      ...(recoveryLocation ? { recoveryLocation } : {}),
+    };
   }
 
   private errorMessage(error: unknown): string {
@@ -1761,6 +2979,58 @@ function durableOutboxReference(entry: DurableOutboxEntry) {
 
 function clonePayload<T>(value: StateJsonValue | undefined, fallback: T): T {
   return value === undefined ? fallback : JSON.parse(JSON.stringify(value)) as T;
+}
+
+function persistedConfigTreeItems(tree: PersistedConfigSyncState["projectedTree"]): ManagedConfigItem[] {
+  return tree?.items.map((item): ManagedConfigItem => item.kind === "delete"
+    ? { path: item.path, kind: "delete" }
+    : {
+      path: item.path,
+      kind: "put",
+      hash: item.blobHash!,
+      size: item.size!,
+      stagedRef: `projected:${item.path}`,
+    }) ?? [];
+}
+
+function configProfileFromTree(tree: ProtocolConfigTree): ConfigProfile {
+  const { schema: _schema, ...profile } = tree.profile;
+  return structuredClone(profile);
+}
+
+function configBatchTargetItems(tree: ProtocolConfigTree, plan: ConfigBatchPlan): ManagedConfigItem[] {
+  const operations = new Map(plan.operations.map((operation) => [operation.path, operation]));
+  return tree.items.map((item): ManagedConfigItem => {
+    if (item.kind === "delete") return { path: item.path, kind: "delete" };
+    const operation = operations.get(item.path);
+    const stagedRef = operation?.target.kind === "put" ? operation.target.stagedRef : `projected:${item.path}`;
+    return { path: item.path, kind: "put", hash: item.blobHash!, size: item.size!, stagedRef };
+  });
+}
+
+function emptyConfigCenterSnapshot(
+  state: ConfigCenterSnapshot["state"],
+  persisted: PersistedConfigSyncState,
+): ConfigCenterSnapshot {
+  return {
+    state,
+    remote: [],
+    diff: [],
+    inventory: [],
+    allLocalEnabledPluginIds: [],
+    projectedHeads: [...persisted.projectedHeads],
+    projectedTreeHash: persisted.projectedTreeHash,
+    recoveryLocation: persisted.recoveryLocation ?? "尚未建立仓库恢复位置",
+    blockedDetails: [],
+  };
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function* singleChunk(bytes: Uint8Array): AsyncIterable<Uint8Array> {
+  yield new Uint8Array(bytes);
 }
 
 const utf8Encoder = new TextEncoder();

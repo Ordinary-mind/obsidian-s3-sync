@@ -17,6 +17,17 @@ import { repositoryFingerprint, type RepositoryLocator } from "./locator";
 import { canonicalizeProtocolJson } from "../protocol/json";
 import { parseRepositoryDurablePayload } from "./repository-durable-payload";
 import { isMaximumSequence, nextSequence } from "./sequence";
+import { buildConfigTreeObject, type ProtocolConfigTree } from "./config-tree";
+import { configBatchPlanHash, type ConfigBatchOperation, type ConfigBatchPlan } from "./config-batch-apply";
+import { LOCAL_STATE_CONTAINER } from "./scope";
+import { normalizeVaultPath } from "./path";
+import {
+  bindVaultEventsAfterPublication,
+  latestVaultEvent,
+  mergeVaultEventsAfterPublication,
+  recordVaultEvent,
+  type VaultEventIntent,
+} from "./vault-event";
 
 export interface DurableOutboxReference {
   id: string;
@@ -46,11 +57,20 @@ export async function writeRepositoryStateTransaction(
     const merged: Record<string, StateJsonValue> = { ...(isRecord(current) ? current : {}), ...next };
     const nextIdentity = validateRepositoryStatePayload(merged);
     if (current) {
+      if (!isRecord(current)) throw new Error("repository transaction payload must be an object");
       const currentIdentity = validateRepositoryStatePayload(current);
       if (currentIdentity.repositoryFingerprint !== nextIdentity.repositoryFingerprint) throw new Error("repository transaction fingerprint changed");
       if (currentIdentity.writerId === nextIdentity.writerId && BigInt(nextIdentity.nextSequence) < BigInt(currentIdentity.nextSequence)) {
         throw new Error("repository transaction writer sequence regressed");
       }
+      const currentEntries = parseDurableOutboxEntries(current.durableOutbox);
+      const nextEntries = parseDurableOutboxEntries(merged.durableOutbox);
+      assertDurableOutboxEvolution(currentEntries, nextEntries);
+      assertConfigPublicationEvolution(current.configSync, merged.configSync, currentEntries, nextEntries);
+      assertPublishedReconcileEvolution(
+        parsePublishedReconciles(current.publishedReconciles),
+        parsePublishedReconciles(merged.publishedReconciles),
+      );
     }
     return merged;
   });
@@ -87,7 +107,7 @@ export async function rebindVerifiedRepositoryRouteStateTransaction(
 export async function freezeDurableOutboxStateTransaction(
   store: DurableStateStore<StateJsonValue>,
   entry: DurableOutboxEntry,
-  causalPatch: Partial<Record<"dirtyIntents" | "projections" | "localConcurrentRecords", StateJsonValue>> = {},
+  causalPatch: Partial<Record<"dirtyIntents" | "projections" | "localConcurrentRecords" | "configSync", StateJsonValue>> = {},
 ): Promise<DurableStateSnapshot<StateJsonValue>> {
   return store.update((current) => {
     if (!isRecord(current)) throw new Error("repository state must exist before freezing Outbox");
@@ -144,6 +164,18 @@ export async function beginDurableOutboxPublicationTransaction(
     if (!next || next.id !== outboxId) throw new Error("Outbox is not the next FIFO entry");
     if (next.state === "publishing") return entries;
     return replaceOutbox(entries, transitionDurableOutbox(next, "publishing"));
+  });
+}
+
+export async function failDurableOutboxPublicationTransaction(
+  store: DurableStateStore<StateJsonValue>,
+  outboxId: string,
+  failure: "retryable-error" | "integrity-error" | "recovery-required",
+): Promise<DurableStateSnapshot<StateJsonValue>> {
+  return updateDurableOutbox(store, (entries) => {
+    const entry = entries.find((candidate) => candidate.id === outboxId);
+    if (!entry || entry.state !== "publishing") throw new Error("publishing Outbox was not found");
+    return replaceOutbox(entries, transitionDurableOutbox(entry, failure));
   });
 }
 
@@ -208,6 +240,170 @@ export async function confirmDurableOutboxPublishedTransaction(
     if (current.dirtyIntents !== merged.dirtyIntents || current.projections !== merged.projections) {
       throw new Error("publish confirmation cannot mutate dirty intent or projection");
     }
+    validateRepositoryStatePayload(merged);
+    return merged;
+  });
+}
+
+export async function completePublishedConfigOutboxTransaction(
+  store: DurableStateStore<StateJsonValue>,
+  input: { outboxId: string; localTreeHash: string | null },
+): Promise<DurableStateSnapshot<StateJsonValue>> {
+  return store.update((current) => {
+    if (!isRecord(current)) throw new Error("repository state is missing");
+    validateRepositoryStatePayload(current);
+    if (input.localTreeHash !== null && !isHash(input.localTreeHash)) throw new Error("local ConfigTree hash is invalid");
+    const entries = parseDurableOutboxEntries(current.durableOutbox);
+    const entry = entries.find((candidate) => candidate.id === input.outboxId);
+    if (!entry || entry.state !== "published") throw new Error("config Outbox is not verified published");
+    const mutation = entry.mutations.find((candidate) => candidate.registerKey === "config:portable" && candidate.kind === "config-snapshot");
+    if (!mutation) throw new Error("config Outbox Mutation is missing");
+    const configSync = recordValue(current.configSync, "config sync state");
+    const publication = recordValue(configSync.publication, "config publication");
+    if (publication.outboxId !== entry.id || publication.treeHash !== mutation.valueHash || !isRecord(publication.tree)) {
+      throw new Error("config publication does not match its frozen Outbox");
+    }
+
+    const reconciles = parsePublishedReconciles(current.publishedReconciles);
+    const reconcileIndex = reconciles.findIndex((candidate) => candidate.outboxId === entry.id && candidate.registerKey === "config:portable");
+    if (reconcileIndex < 0 || reconciles[reconcileIndex].state !== "pending") {
+      throw new Error("pending config PublishedReconcile was not found");
+    }
+    const projectLocal = publication.projectLocal === true;
+    const localMatches = projectLocal && input.localTreeHash === publication.treeHash;
+    reconciles[reconcileIndex] = { ...reconciles[reconcileIndex], state: localMatches ? "adopted" : "next-generation" };
+
+    const nextConfig: Record<string, StateJsonValue> = { ...configSync, status: projectLocal ? (localMatches ? "ready" : "local-changes") : "local-changes" };
+    delete nextConfig.publication;
+    delete nextConfig.lastError;
+    if (projectLocal) {
+      const generation = Math.max(entry.captureGeneration, configSync.generation as number) + 1;
+      nextConfig.projectedHeads = [mutation.versionId];
+      nextConfig.projectedTreeHash = publication.treeHash;
+      nextConfig.projectedTree = publication.tree;
+      nextConfig.generation = generation;
+      if (localMatches) delete nextConfig.dirtyIntent;
+      else {
+        nextConfig.dirtyIntent = {
+          generation,
+          basisHeads: [mutation.versionId],
+          projectedTreeHash: publication.treeHash,
+        };
+      }
+    }
+
+    const merged: Record<string, StateJsonValue> = {
+      ...current,
+      configSync: nextConfig,
+      publishedReconciles: toJson(reconciles),
+    };
+    validateRepositoryStatePayload(merged);
+    return merged;
+  });
+}
+
+export async function completePublishedVaultOutboxTransaction(
+  store: DurableStateStore<StateJsonValue>,
+  input: {
+    outboxId: string;
+    registerKey: string;
+    projectionKey: string;
+    localValueHash: string | null;
+    syntheticEventId: string;
+    dirtyIntent: StateJsonValue | null;
+    vaultEvents: StateJsonValue;
+    vaultGeneration: number;
+  },
+): Promise<DurableStateSnapshot<StateJsonValue>> {
+  return store.update((current) => {
+    if (!isRecord(current)) throw new Error("repository state is missing");
+    validateRepositoryStatePayload(current);
+    if ((input.localValueHash !== null && !isHash(input.localValueHash)) || input.syntheticEventId.length === 0
+      || !Array.isArray(input.vaultEvents) || !Number.isSafeInteger(input.vaultGeneration) || input.vaultGeneration < 0) {
+      throw new Error("Vault publication causal state is invalid");
+    }
+    const entry = parseDurableOutboxEntries(current.durableOutbox).find((candidate) => candidate.id === input.outboxId);
+    const mutation = entry?.mutations.find((candidate) => candidate.registerKey === input.registerKey);
+    if (!entry || entry.state !== "published" || !mutation || !mutation.registerKey.startsWith("vault:")) {
+      throw new Error("Vault Outbox is not verified published");
+    }
+    const reconciles = parsePublishedReconciles(current.publishedReconciles);
+    const reconcileIndex = reconciles.findIndex((candidate) => candidate.outboxId === entry.id && candidate.registerKey === input.registerKey);
+    if (reconcileIndex < 0 || reconciles[reconcileIndex].state !== "pending") {
+      throw new Error("pending Vault PublishedReconcile was not found");
+    }
+    const capturedDirtyGeneration = mutation.capturedDirtyGeneration ?? entry.captureGeneration;
+    const capturedEventGeneration = mutation.capturedEventGeneration ?? entry.captureGeneration;
+    const dirtyIntents = { ...recordOrEmpty(current.dirtyIntents) };
+    const nextDirty = mergePublishedDirtyIntent(
+      dirtyIntents[input.projectionKey],
+      input.dirtyIntent,
+      capturedDirtyGeneration,
+      mutation.versionId,
+      mutation.valueHash,
+    );
+    if (nextDirty === undefined) delete dirtyIntents[input.projectionKey];
+    else dirtyIntents[input.projectionKey] = nextDirty;
+
+    let vaultEvents = mergeVaultEventsAfterPublication(
+      parseVaultEvents(current.vaultEvents),
+      parseVaultEvents(input.vaultEvents),
+      input.projectionKey,
+      capturedEventGeneration,
+      mutation.versionId,
+    );
+    let laterEvent = latestVaultEvent(vaultEvents, input.projectionKey);
+    const localChanged = input.localValueHash !== mutation.valueHash;
+    const currentVaultGeneration = numericMapValue(current.vaultGenerations, input.projectionKey);
+    if (localChanged && nextDirty === undefined && laterEvent === undefined) {
+      vaultEvents = recordVaultEvent(vaultEvents, {
+        id: input.syntheticEventId,
+        kind: input.localValueHash === null ? "delete" : "upsert",
+        path: input.projectionKey,
+        projectedHeads: [mutation.versionId],
+        previousGeneration: Math.max(input.vaultGeneration, currentVaultGeneration, capturedEventGeneration),
+      });
+      vaultEvents = bindVaultEventsAfterPublication(
+        vaultEvents,
+        input.projectionKey,
+        capturedEventGeneration,
+        mutation.versionId,
+      );
+      laterEvent = latestVaultEvent(vaultEvents, input.projectionKey);
+    }
+    const reconcileState = !localChanged && nextDirty === undefined && laterEvent === undefined
+      ? "adopted"
+      : "next-generation";
+    reconciles[reconcileIndex] = { ...reconciles[reconcileIndex], state: reconcileState };
+
+    const projections = { ...recordOrEmpty(current.projections) };
+    const currentProjection = isRecord(projections[input.projectionKey]) ? projections[input.projectionKey] : undefined;
+    projections[input.projectionKey] = {
+      projectedHeads: [mutation.versionId],
+      projectedValueHash: mutation.valueHash,
+      generation: Math.max(
+        entry.captureGeneration,
+        isRecord(currentProjection) && Number.isSafeInteger(currentProjection.generation)
+          ? currentProjection.generation as number
+          : 0,
+      ),
+    };
+    const vaultGenerations = {
+      ...recordOrEmpty(current.vaultGenerations),
+      [input.projectionKey]: Math.max(
+        input.vaultGeneration,
+        currentVaultGeneration,
+        laterEvent?.generation ?? 0,
+      ),
+    };
+    const merged: Record<string, StateJsonValue> = {
+      ...current,
+      dirtyIntents,
+      projections,
+      publishedReconciles: toJson(reconciles),
+      vaultEvents: toJson(vaultEvents),
+      vaultGenerations,
+    };
     validateRepositoryStatePayload(merged);
     return merged;
   });
@@ -437,11 +633,173 @@ export function validateRepositoryStatePayload(value: StateJsonValue): ReturnTyp
   validateWaitingRootDeletes(value.waitingRootDeletes);
   validateWriterForkState(value.writerForkState);
   validateVerifiedLocalPublications(value.verifiedLocalPublications);
+  validateConfigSyncState(value.configSync, identity);
   const entries = parseDurableOutboxEntries(value.durableOutbox);
   if (entries.some((entry) => entry.repositoryFingerprint !== identity.repositoryFingerprint)) {
     throw new Error("repository transaction Outbox belongs to another repository binding");
   }
+  validateConfigPublicationOutbox(value.configSync, entries);
   return identity;
+}
+
+function validateConfigSyncState(
+  value: StateJsonValue | undefined,
+  identity: ReturnType<typeof parseRepositoryDurablePayload>,
+): void {
+  if (value === undefined) return;
+  if (!isRecord(value) || !["disabled", "unbound", "ready", "local-changes", "pending", "conflict", "incompatible",
+    "apply-failed", "recovery-required", "load-failed"].includes(value.status as string)
+    || !stringArray(value.projectedHeads) || !(value.projectedHeads as string[]).every(isVersionId)
+    || (value.projectedTreeHash !== null && !isHash(value.projectedTreeHash))
+    || !Number.isSafeInteger(value.generation) || (value.generation as number) < 0
+    || typeof value.reloadRequired !== "boolean"
+    || (value.lastError !== undefined && typeof value.lastError !== "string")
+    || (value.recoveryLocation !== undefined && typeof value.recoveryLocation !== "string")) {
+    throw new Error("repository transaction config sync state is invalid");
+  }
+  if (value.dirtyIntent !== undefined) validateConfigDirtyIntent(value.dirtyIntent);
+  if (value.dirtyIntent !== undefined && isRecord(value.dirtyIntent)
+    && value.dirtyIntent.projectedTreeHash !== value.projectedTreeHash) {
+    throw new Error("repository transaction config dirty intent projection is invalid");
+  }
+  if ((value.projectedTreeHash === null) !== (value.projectedTree === undefined)) {
+    throw new Error("repository transaction projected ConfigTree presence is invalid");
+  }
+  if (value.projectedTree !== undefined) {
+    const treeHash = validatePersistedConfigTree(value.projectedTree, identity);
+    if (treeHash !== value.projectedTreeHash) throw new Error("repository transaction projected ConfigTree hash is invalid");
+  }
+  if ((value.batchJournal === undefined) !== (value.batchTargetTree === undefined)) {
+    throw new Error("repository transaction config batch recovery state is incomplete");
+  }
+  if (value.batchJournal !== undefined) validateConfigBatchJournal(value.batchJournal, identity);
+  if (value.batchTargetTree !== undefined) {
+    const targetHash = validatePersistedConfigTree(value.batchTargetTree, identity);
+    if (isRecord(value.batchJournal) && isRecord(value.batchJournal.plan) && targetHash !== value.batchJournal.plan.targetTreeHash) {
+      throw new Error("repository transaction config batch target Tree is invalid");
+    }
+  }
+  if (value.publication !== undefined) {
+    if (!isRecord(value.publication) || typeof value.publication.outboxId !== "string" || !isHash(value.publication.outboxId)
+      || !isHash(value.publication.treeHash) || typeof value.publication.projectLocal !== "boolean"
+      || !isRecord(value.publication.tree)) {
+      throw new Error("repository transaction config publication is invalid");
+    }
+    const treeHash = validatePersistedConfigTree(value.publication.tree, identity);
+    if (treeHash !== value.publication.treeHash) throw new Error("repository transaction config publication Tree hash is invalid");
+  }
+}
+
+function validateConfigPublicationOutbox(value: StateJsonValue | undefined, entries: readonly DurableOutboxEntry[]): void {
+  if (!isRecord(value) || value.publication === undefined) return;
+  if (!isRecord(value.publication)) throw new Error("repository transaction config publication is invalid");
+  const publication = value.publication;
+  const entry = entries.find((candidate) => candidate.id === publication.outboxId);
+  const mutation = entry?.mutations.find((candidate) => candidate.registerKey === "config:portable" && candidate.kind === "config-snapshot");
+  if (!entry || !mutation || mutation.valueHash !== publication.treeHash) {
+    throw new Error("repository transaction config publication has no matching Outbox");
+  }
+}
+
+function validateConfigDirtyIntent(value: StateJsonValue): void {
+  if (!isRecord(value) || !Number.isSafeInteger(value.generation) || (value.generation as number) <= 0
+    || !stringArray(value.basisHeads) || !(value.basisHeads as string[]).every(isVersionId)
+    || (value.projectedTreeHash !== null && !isHash(value.projectedTreeHash))) {
+    throw new Error("repository transaction config dirty intent is invalid");
+  }
+}
+
+function validatePersistedConfigTree(
+  value: StateJsonValue,
+  identity: ReturnType<typeof parseRepositoryDurablePayload>,
+): string {
+  if (!isRecord(value) || value.repositoryId !== identity.repositoryId || value.descriptorHash !== identity.descriptorHash
+    || !Array.isArray(value.items)) throw new Error("repository transaction projected ConfigTree is invalid");
+  const sizes = new Map<string, number>();
+  for (const item of value.items) {
+    if (!isRecord(item)) throw new Error("repository transaction projected ConfigTree item is invalid");
+    if (item.kind === "put" && isHash(item.blobHash) && Number.isSafeInteger(item.size) && (item.size as number) >= 0) {
+      sizes.set(item.blobHash as string, item.size as number);
+    }
+  }
+  return buildConfigTreeObject("", value as unknown as ProtocolConfigTree, {
+    configDir: identity.configDir,
+    historicalConfigDirs: identity.historicalConfigDirs,
+  }, sizes).hash;
+}
+
+function validateConfigBatchJournal(
+  value: StateJsonValue,
+  identity: ReturnType<typeof parseRepositoryDurablePayload>,
+): void {
+  if (!isRecord(value) || !isRecord(value.plan) || !isHash(value.planHash)
+    || !["prepared", "snapshot-ready", "applying", "verifying", "rolling-back", "accounted", "recovery-required"].includes(value.state as string)
+    || !Number.isSafeInteger(value.nextOperation) || (value.nextOperation as number) < 0
+    || !isRecord(value.snapshotRefs) || !Array.isArray(value.displacedAfterRefs)
+    || value.displacedAfterRefs.some((reference) => typeof reference !== "string")) {
+    throw new Error("repository transaction config batch Journal is invalid");
+  }
+  const plan = value.plan as unknown as ConfigBatchPlan;
+  validateConfigBatchPlan(plan, identity);
+  if (configBatchPlanHash(plan) !== value.planHash || (value.nextOperation as number) > plan.operations.length) {
+    throw new Error("repository transaction config batch Journal hash or progress is invalid");
+  }
+  for (const reference of Object.values(value.snapshotRefs)) {
+    if (reference !== null && typeof reference !== "string") throw new Error("repository transaction config snapshot reference is invalid");
+    if (typeof reference === "string") assertConfigStateReference(reference, identity.repositoryId);
+  }
+  for (const reference of value.displacedAfterRefs as string[]) assertConfigStateReference(reference, identity.repositoryId);
+}
+
+function validateConfigBatchPlan(plan: ConfigBatchPlan, identity: ReturnType<typeof parseRepositoryDurablePayload>): void {
+  if (!plan || typeof plan.id !== "string" || !/^[A-Za-z0-9._-]{1,128}$/.test(plan.id)
+    || plan.repositoryFingerprint !== identity.repositoryFingerprint
+    || !stringArray(plan.targetHeads as unknown as StateJsonValue) || !plan.targetHeads.every(isVersionId)
+    || !stringArray(plan.projectedHeads as unknown as StateJsonValue) || !plan.projectedHeads.every(isVersionId)
+    || (plan.projectedTreeHash !== null && !isHash(plan.projectedTreeHash)) || !isHash(plan.targetTreeHash)
+    || !Array.isArray(plan.operations) || !Array.isArray(plan.diff) || !Array.isArray(plan.newPluginIds)
+    || plan.newPluginIds.some((id) => typeof id !== "string")) {
+    throw new Error("repository transaction config batch plan is invalid");
+  }
+  if (new Set(plan.targetHeads).size !== plan.targetHeads.length
+    || new Set(plan.projectedHeads).size !== plan.projectedHeads.length
+    || new Set(plan.operations.map((operation) => operation.path)).size !== plan.operations.length) {
+    throw new Error("repository transaction config batch plan contains duplicates");
+  }
+  for (const operation of plan.operations) validateConfigBatchOperation(operation, identity.repositoryId);
+}
+
+function validateConfigBatchOperation(operation: ConfigBatchOperation, repositoryId: string): void {
+  if (!operation || typeof operation.path !== "string" || !operation.expected || !operation.target
+    || !["present", "absent"].includes(operation.expected.kind)
+    || !["put", "delete", "stop-managing"].includes(operation.target.kind)) {
+    throw new Error("repository transaction config batch operation is invalid");
+  }
+  try {
+    if (normalizeVaultPath(operation.path) !== operation.path) throw new Error("not canonical");
+  } catch {
+    throw new Error("repository transaction config batch path is invalid");
+  }
+  if (operation.expected.kind === "present"
+    && (!isHash(operation.expected.hash) || !Number.isSafeInteger(operation.expected.size) || operation.expected.size < 0)) {
+    throw new Error("repository transaction config batch before-image is invalid");
+  }
+  if (operation.target.kind === "put") {
+    if (!isHash(operation.target.hash) || !Number.isSafeInteger(operation.target.size) || operation.target.size < 0) {
+      throw new Error("repository transaction config batch target is invalid");
+    }
+    assertConfigStateReference(operation.target.stagedRef, repositoryId);
+  }
+}
+
+function assertConfigStateReference(reference: string, repositoryId: string): void {
+  const prefix = `${LOCAL_STATE_CONTAINER}/${repositoryId}/`;
+  if (!reference.startsWith(prefix)) throw new Error("repository transaction config state reference has another root");
+  normalizeRepositoryStateReference(reference.slice(prefix.length));
+}
+
+function isHash(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 }
 
 async function updateDurableOutbox(
@@ -679,7 +1037,9 @@ function parseDurableOutboxEntries(value: StateJsonValue | undefined): DurableOu
       if (!isRecord(mutation) || typeof mutation.registerKey !== "string" || typeof mutation.versionId !== "string"
         || !["put", "delete", "config-snapshot"].includes(mutation.kind as string) || !stringArray(mutation.parents)
         || (mutation.valueHash !== null && typeof mutation.valueHash !== "string")
-        || (mutation.stagedContentRef !== undefined && typeof mutation.stagedContentRef !== "string")) {
+        || (mutation.stagedContentRef !== undefined && typeof mutation.stagedContentRef !== "string")
+        || (mutation.capturedDirtyGeneration !== undefined && (!Number.isSafeInteger(mutation.capturedDirtyGeneration) || (mutation.capturedDirtyGeneration as number) < 0))
+        || (mutation.capturedEventGeneration !== undefined && (!Number.isSafeInteger(mutation.capturedEventGeneration) || (mutation.capturedEventGeneration as number) < 0))) {
         throw new Error("repository transaction durable Outbox Mutation is invalid");
       }
       if (mutation.stagedContentRef !== undefined) assertStateReference(mutation.stagedContentRef as string);
@@ -688,6 +1048,149 @@ function parseDurableOutboxEntries(value: StateJsonValue | undefined): DurableOu
   });
   assertDurableOutboxQueue(entries);
   return entries;
+}
+
+function assertDurableOutboxEvolution(current: readonly DurableOutboxEntry[], next: readonly DurableOutboxEntry[]): void {
+  const allowed: Record<DurableOutboxEntry["state"], DurableOutboxEntry["state"][]> = {
+    queued: ["queued", "publishing", "recovery-required"],
+    publishing: ["publishing", "published", "retryable-error", "integrity-error", "recovery-required"],
+    published: ["published"],
+    "retryable-error": ["retryable-error", "publishing", "recovery-required"],
+    "integrity-error": ["integrity-error", "recovery-required"],
+    "recovery-required": ["recovery-required"],
+  };
+  const nextById = new Map(next.map((entry) => [entry.id, entry]));
+  for (const existing of current) {
+    const candidate = nextById.get(existing.id);
+    if (!candidate) throw new Error("repository transaction removed a durable Outbox entry");
+    const immutableExisting = { ...existing, state: undefined };
+    const immutableCandidate = { ...candidate, state: undefined };
+    if (canonicalizeProtocolJson(toJson(immutableExisting)) !== canonicalizeProtocolJson(toJson(immutableCandidate))) {
+      throw new Error("repository transaction rewrote a frozen durable Outbox entry");
+    }
+    if (!allowed[existing.state].includes(candidate.state)) throw new Error("repository transaction durable Outbox state regressed");
+  }
+}
+
+function assertConfigPublicationEvolution(
+  currentValue: StateJsonValue | undefined,
+  nextValue: StateJsonValue | undefined,
+  currentEntries: readonly DurableOutboxEntry[],
+  nextEntries: readonly DurableOutboxEntry[],
+): void {
+  const current = isRecord(currentValue) && isRecord(currentValue.publication) ? currentValue.publication : undefined;
+  const next = isRecord(nextValue) && isRecord(nextValue.publication) ? nextValue.publication : undefined;
+  if (current && next && canonicalizeProtocolJson(current) !== canonicalizeProtocolJson(next)) {
+    throw new Error("repository transaction rewrote a frozen config publication");
+  }
+  if (!current && next) {
+    const outboxId = next.outboxId as string;
+    if (currentEntries.some((entry) => entry.id === outboxId) || !nextEntries.some((entry) => entry.id === outboxId)) {
+      throw new Error("repository transaction restored a completed config publication");
+    }
+  }
+  if (current && !next) {
+    const entry = nextEntries.find((candidate) => candidate.id === current.outboxId);
+    if (!entry || entry.state !== "published") throw new Error("repository transaction dropped an unfinished config publication");
+  }
+}
+
+function assertPublishedReconcileEvolution(
+  current: ReturnType<typeof parsePublishedReconciles>,
+  next: ReturnType<typeof parsePublishedReconciles>,
+): void {
+  const nextById = new Map(next.map((entry) => [`${entry.outboxId}:${entry.registerKey}:${entry.publishedVersionId}`, entry]));
+  for (const existing of current) {
+    const identity = `${existing.outboxId}:${existing.registerKey}:${existing.publishedVersionId}`;
+    const candidate = nextById.get(identity);
+    if (!candidate) throw new Error("repository transaction removed a PublishedReconcile");
+    if (canonicalizeProtocolJson(toJson({ ...existing, state: undefined }))
+      !== canonicalizeProtocolJson(toJson({ ...candidate, state: undefined }))) {
+      throw new Error("repository transaction rewrote a PublishedReconcile");
+    }
+    if (existing.state !== candidate.state && existing.state !== "pending") {
+      throw new Error("repository transaction PublishedReconcile state regressed");
+    }
+  }
+}
+
+function mergePublishedDirtyIntent(
+  current: StateJsonValue | undefined,
+  observed: StateJsonValue | null,
+  capturedGeneration: number,
+  localPredecessorVersion: string,
+  projectedValueHash: string | null,
+): StateJsonValue | undefined {
+  const currentRecord = isRecord(current) ? current : undefined;
+  const observedRecord = observed === null ? undefined : isRecord(observed) ? observed : undefined;
+  if (observed !== null && !observedRecord) throw new Error("Vault publication dirty intent is invalid");
+  const currentGeneration = stateGeneration(currentRecord);
+  const observedGeneration = stateGeneration(observedRecord);
+  if (Math.max(currentGeneration, observedGeneration) <= capturedGeneration) return undefined;
+
+  const newer = observedGeneration >= currentGeneration ? observedRecord : currentRecord;
+  const older = newer === observedRecord ? currentRecord : observedRecord;
+  const merged: Record<string, StateJsonValue> = { ...(older ?? {}), ...(newer ?? {}) };
+  for (const key of ["localCandidates", "editorContents"] as const) {
+    const values = mergeStateArrays(older?.[key], newer?.[key]);
+    if (values) merged[key] = values;
+  }
+  if (older?.awaitingLocalWrite === false || newer?.awaitingLocalWrite === false) merged.awaitingLocalWrite = false;
+  merged.basisHeads = [];
+  merged.localPredecessorVersion = localPredecessorVersion;
+  if (projectedValueHash === null) delete merged.projectedValueHash;
+  else merged.projectedValueHash = projectedValueHash;
+  return merged;
+}
+
+function mergeStateArrays(left: StateJsonValue | undefined, right: StateJsonValue | undefined): StateJsonValue[] | undefined {
+  if (!Array.isArray(left) && !Array.isArray(right)) return undefined;
+  const merged = new Map<string, StateJsonValue>();
+  for (const value of [...(Array.isArray(left) ? left : []), ...(Array.isArray(right) ? right : [])]) {
+    merged.set(canonicalizeProtocolJson(value), value);
+  }
+  return [...merged.values()];
+}
+
+function stateGeneration(value: Record<string, StateJsonValue> | undefined): number {
+  return value && Number.isSafeInteger(value.generation) && (value.generation as number) >= 0
+    ? value.generation as number
+    : 0;
+}
+
+function parseVaultEvents(value: StateJsonValue | undefined): VaultEventIntent[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("repository transaction Vault events are invalid");
+  const ids = new Set<string>();
+  return value.map((raw) => {
+    if (!isRecord(raw) || typeof raw.id !== "string" || raw.id.length === 0 || ids.has(raw.id)
+      || !["upsert", "delete"].includes(raw.kind as string) || typeof raw.path !== "string"
+      || !Number.isSafeInteger(raw.generation) || (raw.generation as number) <= 0
+      || !stringArray(raw.basisHeads)
+      || (raw.transactionId !== undefined && typeof raw.transactionId !== "string")
+      || (raw.localPredecessorVersion !== undefined && typeof raw.localPredecessorVersion !== "string")) {
+      throw new Error("repository transaction Vault event is invalid");
+    }
+    const path = normalizeVaultPath(raw.path as string);
+    if (path !== raw.path) throw new Error("repository transaction Vault event path is not normalized");
+    ids.add(raw.id as string);
+    return {
+      id: raw.id as string,
+      ...(raw.transactionId === undefined ? {} : { transactionId: raw.transactionId as string }),
+      kind: raw.kind as VaultEventIntent["kind"],
+      path,
+      generation: raw.generation as number,
+      basisHeads: [...raw.basisHeads as string[]],
+      ...(raw.localPredecessorVersion === undefined
+        ? {}
+        : { localPredecessorVersion: raw.localPredecessorVersion as string }),
+    };
+  });
+}
+
+function numericMapValue(value: StateJsonValue | undefined, key: string): number {
+  const candidate = isRecord(value) ? value[key] : undefined;
+  return Number.isSafeInteger(candidate) && (candidate as number) >= 0 ? candidate as number : 0;
 }
 
 function replaceOutbox(entries: readonly DurableOutboxEntry[], replacement: DurableOutboxEntry): DurableOutboxEntry[] {

@@ -3,8 +3,9 @@ import { createReadStream } from "node:fs";
 import { constants, copyFile, link, lstat, mkdir, rmdir, unlink } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { LocalFileAdapter, LocalFileCapabilities, LocalFileObservation } from "../core/local-file";
+import type { ConfigBatchFileAdapter } from "../core/config-batch-apply";
 
-export class NodeLocalFileAdapter implements LocalFileAdapter {
+export class NodeLocalFileAdapter implements LocalFileAdapter, ConfigBatchFileAdapter {
   readonly capabilities: LocalFileCapabilities;
   private readonly root: string;
 
@@ -56,6 +57,31 @@ export class NodeLocalFileAdapter implements LocalFileAdapter {
 
   async restoreRecoveryNoClobber(recoveryRef: string, path: string): Promise<boolean> {
     return copyNoClobber(this.resolveBelowRoot(recoveryRef), this.resolveBelowRoot(path));
+  }
+
+  async copyToRecoveryNoClobber(path: string, recoveryRef: string): Promise<boolean> {
+    return copyNoClobber(this.resolveBelowRoot(path), this.resolveBelowRoot(recoveryRef));
+  }
+
+  async inspectNodeNoFollow(path: string): Promise<"absent" | "file" | "folder" | "blocked-by-file" | "symlink" | "other" | "unknown"> {
+    const absolute = this.resolveBelowRoot(path);
+    const segments = relative(this.root, absolute).split(/[\\/]/);
+    let current = this.root;
+    for (let index = 0; index < segments.length; index += 1) {
+      current = resolve(current, segments[index]);
+      let stat;
+      try { stat = await lstat(current); }
+      catch (error) {
+        if (hasCode(error, "ENOENT")) return "absent";
+        if (hasCode(error, "ENOTDIR")) return "blocked-by-file";
+        return "unknown";
+      }
+      if (stat.isSymbolicLink()) return "symlink";
+      const final = index === segments.length - 1;
+      if (!final && !stat.isDirectory()) return stat.isFile() ? "blocked-by-file" : "other";
+      if (final) return stat.isFile() ? "file" : stat.isDirectory() ? "folder" : "other";
+    }
+    return "unknown";
   }
 
   async materializeConservativeCandidate(stagedRef: string, candidateRef: string): Promise<void> {

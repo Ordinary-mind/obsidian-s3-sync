@@ -70,6 +70,43 @@ export function bindRootDeletePredecessor(
     : copyEvent(event));
 }
 
+export function bindVaultEventsAfterPublication(
+  events: readonly VaultEventIntent[],
+  path: string,
+  afterGeneration: number,
+  localPredecessorVersion: string,
+): VaultEventIntent[] {
+  return events.map((event) => event.path === path && event.generation > afterGeneration
+    ? { ...copyEvent(event), basisHeads: [], localPredecessorVersion }
+    : copyEvent(event));
+}
+
+export function mergeVaultEventsAfterPublication(
+  persisted: readonly VaultEventIntent[],
+  observed: readonly VaultEventIntent[],
+  path: string,
+  afterGeneration: number,
+  localPredecessorVersion: string,
+): VaultEventIntent[] {
+  const order: string[] = [];
+  const byId = new Map<string, VaultEventIntent>();
+  for (const event of [...persisted, ...observed]) {
+    const existing = byId.get(event.id);
+    if (!existing) order.push(event.id);
+    else if (existing.path !== event.path || existing.kind !== event.kind
+      || existing.generation !== event.generation || existing.transactionId !== event.transactionId) {
+      throw new Error("Vault event identity changed while merging publication state");
+    }
+    byId.set(event.id, copyEvent(event));
+  }
+  return bindVaultEventsAfterPublication(
+    clearVaultEventsThroughGeneration(order.map((id) => byId.get(id)!), path, afterGeneration),
+    path,
+    afterGeneration,
+    localPredecessorVersion,
+  );
+}
+
 function copyEvent(event: VaultEventIntent): VaultEventIntent {
   return { ...event, basisHeads: [...event.basisHeads] };
 }
