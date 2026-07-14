@@ -24,7 +24,7 @@ async function pullCommitWithAnchor(store: ObjectStore, repository: InMemoryRepo
     const configTreeHashes = new Set<string>();
     for (let index = 0; index < chunkKeys.length; index += 1) {
       const bytes = await readObjectBytes(store, chunkKeys[index], { maximumBytes: 4 * 1024 * 1024, expectedHash: commit.changeChunkHashes[index] });
-      const chunk = validator.acceptChunk(index, chunkKeys[index], bytes);
+      const chunk = await validator.acceptChunkIncrementally(index, chunkKeys[index], bytes, yieldToIdle);
       if (commit.channel === "config") {
         for (const mutation of chunk.mutations) configTreeHashes.add(mutation.treeHash!);
       }
@@ -51,6 +51,10 @@ async function pullCommitWithAnchor(store: ObjectStore, repository: InMemoryRepo
   } finally {
     await staging.dispose();
   }
+}
+
+async function yieldToIdle(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
 export async function pullCommitSetIntoRepository(

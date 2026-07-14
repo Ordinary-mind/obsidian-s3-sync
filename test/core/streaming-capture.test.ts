@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { captureStableStream, sha256Stream, type ImmutableStagingArea, type ImmutableStagingWriter, type StreamReadObservation } from "../../core/streaming-capture";
+import { sha256Hex } from "../../protocol/hash";
+import {
+  captureStableStream,
+  captureStableStreamHash,
+  captureStableStreamToStaging,
+  sha256Stream,
+  type ContentAddressedStreamStaging,
+  type ImmutableStagingArea,
+  type ImmutableStagingWriter,
+  type StreamReadObservation,
+} from "../../core/streaming-capture";
 
 class MemoryStaging implements ImmutableStagingArea {
   readonly objects = new Map<string, Uint8Array[]>();
@@ -30,6 +40,27 @@ class MemoryStaging implements ImmutableStagingArea {
   async remove(ref: string): Promise<void> {
     this.objects.delete(ref);
     this.removed += 1;
+  }
+}
+
+class ContentAddressedMemoryStaging implements ContentAddressedStreamStaging {
+  readonly contents = new Map<string, Uint8Array>();
+  stages = 0;
+  verifications = 0;
+
+  async stage(chunks: AsyncIterable<Uint8Array>) {
+    this.stages += 1;
+    const bytes = await readBytes(chunks);
+    const hash = sha256Hex(bytes);
+    const ref = `staged/sha256/${hash}`;
+    this.contents.set(ref, bytes);
+    return { ref, hash, size: bytes.byteLength };
+  }
+
+  async verify(ref: string, expected: { hash: string; size: number }): Promise<void> {
+    this.verifications += 1;
+    const bytes = this.contents.get(ref);
+    if (!bytes || bytes.byteLength !== expected.size || sha256Hex(bytes) !== expected.hash) throw new Error("corrupt stage");
   }
 }
 
@@ -64,6 +95,41 @@ describe("streaming stable capture", () => {
     const read = async () => ({ type: "file" as const, chunks: repeatedStream(chunk, 8) });
     await expect(captureStableStream({ read, staging: new MemoryStaging(), quietWindow: async () => {} }))
       .resolves.toMatchObject({ status: "captured", size: 8 * 1024 * 1024 });
+  });
+
+  it("stages the first stable stream once and returns its content-addressed reference", async () => {
+    const staging = new ContentAddressedMemoryStaging();
+    const bytes = new TextEncoder().encode("streamed Outbox body");
+    const result = await captureStableStreamToStaging({
+      read: async () => ({ type: "file", chunks: stream(bytes.subarray(0, 3), bytes.subarray(3)) }),
+      staging,
+      quietWindow: async () => undefined,
+      estimatedBytes: bytes.byteLength,
+      maxBytes: 1024,
+    });
+    expect(result).toMatchObject({ status: "captured", size: bytes.byteLength, stagedRef: expect.stringContaining("staged/sha256/") });
+    expect(staging.stages).toBe(1);
+    expect(staging.verifications).toBe(1);
+
+    await expect(captureStableStreamToStaging({
+      read: async () => ({ type: "file", chunks: stream(bytes) }),
+      staging,
+      quietWindow: async () => undefined,
+      estimatedBytes: 2048,
+      maxBytes: 1024,
+    })).resolves.toMatchObject({ status: "retry", reason: "too-large" });
+    expect(staging.stages).toBe(1);
+  });
+
+  it("hashes stable files without retaining their body and detects the second-read change", async () => {
+    const observations: StreamReadObservation[] = [
+      { type: "file", chunks: stream(new Uint8Array([1, 2])) },
+      { type: "file", chunks: stream(new Uint8Array([1, 3])) },
+    ];
+    await expect(captureStableStreamHash({
+      read: async () => observations.shift()!,
+      quietWindow: async () => undefined,
+    })).resolves.toEqual({ status: "retry", reason: "changed" });
   });
 
   it("retries when bytes or node type change between reads", async () => {
@@ -115,4 +181,10 @@ async function* failingStream(): AsyncIterable<Uint8Array> {
 
 async function* repeatedStream(chunk: Uint8Array, count: number): AsyncIterable<Uint8Array> {
   for (let index = 0; index < count; index += 1) yield chunk;
+}
+
+async function readBytes(chunks: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
+  const values: number[] = [];
+  for await (const chunk of chunks) values.push(...chunk);
+  return new Uint8Array(values);
 }

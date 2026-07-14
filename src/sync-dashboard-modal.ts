@@ -133,6 +133,13 @@ export class SyncDashboardModal extends Modal {
     const secondary = new Setting(section).setClass("s3-sync-action-row");
     secondary
       .addButton((button) => this.actionButton(button, {
+        label: "取消校验",
+        icon: "circle-stop",
+        tooltip: "停止当前完整校验；部分覆盖率不会成为删除依据",
+        disabled: status.audit.state !== "running",
+        onClick: () => this.plugin.cancelFullAuditV1(),
+      }))
+      .addButton((button) => this.actionButton(button, {
         label: "手动重试",
         icon: "rotate-ccw",
         tooltip: "跳过当前倒计时并立即重试",

@@ -31,6 +31,40 @@ describe("v1 S3 ObjectStore adapter contract", () => {
     await expect(readObjectBytes(store, "root/value")).resolves.toEqual(new Uint8Array([1, 2, 3]));
   });
 
+  it("reopens and validates a staged stream for retry-safe immutable PUT", async () => {
+    let attempts = 0;
+    let opens = 0;
+    let stored: Uint8Array = new Uint8Array();
+    const store = new S3ObjectStore({
+      ...base,
+      sleep: async () => undefined,
+      client: { send: async (command: any) => {
+        if (command.constructor.name === "PutObjectCommand") {
+          attempts += 1;
+          expect(command.input).toMatchObject({ ContentLength: 3, IfNoneMatch: "*" });
+          if (attempts === 1) throw Object.assign(new Error("retry"), { name: "SlowDown", $metadata: { httpStatusCode: 429 } });
+          stored = await readAsyncBody(command.input.Body);
+          return {};
+        }
+        if (command.constructor.name === "GetObjectCommand") return { Body: streamBody(stored.subarray(0, 1), stored.subarray(1)) };
+        throw new Error("unexpected command");
+      } },
+    });
+    await store.putImmutableStream("immutable/key", async () => {
+      opens += 1;
+      return bytesBody(new Uint8Array([1]), new Uint8Array([2, 3]));
+    }, {
+      hash: "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
+      size: 3,
+    });
+    expect({ attempts, opens, stored }).toEqual({ attempts: 2, opens: 2, stored: new Uint8Array([1, 2, 3]) });
+    expect(store.metrics()).toMatchObject({
+      requests: { active: 0, peakActive: 1 },
+      downloads: { active: 0, peakActive: 1 },
+      maximumObservedDownloadChunkBytes: 2,
+    });
+  });
+
   it("rejects different existing bytes without overwriting and keeps retries version-idempotent", async () => {
     let stored: Uint8Array | undefined;
     let versions = 0;
@@ -114,6 +148,20 @@ describe("v1 S3 ObjectStore adapter contract", () => {
     await Promise.all(requests);
     expect(maximum).toBe(2);
   });
+
+  it("holds download concurrency until each response body is consumed", async () => {
+    const send = vi.fn(async () => ({ Body: streamBody(new Uint8Array([1])) }));
+    const store = new S3ObjectStore({ ...base, maximumConcurrency: 2, client: { send } });
+    const first = await store.getStream("a");
+    const second = await store.getStream("b");
+    const thirdRequest = store.getStream("c");
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    await readAsyncBody(first);
+    const third = await thirdRequest;
+    await Promise.all([readAsyncBody(second), readAsyncBody(third)]);
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(store.metrics().downloads).toMatchObject({ active: 0, queued: 0, peakActive: 2, completed: 3 });
+  });
 });
 
 function streamBody(...chunks: Uint8Array[]): { transformToWebStream(): ReadableStream<Uint8Array> } {
@@ -125,4 +173,24 @@ function streamBody(...chunks: Uint8Array[]): { transformToWebStream(): Readable
       },
     }),
   };
+}
+
+async function* bytesBody(...chunks: Uint8Array[]): AsyncIterable<Uint8Array> {
+  for (const chunk of chunks) yield chunk;
+}
+
+async function readAsyncBody(body: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of body) {
+    chunks.push(new Uint8Array(chunk));
+    size += chunk.byteLength;
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }

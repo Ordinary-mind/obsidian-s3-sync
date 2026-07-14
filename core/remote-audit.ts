@@ -2,9 +2,9 @@ import { blobKey, changeChunkKey, configTreeKey, descriptorKey } from "../protoc
 import type { ConfigTreeForLineage, ProtocolCommit } from "../protocol/semantics";
 import { parseAndValidateKeyedCommitEnvelope, parseAndValidateProtocolObject, verifyRepositoryDescriptorAtKey } from "../protocol/validation";
 import { downloadConfigTree, type ConfigTreeBinding } from "./config-tree";
-import { ObjectStoreError, readObjectBytes, type ObjectStore, type ObjectStoreFailureKind } from "./object-store";
+import { ObjectStoreError, readObjectBytes, type ObjectStore, type ObjectStoreFailureKind, type ObjectStoreRequestOptions } from "./object-store";
 import { receiveKeyedCommitBytes } from "./receive-repository";
-import { downloadVerifiedBlob } from "./remote-blob";
+import { verifyRemoteBlob } from "./remote-blob";
 import { InMemoryRepositoryCore } from "./repository";
 
 export interface RemoteAuditResult {
@@ -13,6 +13,8 @@ export interface RemoteAuditResult {
   verifiedObjects: number;
   totalObjects: number;
   missingClosure: string[];
+  status: "complete";
+  deletionEvidenceAllowed: true;
 }
 
 export interface RemoteAuditProgress {
@@ -23,11 +25,15 @@ export interface RemoteAuditProgress {
 
 export interface RemoteAuditOptions {
   onProgress?: (progress: RemoteAuditProgress) => void;
+  signal?: AbortSignal;
+  sliceSize?: number;
+  yieldToIdle?: () => Promise<void>;
 }
 
 export class RemoteAuditFailure extends Error {
   readonly code: string;
   readonly kind: ObjectStoreFailureKind;
+  readonly deletionEvidenceAllowed = false;
 
   constructor(
     readonly objectKey: string,
@@ -45,8 +51,22 @@ export class RemoteAuditFailure extends Error {
   }
 }
 
+export class RemoteAuditCancelled extends Error {
+  readonly code = "audit-cancelled";
+  readonly kind = "cancelled" as const;
+  readonly deletionEvidenceAllowed = false;
+
+  constructor(
+    readonly objectKey: string,
+    readonly progress: RemoteAuditProgress,
+  ) {
+    super("Full audit was cancelled before the reachable closure was verified");
+    this.name = "RemoteAuditCancelled";
+  }
+}
+
 export function remoteAuditFailureProgress(error: unknown): RemoteAuditProgress | undefined {
-  if (!(error instanceof RemoteAuditFailure)) return undefined;
+  if (!(error instanceof RemoteAuditFailure || error instanceof RemoteAuditCancelled)) return undefined;
   return copyProgress(error.progress);
 }
 
@@ -55,13 +75,14 @@ export async function pollRemoteCommitKeys(
   prefix: string,
   repositoryId: string,
   marker: ReadonlySet<string> = new Set(),
+  options: ObjectStoreRequestOptions = {},
 ): Promise<string[]> {
   const root = [prefix.replace(/\/$/, ""), `.obsidian-s3-sync/v1/repositories/${repositoryId}/commits/`].filter(Boolean).join("/");
   const keys = new Set<string>();
   const tokens = new Set<string>();
   let token: string | undefined;
   do {
-    const page = await store.list(root, token);
+    const page = await store.list(root, token, options);
     page.keys.filter((key) => key.startsWith(root) && /\/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\/\d{20}-[0-9a-f]{64}\.json$/.test(key)).forEach((key) => keys.add(key));
     token = page.continuationToken;
     if (token && (tokens.has(token) || (tokens.add(token), false))) throw new Error("ObjectStore returned a repeated continuation token");
@@ -76,9 +97,12 @@ export async function auditRemoteRepository(
   descriptorHash: string,
   options: RemoteAuditOptions = {},
 ): Promise<RemoteAuditResult> {
+  const sliceSize = options.sliceSize ?? 64;
+  if (!Number.isSafeInteger(sliceSize) || sliceSize < 1) throw new Error("remote audit slice size is invalid");
   const discovered = new Set<string>();
   const completed = new Set<string>();
   const missing = new Set<string>();
+  let workSinceYield = 0;
   const report = (): RemoteAuditProgress => {
     const progress = {
       completedObjects: completed.size,
@@ -93,10 +117,19 @@ export async function auditRemoteRepository(
     discovered.add(key);
     report();
   };
-  const complete = (key: string): void => {
+  const cooperate = async (key: string): Promise<void> => {
+    if (options.signal?.aborted) throw new RemoteAuditCancelled(key, report());
+    workSinceYield += 1;
+    if (workSinceYield < sliceSize) return;
+    workSinceYield = 0;
+    await (options.yieldToIdle ?? defaultYieldToIdle)();
+    if (options.signal?.aborted) throw new RemoteAuditCancelled(key, report());
+  };
+  const complete = async (key: string): Promise<void> => {
     missing.delete(key);
     completed.add(key);
     report();
+    await cooperate(key);
   };
   const fail = (key: string, error: unknown): never => {
     discovered.add(key);
@@ -106,38 +139,50 @@ export async function auditRemoteRepository(
     throw new RemoteAuditFailure(key, report(), error);
   };
   const failOperation = (key: string, error: unknown): never => {
+    if (options.signal?.aborted || auditFailureKind(error) === "cancelled") {
+      throw new RemoteAuditCancelled(key, report());
+    }
     throw new RemoteAuditFailure(key, report(), error);
   };
   const attempt = async <T>(key: string, operation: () => T | Promise<T>): Promise<T> => {
+    if (options.signal?.aborted) throw new RemoteAuditCancelled(key, report());
     try { return await operation(); }
-    catch (error) { return fail(key, error); }
+    catch (error) {
+      if (options.signal?.aborted || auditFailureKind(error) === "cancelled") {
+        throw new RemoteAuditCancelled(key, report());
+      }
+      return fail(key, error);
+    }
   };
 
   const descriptorObjectKey = descriptorKey(prefix, repositoryId);
   discover(descriptorObjectKey);
   const descriptor = await attempt(descriptorObjectKey, async () => {
-    const descriptorBytes = await readObjectBytes(store, descriptorObjectKey, { maximumBytes: 4 * 1024, expectedHash: descriptorHash });
+    const descriptorBytes = await readObjectBytes(store, descriptorObjectKey, { signal: options.signal, maximumBytes: 4 * 1024, expectedHash: descriptorHash });
     const verified = verifyRepositoryDescriptorAtKey(prefix, descriptorObjectKey, descriptorBytes);
     if (verified.descriptorHash !== descriptorHash) throw new Error("repository descriptor Hash changed");
     return verified;
   });
-  complete(descriptorObjectKey);
+  await complete(descriptorObjectKey);
   const binding: ConfigTreeBinding = {
     configDir: descriptor.descriptor.configDir as string,
     historicalConfigDirs: [...descriptor.descriptor.historicalConfigDirs as string[]],
   };
   const repository = new InMemoryRepositoryCore();
   const commitListKey = `${descriptorObjectKey.slice(0, -"format.json".length)}commits/`;
-  const commitKeys = await pollRemoteCommitKeys(store, prefix, repositoryId)
+  const commitKeys = await pollRemoteCommitKeys(store, prefix, repositoryId, new Set(), { signal: options.signal })
     .catch((error: unknown) => failOperation(commitListKey, error));
-  commitKeys.forEach(discover);
+  for (const key of commitKeys) {
+    discover(key);
+    await cooperate(key);
+  }
   const verifiedBlobs = new Map<string, number>();
   const verifiedTrees = new Map<string, Awaited<ReturnType<typeof downloadConfigTree>>>();
   const verifiedChunks = new Map<string, Uint8Array>();
   for (const commitObjectKey of commitKeys) {
     const commitHash = commitObjectKey.match(/-([0-9a-f]{64})\.json$/)?.[1];
     if (!commitHash) fail(commitObjectKey, new Error("invalid Commit key during audit"));
-    const commitBytes = await attempt(commitObjectKey, () => readObjectBytes(store, commitObjectKey, { maximumBytes: 256 * 1024, expectedHash: commitHash }));
+    const commitBytes = await attempt(commitObjectKey, () => readObjectBytes(store, commitObjectKey, { signal: options.signal, maximumBytes: 256 * 1024, expectedHash: commitHash }));
     const commit = await attempt(commitObjectKey, () => parseAndValidateProtocolObject("commit", commitBytes) as unknown as ProtocolCommit);
     const chunkKeys = commit.changeChunkHashes.map((hash) => changeChunkKey(prefix, repositoryId, hash));
     chunkKeys.forEach(discover);
@@ -146,13 +191,15 @@ export async function auditRemoteRepository(
       const key = chunkKeys[index];
       let bytes = verifiedChunks.get(key);
       if (!bytes) {
-        bytes = await attempt(key, () => readObjectBytes(store, key, {
+          bytes = await attempt(key, () => readObjectBytes(store, key, {
+            signal: options.signal,
             maximumBytes: 4 * 1024 * 1024,
             expectedHash: commit.changeChunkHashes[index],
           }));
         verifiedChunks.set(key, bytes);
       }
       chunkBytes.push(bytes);
+      await cooperate(key);
     }
     const envelope = await attempt(commitObjectKey, () => parseAndValidateKeyedCommitEnvelope(
       repositoryId, descriptorHash, commitObjectKey, commitBytes, chunkKeys, chunkBytes,
@@ -165,9 +212,9 @@ export async function auditRemoteRepository(
           discover(treeObjectKey);
           let tree = verifiedTrees.get(mutation.treeHash);
           if (!tree) {
-            tree = await attempt(treeObjectKey, () => downloadConfigTree(store, prefix, repositoryId, descriptorHash, mutation.treeHash!, binding));
+            tree = await attempt(treeObjectKey, () => downloadConfigTree(store, prefix, repositoryId, descriptorHash, mutation.treeHash!, binding, { signal: options.signal }));
             verifiedTrees.set(mutation.treeHash, tree);
-            complete(treeObjectKey);
+            await complete(treeObjectKey);
           }
           configTrees.set(mutation.treeHash, tree);
           for (const item of tree.items) {
@@ -179,9 +226,9 @@ export async function auditRemoteRepository(
               if (knownSize !== item.size) fail(objectKey, new Error("same Blob Hash has inconsistent declared sizes"));
               continue;
             }
-            await attempt(objectKey, () => downloadVerifiedBlob(store, prefix, repositoryId, { hash: item.blobHash!, size: item.size! }));
+            await attempt(objectKey, () => verifyRemoteBlob(store, prefix, repositoryId, { hash: item.blobHash!, size: item.size! }, { signal: options.signal }));
             verifiedBlobs.set(item.blobHash, item.size);
-            complete(objectKey);
+            await complete(objectKey);
           }
         }
         if (commit.channel === "vault" && mutation.kind === "put" && mutation.blobHash && mutation.size !== undefined) {
@@ -192,9 +239,9 @@ export async function auditRemoteRepository(
             fail(objectKey, new Error("same Blob Hash has inconsistent declared sizes"));
           }
           if (knownSize === undefined) {
-            await attempt(objectKey, () => downloadVerifiedBlob(store, prefix, repositoryId, { hash: mutation.blobHash!, size: mutation.size! }));
+            await attempt(objectKey, () => verifyRemoteBlob(store, prefix, repositoryId, { hash: mutation.blobHash!, size: mutation.size! }, { signal: options.signal }));
             verifiedBlobs.set(mutation.blobHash, mutation.size);
-            complete(objectKey);
+            await complete(objectKey);
           }
         }
       }
@@ -202,8 +249,8 @@ export async function auditRemoteRepository(
     await attempt(commitObjectKey, () => {
       receiveKeyedCommitBytes(repository, repositoryId, descriptorHash, commitObjectKey, commitBytes, chunkKeys, chunkBytes, configTrees, binding);
     });
-    complete(commitObjectKey);
-    chunkKeys.forEach(complete);
+    await complete(commitObjectKey);
+    for (const key of chunkKeys) await complete(key);
   }
   const progress = report();
   return {
@@ -212,7 +259,13 @@ export async function auditRemoteRepository(
     verifiedObjects: progress.completedObjects,
     totalObjects: progress.totalObjects,
     missingClosure: progress.missingClosure,
+    status: "complete",
+    deletionEvidenceAllowed: true,
   };
+}
+
+async function defaultYieldToIdle(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
 function auditFailureKind(error: unknown): ObjectStoreFailureKind {

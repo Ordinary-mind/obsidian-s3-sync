@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { link, mkdir, open, unlink, type FileHandle } from "node:fs/promises";
+import { link, mkdir, open, statfs, unlink, type FileHandle } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { ContentStagingAdapter, ContentStagingWriter } from "../core/content-staging";
 
@@ -42,6 +42,13 @@ export class NodeContentStagingAdapter implements ContentStagingAdapter {
   async remove(ref: string): Promise<void> {
     try { await unlink(this.resolveRef(ref)); }
     catch (error) { if (!hasCode(error, "ENOENT")) throw error; }
+  }
+
+  async availableBytes(): Promise<number> {
+    await mkdir(this.root, { recursive: true });
+    const stats = await statfs(this.root, { bigint: true });
+    const available = stats.bavail * stats.bsize;
+    return available > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(available);
   }
 
   private resolveRef(ref: string): string {

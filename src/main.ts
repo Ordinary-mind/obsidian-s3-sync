@@ -7,8 +7,8 @@ import { RuntimeContractModal } from "./runtime-contract-modal";
 import type { SyncEngine } from "./sync-engine";
 import { V1RepositoryService } from "./v1-service";
 import type { S3SyncData, S3SyncSettings, SyncSummary } from "./types";
-import { ensureParentFolder, getTFile, isIgnored, parseIgnorePatterns, resolveEffectivePrefix } from "./utils";
-import { captureStableVaultFile } from "./vault-stable-capture";
+import { ensureParentFolder, getTFile, isIgnored, parseIgnorePatterns, resolveEffectivePrefix, toArrayBuffer } from "./utils";
+import { captureStableVaultFile, captureStableVaultFileToStaging } from "./vault-stable-capture";
 import { reserveWriterCommit } from "../core/writer-session";
 import { decideResolvedRemotePut } from "../core/pull-decision";
 import { conflictId } from "../core/conflict-id";
@@ -84,10 +84,12 @@ import { assessConfigTreeCompatibility } from "../core/config-compatibility";
 import { buildConfigTreeObject, type ProtocolConfigTree } from "../core/config-tree";
 import { buildConfigSnapshotPublishEnvelope } from "../core/config-publish-envelope";
 import { RepositoryOperationLock, type RepositoryOperationOwner } from "../core/repository-operation-lock";
-import { buildVaultPutPublishEnvelope } from "../core/vault-publish-envelope";
+import { buildVaultPutControlEnvelope } from "../core/vault-publish-envelope";
 import { ImmutableContentStaging } from "../core/content-staging";
-import { ObsidianContentStagingAdapter } from "../adapters/obsidian-content-staging-adapter";
-import type { StableCapture } from "../core/stable-capture";
+import { NodeContentStagingAdapter } from "../adapters/node-content-staging-adapter";
+import type { StableStreamCaptureResult } from "../core/streaming-capture";
+import { BoundedExecutor } from "../core/bounded-executor";
+import { repositoryPerformanceProfiles } from "../core/performance-profile";
 
 type PersistedPreferences = Pick<S3SyncSettings,
   | "autoSync"
@@ -136,6 +138,8 @@ export default class S3SyncPlugin extends Plugin {
   private readonly v1ApplyOperations = new Map<string, string>();
   private v1DurableState: { fingerprint: string; store: DurableStateStore<StateJsonValue> } | undefined;
   private readonly repositoryOperation = new RepositoryOperationLock();
+  private auditAbortController: AbortController | undefined;
+  private readonly vaultHashExecutor = new BoundedExecutor(repositoryPerformanceProfiles.desktop.hashConcurrency);
 
   async onload(): Promise<void> {
     await this.loadPluginData();
@@ -166,6 +170,12 @@ export default class S3SyncPlugin extends Plugin {
       id: "s3-sync-full-audit",
       name: "S3 Sync：完整校验",
       callback: () => void this.runFullAuditV1(),
+    });
+
+    this.addCommand({
+      id: "s3-sync-cancel-full-audit",
+      name: "S3 Sync：取消完整校验",
+      callback: () => this.cancelFullAuditV1(),
     });
 
     this.addCommand({
@@ -248,6 +258,7 @@ export default class S3SyncPlugin extends Plugin {
   }
 
   onunload(): void {
+    this.auditAbortController?.abort();
     this.stopSchedulingAndFlush();
   }
 
@@ -1186,6 +1197,7 @@ export default class S3SyncPlugin extends Plugin {
     if (this.data.v1?.repositoryFingerprint !== initialState.repositoryFingerprint) {
       throw new Error("durable Outbox repository binding changed");
     }
+    const service = new V1RepositoryService(this.settings, initialState.prefix);
     while (true) {
       const state = this.data.v1;
       if (!state) throw new Error("durable Outbox repository binding is missing");
@@ -1201,7 +1213,6 @@ export default class S3SyncPlugin extends Plugin {
         entry = this.data.v1DurableOutbox.find((candidate) => candidate.id === entry!.id)!;
       }
       try {
-        const service = new V1RepositoryService(this.settings, state.prefix);
         const anchor = await service.replayDurableOutbox({
           repositoryId: state.repositoryId,
           descriptorHash: state.descriptorHash,
@@ -1254,11 +1265,11 @@ export default class S3SyncPlugin extends Plugin {
     state: NonNullable<S3SyncData["v1"]>;
     path: string;
     parents: string[];
-    capture: StableCapture;
+    capture: Extract<StableStreamCaptureResult, { status: "captured" }>;
     captureGeneration: number;
   }): Promise<{ commitHash: string; versionId: string }> {
     const reservation = reserveWriterCommit(input.state);
-    const envelope = buildVaultPutPublishEnvelope({
+    const publication = buildVaultPutControlEnvelope({
       prefix: input.state.prefix,
       repositoryId: input.state.repositoryId,
       descriptorHash: input.state.descriptorHash,
@@ -1271,6 +1282,7 @@ export default class S3SyncPlugin extends Plugin {
       parents: input.parents,
       capture: input.capture,
     });
+    const envelope = publication.envelope;
     const dirtyGeneration = this.data.v1DirtyIntents[input.path]?.generation;
     const eventGeneration = latestVaultEvent(this.data.v1VaultEvents, input.path)?.generation;
     const frozen = await freezeDurableOutbox({
@@ -1280,6 +1292,13 @@ export default class S3SyncPlugin extends Plugin {
       sequence: reservation.sequence,
       previousCommitHash: reservation.previousCommitHash,
       captureGeneration: input.captureGeneration,
+      preStagedObjects: [{
+        kind: "blob",
+        key: publication.blob.key,
+        hash: publication.blob.hash,
+        size: publication.blob.size,
+        contentRef: input.capture.stagedRef,
+      }],
       mutations: [{
         registerKey: `vault:${input.path}`,
         versionId: `${envelope.commit.hash}:0:0`,
@@ -1326,7 +1345,7 @@ export default class S3SyncPlugin extends Plugin {
       let localHash: string | null;
       if (local === null) localHash = null;
       else if (local instanceof TFile) {
-        const capture = await captureStableVaultFile(this.app.vault, path);
+        const capture = await this.captureVaultFileHash(path);
         if (!capture) continue;
         localHash = capture.hash;
       } else continue;
@@ -1611,7 +1630,7 @@ export default class S3SyncPlugin extends Plugin {
       let localState: "absent" | "present" | "unknown" = abstract === null ? "absent" : file ? "present" : "unknown";
       let localHash: string | undefined;
       if (!ignored && file && (remote.kind === "put" || remote.kind === "delete")) {
-        const capture = await captureStableVaultFile(this.app.vault, path);
+        const capture = await this.captureVaultFileHash(path);
         if (capture) localHash = capture.hash;
         else localState = "unknown";
       }
@@ -1670,6 +1689,8 @@ export default class S3SyncPlugin extends Plugin {
     const state = this.data.v1;
     if (!state) { new Notice("S3 Sync：尚未选择 v1 仓库。"); return; }
     if (!this.repositoryOperation.tryAcquire("vault")) { new Notice("S3 Sync：已有仓库操作正在运行。"); return; }
+    const controller = new AbortController();
+    this.auditAbortController = controller;
     this.updateOperationalStatus({ phase: "auditing", audit: { state: "running", completedObjects: 0, totalObjects: 0, missingClosure: [], resumable: true } });
     try {
       await this.assertV1RepositoryBinding(state);
@@ -1680,6 +1701,7 @@ export default class S3SyncPlugin extends Plugin {
           phase: "auditing",
           audit: { state: "running", ...progress, resumable: true },
         }),
+        { signal: controller.signal, sliceSize: 64, yieldToIdle: () => delay(0) },
       );
       const now = Date.now();
       this.updateOperationalStatus({
@@ -1699,19 +1721,28 @@ export default class S3SyncPlugin extends Plugin {
       new Notice(`S3 Sync 完整校验通过：${result.verifiedObjects} 个对象，${result.commits} 个 Commit。`);
     } catch (error) {
       const partial = remoteAuditFailureProgress(error);
+      const cancelled = controller.signal.aborted;
       this.updateOperationalStatus({
+        ...(cancelled ? { phase: "idle" as const, lastError: undefined } : {}),
         audit: {
           ...this.data.v1OperationalStatus.audit,
           ...(partial ?? {}),
-          state: "failed",
+          state: cancelled ? "cancelled" : "failed",
           resumable: true,
         },
       });
-      this.recordOperationalError(error);
+      if (cancelled) new Notice("S3 Sync：完整校验已取消；本次部分结果不会作为删除依据。");
+      else this.recordOperationalError(error);
     } finally {
+      if (this.auditAbortController === controller) this.auditAbortController = undefined;
       this.endRepositoryOperation("vault");
     }
     this.updateStatus();
+  }
+
+  cancelFullAuditV1(): void {
+    if (!this.auditAbortController || this.auditAbortController.signal.aborted) return;
+    this.auditAbortController.abort();
   }
 
   exportRedactedDiagnostics(): string {
@@ -1737,7 +1768,13 @@ export default class S3SyncPlugin extends Plugin {
       normalizedPrefix: this.data.v1?.prefix,
       pathSalt: this.data.v1?.repositoryId ?? this.runtimeContractSessionId,
       sensitiveValues: [this.settings.accessKeyId, this.settings.secretAccessKey, ...knownPaths],
-      status: status as unknown as Record<string, unknown>,
+      status: {
+        ...(status as unknown as Record<string, unknown>),
+        performance: {
+          profile: repositoryPerformanceProfiles.desktop,
+          hashExecutor: this.vaultHashExecutor.metrics(),
+        },
+      },
       events: [
         ...status.decisions.map((decision) => ({ at: Date.now(), category: decision.decision === "conflict" ? "conflict" as const : "local-path" as const, stage: decision.decision, message: decision.reason, path: decision.path })),
         ...(status.lastError ? [{ at: Date.now(), category: status.lastError.category, stage: status.phase, message: status.lastError.message }] : []),
@@ -1939,15 +1976,15 @@ export default class S3SyncPlugin extends Plugin {
       const dirtyIntent = this.data.v1DirtyIntents[file.path];
       const vaultEvent = latestVaultEvent(this.data.v1VaultEvents, file.path);
       this.updateOperationalStatus({ phase: "scanning" });
-      const capture = await captureStableVaultFile(this.app.vault, file.path);
-      if (!capture) throw new Error("active file changed during capture or is not a regular file");
+      const observedCapture = await this.captureVaultFileHash(file.path);
+      if (!observedCapture) throw new Error("active file changed during streaming Hash or is not a regular file");
       if (
         this.data.v1DirtyIntents[file.path]?.generation !== dirtyIntent?.generation
         || latestVaultEvent(this.data.v1VaultEvents, file.path)?.generation !== vaultEvent?.generation
       ) {
         throw new Error("local causal generation changed during stable capture");
       }
-      if (dirtyIntent?.awaitingLocalWrite && capture.hash !== dirtyIntent.expectedContentHash) {
+      if (dirtyIntent?.awaitingLocalWrite && observedCapture.hash !== dirtyIntent.expectedContentHash) {
         throw new Error("active editor generation has not reached stable disk bytes");
       }
       const service = new V1RepositoryService(this.settings, state.prefix);
@@ -1957,8 +1994,8 @@ export default class S3SyncPlugin extends Plugin {
       state = await this.persistObservedRemoteState(state, pulled.acceptedCommits, pulled.observations);
       const remote = pulled.value;
       const projectedHash = this.data.files[file.path]?.hash;
-      if (projectedHash && projectedHash !== capture.hash && remote && remote.hash !== projectedHash) {
-        this.recordV1Conflict(file.path, projectedHash, capture.hash, remote.hash, remote.heads);
+      if (projectedHash && projectedHash !== observedCapture.hash && remote && remote.hash !== projectedHash) {
+        this.recordV1Conflict(file.path, projectedHash, observedCapture.hash, remote.hash, remote.heads);
         await this.saveSyncData();
         throw new Error("local and remote content both changed; resolve the conflict before publishing");
       }
@@ -1967,6 +2004,13 @@ export default class S3SyncPlugin extends Plugin {
         : vaultEvent ? vaultEvent.localPredecessorVersion ? [vaultEvent.localPredecessorVersion] : vaultEvent.basisHeads
           : remote?.heads ?? [];
       this.updateOperationalStatus({ phase: "freezing-outbox" });
+      const capture = await this.captureVaultFileToStaging(state, file.path);
+      if (capture.status !== "captured") throw new Error(vaultCaptureFailureMessage(file.path, capture));
+      if (capture.hash !== observedCapture.hash || capture.size !== observedCapture.size
+        || this.data.v1DirtyIntents[file.path]?.generation !== dirtyIntent?.generation
+        || latestVaultEvent(this.data.v1VaultEvents, file.path)?.generation !== vaultEvent?.generation) {
+        throw new Error("local file or causal generation changed before Outbox freeze");
+      }
       const published = await this.freezePublishAndReconcileVaultPut({
         state,
         path: file.path,
@@ -2021,7 +2065,8 @@ export default class S3SyncPlugin extends Plugin {
       await this.drainDurableOutboxIfPresent(state);
       state = this.data.v1!;
       this.updateOperationalStatus({ phase: "pulling" });
-      const pulled = await new V1RepositoryService(this.settings, state.prefix).listResolvedVaultPutsWithDiagnostics(state.repositoryId, state.descriptorHash);
+      const service = new V1RepositoryService(this.settings, state.prefix);
+      const pulled = await service.listResolvedVaultPutsWithDiagnostics(state.repositoryId, state.descriptorHash);
       this.updateOperationalStatus({ phase: "merging" });
       state = await this.persistObservedRemoteState(state, pulled.acceptedCommits, pulled.blockedCommitKeys.length === 0 ? pulled.observations : undefined);
       const decisions = await this.buildV1PathDecisions(state, pulled);
@@ -2058,7 +2103,7 @@ export default class S3SyncPlugin extends Plugin {
           continue;
         }
         const existing = getTFile(this.app.vault, remote.path);
-        const capture = existing ? await captureStableVaultFile(this.app.vault, remote.path) : undefined;
+        const capture = existing ? await this.captureVaultFileHash(remote.path) : undefined;
         const decision = decideResolvedRemotePut({ localExists: !!existing, projectedHash: this.data.files[remote.path]?.hash, currentHash: capture?.hash, remoteHash: remote.hash });
         if (decision === "conflict") {
           replaceDecision({ path: remote.path, decision: "conflict", reason: "应用前复查发现本地与远端内容均已变化" });
@@ -2066,10 +2111,9 @@ export default class S3SyncPlugin extends Plugin {
           const copyPath = remoteConflictCopyPath(conflict, remote.hash);
           if (!this.app.vault.getAbstractFileByPath(copyPath)) {
             await ensureParentFolder(this.app.vault, copyPath);
-            const bytes = new Uint8Array(remote.bytes.byteLength);
-            bytes.set(remote.bytes);
+            const bytes = await service.downloadVaultBlob(state.repositoryId, remote);
             try {
-              await this.app.vault.createBinary(copyPath, bytes.buffer);
+              await this.app.vault.createBinary(copyPath, toArrayBuffer(bytes));
             } catch (error) {
               if (!(error instanceof Error) || !error.message.includes("File already exists")) throw error;
             }
@@ -2084,8 +2128,7 @@ export default class S3SyncPlugin extends Plugin {
           delete this.data.v1PendingApply[remote.path];
           continue;
         }
-        const binary = new Uint8Array(remote.bytes.byteLength);
-        binary.set(remote.bytes);
+        const binary = await service.downloadVaultBlob(state.repositoryId, remote);
         if (decision === "create") {
           await ensureParentFolder(this.app.vault, remote.path);
           if (this.app.vault.getAbstractFileByPath(remote.path)) {
@@ -2093,10 +2136,10 @@ export default class S3SyncPlugin extends Plugin {
             skipped += 1;
             continue;
           }
-          await this.withV1ApplyPath(remote.path, remote.hash, () => this.app.vault.createBinary(remote.path, binary.buffer));
+          await this.withV1ApplyPath(remote.path, remote.hash, () => this.app.vault.createBinary(remote.path, toArrayBuffer(binary)));
           created += 1;
         } else {
-          await this.withV1ApplyPath(remote.path, remote.hash, () => this.app.vault.modifyBinary(existing!, binary.buffer));
+          await this.withV1ApplyPath(remote.path, remote.hash, () => this.app.vault.modifyBinary(existing!, toArrayBuffer(binary)));
           updated += 1;
         }
         this.data.files[remote.path] = { hash: remote.hash, size: remote.size, updatedAt: new Date().toISOString() };
@@ -2229,7 +2272,7 @@ export default class S3SyncPlugin extends Plugin {
     if (!this.data.v1 || !this.isV1ManagedVaultPath(path)) return;
     const operationId = this.v1ApplyOperations.get(path);
     const applyJournals = this.data.v1ApplyJournals.map((journal) => ({ ...journal }));
-    const capture = await captureStableVaultFile(this.app.vault, file.path);
+    const capture = await this.captureVaultFileHash(file.path);
     if (capture && isOwnApplyEvent(applyJournals, operationId, path, capture.hash)) return;
     this.recordV1VaultEvent("upsert", path);
     if (capture) this.recordEditorPutCandidate(path, capture.hash);
@@ -2889,19 +2932,21 @@ export default class S3SyncPlugin extends Plugin {
     const remote = pulled.value;
     if (!remote || remote.hash !== conflict.remoteHash || !sameHeads(remote.heads, conflict.v1RemoteHeads ?? [])) throw new Error("remote conflict changed; refresh before resolving");
     if (mode === "remote") {
-      const candidate = (await service.listResolvedVaultPuts(state.repositoryId, state.descriptorHash)).find((entry) => entry.path === conflict.path);
-      if (!candidate) throw new Error("remote conflict content is unavailable");
-      const bytes = new Uint8Array(candidate.bytes.byteLength);
-      bytes.set(candidate.bytes);
+      const candidate = remote;
+      const bytes = await service.downloadVaultBlob(state.repositoryId, candidate);
       const file = getTFile(this.app.vault, conflict.path);
       if (!file) throw new Error("local conflict file is missing");
-      await this.app.vault.modifyBinary(file, bytes.buffer);
+      await this.app.vault.modifyBinary(file, toArrayBuffer(bytes));
       this.data.files[conflict.path] = { hash: candidate.hash, size: candidate.size, updatedAt: new Date().toISOString() };
       this.data.v1ProjectedHeads[conflict.path] = [...candidate.heads];
       delete this.data.v1PendingApply[conflict.path];
     } else {
-      const capture = await captureStableVaultFile(this.app.vault, conflict.path);
-      if (!capture || capture.hash !== conflict.localHash) throw new Error("local conflict content changed; refresh before resolving");
+      const capture = await this.captureVaultFileToStaging(state, conflict.path);
+      if (capture.status !== "captured" || capture.hash !== conflict.localHash) {
+        throw new Error(capture.status === "captured"
+          ? "local conflict content changed; refresh before resolving"
+          : vaultCaptureFailureMessage(conflict.path, capture));
+      }
       await this.freezePublishAndReconcileVaultPut({
         state,
         path: conflict.path,
@@ -2927,9 +2972,22 @@ export default class S3SyncPlugin extends Plugin {
   }
 
   private repositoryContentStaging(state: NonNullable<S3SyncData["v1"]>): ImmutableContentStaging {
-    return new ImmutableContentStaging(new ObsidianContentStagingAdapter(
-      this.app.vault.adapter,
-      localStateRoot(state.configDir, state.repositoryId),
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof FileSystemAdapter)) throw new Error("大文件暂存需要桌面 FileSystemAdapter");
+    return new ImmutableContentStaging(new NodeContentStagingAdapter(
+      adapter.getFullPath(localStateRoot(state.configDir, state.repositoryId)),
+    ));
+  }
+
+  private captureVaultFileHash(path: string) {
+    return this.vaultHashExecutor.run(() => captureStableVaultFile(this.app.vault, path));
+  }
+
+  private captureVaultFileToStaging(state: NonNullable<S3SyncData["v1"]>, path: string) {
+    return this.vaultHashExecutor.run(() => captureStableVaultFileToStaging(
+      this.app.vault,
+      path,
+      this.repositoryContentStaging(state),
     ));
   }
 
@@ -3023,6 +3081,20 @@ function emptyConfigCenterSnapshot(
     recoveryLocation: persisted.recoveryLocation ?? "尚未建立仓库恢复位置",
     blockedDetails: [],
   };
+}
+
+function vaultCaptureFailureMessage(
+  path: string,
+  result: Exclude<StableStreamCaptureResult, { status: "captured" }>,
+): string {
+  const reason = {
+    "not-file": "路径不是可读取的普通文件",
+    changed: "捕获期间文件发生变化",
+    "stage-corrupt": "本地暂存 Hash 校验失败",
+    "too-large": "文件超过 v1 的 5 GB Blob 上限",
+    "io-error": "流式读取或暂存失败",
+  }[result.reason];
+  return `路径 ${path} 已隔离，未加入 Outbox：${reason}`;
 }
 
 function delay(milliseconds: number): Promise<void> {

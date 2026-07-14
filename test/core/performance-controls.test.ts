@@ -2,8 +2,16 @@ import { describe, expect, it } from "vitest";
 import { BoundedExecutor } from "../../core/bounded-executor";
 import { runIncrementalAudit } from "../../core/incremental-audit";
 import { verifyBlobWithAdvisoryCache, type BlobExistenceCacheEntry } from "../../core/blob-existence-cache";
-import { correctnessNeutralRemoteCaches, verifyCheckpointBeforeUse } from "../../core/checkpoint";
-import { createRepositoryBenchmarkDataset } from "../../core/benchmark-dataset";
+import {
+  checkpointHistoryPolicy,
+  checkpointMatchesStateRoot,
+  correctnessNeutralRemoteCaches,
+  createRepositoryCheckpoint,
+  verifyCheckpointBeforeUse,
+} from "../../core/checkpoint";
+import { createRepositoryBenchmarkDataset, streamBenchmarkFile } from "../../core/benchmark-dataset";
+import { evaluateMemoryObservation, repositoryPerformanceProfiles } from "../../core/performance-profile";
+import { protocolLimits } from "../../protocol/limits";
 
 describe("performance controls preserve correctness", () => {
   it("bounds concurrent work and records its peak", async () => {
@@ -56,6 +64,36 @@ describe("performance controls preserve correctness", () => {
     expect(correctnessNeutralRemoteCaches).toEqual(["checkpoint", "latest", "device-head"]);
   });
 
+  it("binds checkpoint state roots to normalized registers and writer frontiers", () => {
+    const root = {
+      schemaVersion: 1 as const,
+      repositoryId: "123e4567-e89b-42d3-a456-426614174000",
+      descriptorHash: "a".repeat(64),
+      writerFrontiers: {},
+      registers: [{
+        key: "vault:notes/a.md",
+        heads: ["head-b", "head-a"],
+        pending: [],
+        invalid: [],
+        valueHash: "b".repeat(64),
+      }],
+    };
+    const checkpoint = createRepositoryCheckpoint(root, 1);
+    expect(checkpointMatchesStateRoot(checkpoint, {
+      ...root,
+      registers: [{ ...root.registers[0], heads: ["head-a", "head-b"] }],
+    })).toBe(true);
+    expect(checkpointMatchesStateRoot(checkpoint, {
+      ...root,
+      registers: [{ ...root.registers[0], valueHash: "c".repeat(64) }],
+    })).toBe(false);
+    expect(checkpointHistoryPolicy).toEqual({
+      newClient: "full-history",
+      verificationFailure: "full-history",
+      verifiedCheckpoint: "checkpoint-and-verified-frontiers",
+    });
+  });
+
   it("defines deterministic 10k/100k, attachment and high-frequency config datasets", () => {
     for (const count of [10_000, 100_000] as const) {
       const dataset = createRepositoryBenchmarkDataset(count);
@@ -64,6 +102,29 @@ describe("performance controls preserve correctness", () => {
       expect(dataset.attachment?.size).toBe(512 * 1024 * 1024);
       expect(dataset.configRewriteCount).toBe(10_000);
     }
+  });
+
+  it("defines bounded desktop/mobile stream envelopes and evaluates recorded heap peaks", async () => {
+    expect(repositoryPerformanceProfiles.desktop).toMatchObject({ hashConcurrency: 4, uploadConcurrency: 4, downloadConcurrency: 4 });
+    expect(repositoryPerformanceProfiles.mobile).toMatchObject({ hashConcurrency: 2, uploadConcurrency: 2, downloadConcurrency: 2 });
+    expect(repositoryPerformanceProfiles.mobile.bootstrapWorkSlice).toBeLessThan(repositoryPerformanceProfiles.desktop.bootstrapWorkSlice);
+    expect(Math.ceil(100_000 / repositoryPerformanceProfiles.mobile.bootstrapChunkMutations))
+      .toBeLessThanOrEqual(protocolLimits.commitChunks);
+    const chunks: number[] = [];
+    for await (const chunk of streamBenchmarkFile(
+      { path: "attachment.bin", size: 1024 * 1024 + 7, seed: 1 },
+      repositoryPerformanceProfiles.mobile.streamChunkBytes,
+    )) chunks.push(chunk.byteLength);
+    expect(Math.max(...chunks)).toBe(repositoryPerformanceProfiles.mobile.streamChunkBytes);
+    expect(chunks.reduce((total, size) => total + size, 0)).toBe(1024 * 1024 + 7);
+    const budget = repositoryPerformanceProfiles.mobile.maximumHeapGrowthBytes;
+    expect(evaluateMemoryObservation({
+      platform: "mobile",
+      dataset: "100000-small-files",
+      phase: "bootstrap",
+      baselineHeapBytes: 10,
+      peakHeapBytes: 10 + budget,
+    })).toEqual({ heapGrowthBytes: budget, withinBudget: true });
   });
 });
 

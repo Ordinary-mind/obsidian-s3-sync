@@ -8,12 +8,14 @@ import {
 export const unicodeVersion = "15.1.0";
 
 export function defaultCaseFold151(value: string): string {
+  if (isAscii(value)) return foldAscii(value);
   let folded = "";
   for (const symbol of value) folded += unicode151CaseFolding[symbol] ?? symbol;
   return folded;
 }
 
 export function normalizeNfc151(value: string): string {
+  if (isAscii(value)) return value;
   const decomposed = [...value].flatMap((symbol) => decompose(symbol.codePointAt(0)!));
   const ordered: number[] = [];
   for (const codePoint of decomposed) {
@@ -29,6 +31,29 @@ export function normalizeNfc151(value: string): string {
     ordered.splice(insertion, 0, codePoint);
   }
   return String.fromCodePoint(...compose(ordered));
+}
+
+function isAscii(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) if (value.charCodeAt(index) > 0x7f) return false;
+  return true;
+}
+
+function foldAscii(value: string): string {
+  let firstUppercase = -1;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0x41 && code <= 0x5a) {
+      firstUppercase = index;
+      break;
+    }
+  }
+  if (firstUppercase === -1) return value;
+  let folded = value.slice(0, firstUppercase);
+  for (let index = firstUppercase; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    folded += String.fromCharCode(code >= 0x41 && code <= 0x5a ? code + 0x20 : code);
+  }
+  return folded;
 }
 
 function decompose(codePoint: number): number[] {

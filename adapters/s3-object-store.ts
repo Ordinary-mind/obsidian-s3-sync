@@ -1,13 +1,18 @@
 import { GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { createHash } from "node:crypto";
+import { Readable } from "node:stream";
 import { retryDelayMs } from "../core/backoff";
 import {
+  assertImmutableStreamIdentity,
   ObjectStoreError,
-  readObjectBytes,
+  verifyObjectStream,
+  type ImmutableStreamIdentity,
   type ObjectStore,
   type ObjectStoreFailureKind,
   type ObjectStoreListOptions,
   type ObjectStoreOperation,
   type ObjectStoreRequestOptions,
+  type ReplayableObjectBody,
 } from "../core/object-store";
 import type { RepositoryEndpoint } from "../core/locator";
 
@@ -27,10 +32,25 @@ export interface S3ObjectStoreOptions extends RepositoryEndpoint {
   sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
 }
 
+export interface S3ObjectStoreMetrics {
+  requests: ConcurrencyMetrics;
+  downloads: ConcurrencyMetrics;
+  maximumObservedDownloadChunkBytes: number;
+}
+
+export interface ConcurrencyMetrics {
+  active: number;
+  queued: number;
+  peakActive: number;
+  completed: number;
+}
+
 export class S3ObjectStore implements ObjectStore {
   readonly capabilities = Object.freeze({ atomicCreate: "verified" as const });
   private readonly client: S3Sender;
-  private readonly limiter: ConcurrencyLimiter;
+  private readonly requestLimiter: ConcurrencyLimiter;
+  private readonly downloadLimiter: ConcurrencyLimiter;
+  private maximumObservedDownloadChunkBytes = 0;
 
   constructor(private readonly options: S3ObjectStoreOptions) {
     this.client = options.client ?? new S3Client({
@@ -40,7 +60,9 @@ export class S3ObjectStore implements ObjectStore {
       credentials: options.credentials,
       maxAttempts: 1,
     });
-    this.limiter = new ConcurrencyLimiter(options.maximumConcurrency ?? 4);
+    const maximumConcurrency = options.maximumConcurrency ?? 4;
+    this.requestLimiter = new ConcurrencyLimiter(maximumConcurrency);
+    this.downloadLimiter = new ConcurrencyLimiter(maximumConcurrency);
   }
 
   async list(prefix: string, continuationToken?: string, options?: ObjectStoreListOptions): Promise<{ keys: string[]; commonPrefixes?: string[]; continuationToken?: string }> {
@@ -58,12 +80,23 @@ export class S3ObjectStore implements ObjectStore {
   }
 
   async getStream(key: string, options?: ObjectStoreRequestOptions): Promise<AsyncIterable<Uint8Array>> {
-    const result = await this.execute("get", "request", options?.signal, (signal) => this.client.send(
-      new GetObjectCommand({ Bucket: this.options.bucket, Key: key }),
-      { abortSignal: signal },
-    ));
-    if (!result.Body) throw this.failure("integrity", "get", 0, "response-body");
-    return toAsyncBytes(result.Body.transformToWebStream());
+    const release = await this.downloadLimiter.acquire(options?.signal);
+    try {
+      const result = await this.execute("get", "request", options?.signal, (signal) => this.client.send(
+        new GetObjectCommand({ Bucket: this.options.bucket, Key: key }),
+        { abortSignal: signal },
+      ));
+      if (!result.Body) throw this.failure("integrity", "get", 0, "response-body");
+      return releaseAfter(
+        toAsyncBytes(result.Body.transformToWebStream(), options?.signal, (size) => {
+          this.maximumObservedDownloadChunkBytes = Math.max(this.maximumObservedDownloadChunkBytes, size);
+        }),
+        release,
+      );
+    } catch (error) {
+      release();
+      throw error;
+    }
   }
 
   async head(key: string, options?: ObjectStoreRequestOptions): Promise<{ size: number }> {
@@ -85,16 +118,57 @@ export class S3ObjectStore implements ObjectStore {
       if (!isPreconditionFailure(error)) throw error;
     }
 
-    let stored: Uint8Array;
     try {
-      stored = await readObjectBytes(this, key, { signal: options?.signal, maximumBytes: bytes.byteLength });
+      await verifyObjectStream(this, key, {
+        hash: createHash("sha256").update(bytes).digest("hex"),
+        size: bytes.byteLength,
+      }, options);
     } catch (error) {
       if (error instanceof ObjectStoreError && error.kind === "integrity") {
         throw this.failure("integrity", "put", 0, "verify");
       }
       throw error;
     }
-    if (!equalBytes(stored, bytes)) throw this.failure("integrity", "put", 0, "verify");
+  }
+
+  async putImmutableStream(
+    key: string,
+    openBody: ReplayableObjectBody,
+    expected: ImmutableStreamIdentity,
+    options?: ObjectStoreRequestOptions,
+  ): Promise<void> {
+    assertImmutableStreamIdentity(expected);
+    try {
+      await this.execute("put", "conditional-create-stream", options?.signal, async (signal) => {
+        const body = validateUploadBody(await openBody(), expected, signal);
+        return this.client.send(new PutObjectCommand({
+          Bucket: this.options.bucket,
+          Key: key,
+          Body: Readable.from(body, { objectMode: false }),
+          ContentLength: expected.size,
+          IfNoneMatch: "*",
+        }), { abortSignal: signal });
+      });
+    } catch (error) {
+      if (!isPreconditionFailure(error)) throw error;
+    }
+
+    try {
+      await verifyObjectStream(this, key, expected, options);
+    } catch (error) {
+      if (error instanceof ObjectStoreError && error.kind === "integrity") {
+        throw this.failure("integrity", "put", 0, "verify-stream");
+      }
+      throw error;
+    }
+  }
+
+  metrics(): S3ObjectStoreMetrics {
+    return {
+      requests: this.requestLimiter.metrics(),
+      downloads: this.downloadLimiter.metrics(),
+      maximumObservedDownloadChunkBytes: this.maximumObservedDownloadChunkBytes,
+    };
   }
 
   private async execute<T>(
@@ -107,7 +181,7 @@ export class S3ObjectStore implements ObjectStore {
     for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
       let release: (() => void) | undefined;
       try {
-        release = await this.limiter.acquire(signal);
+        release = await this.requestLimiter.acquire(signal);
         return await withTimeout(request, this.options.requestTimeoutMs ?? 30_000, signal);
       } catch (cause) {
         const error = classifyS3Failure(cause, operation, attempt, stage, signal?.aborted === true);
@@ -141,6 +215,8 @@ export class S3ObjectStore implements ObjectStore {
 
 class ConcurrencyLimiter {
   private active = 0;
+  private peakActive = 0;
+  private completed = 0;
   private readonly waiters: Array<() => void> = [];
 
   constructor(private readonly maximum: number) {
@@ -165,12 +241,23 @@ class ConcurrencyLimiter {
       });
     }
     this.active += 1;
+    this.peakActive = Math.max(this.peakActive, this.active);
     let released = false;
     return () => {
       if (released) return;
       released = true;
       this.active -= 1;
+      this.completed += 1;
       this.waiters.shift()?.();
+    };
+  }
+
+  metrics(): ConcurrencyMetrics {
+    return {
+      active: this.active,
+      queued: this.waiters.length,
+      peakActive: this.peakActive,
+      completed: this.completed,
     };
   }
 }
@@ -201,16 +288,61 @@ async function sleep(milliseconds: number, signal?: AbortSignal): Promise<void> 
   });
 }
 
-async function* toAsyncBytes(stream: ReadableStream<Uint8Array>): AsyncIterable<Uint8Array> {
+async function* toAsyncBytes(
+  stream: ReadableStream<Uint8Array>,
+  signal: AbortSignal | undefined,
+  observeChunk: (size: number) => void,
+): AsyncIterable<Uint8Array> {
   const reader = stream.getReader();
+  let completed = false;
+  const cancel = () => { void reader.cancel(signal?.reason); };
+  signal?.addEventListener("abort", cancel, { once: true });
   try {
     while (true) {
+      if (signal?.aborted) throw abortError();
       const result = await reader.read();
-      if (result.done) return;
+      if (result.done) {
+        if (signal?.aborted) throw abortError();
+        completed = true;
+        return;
+      }
+      observeChunk(result.value.byteLength);
       yield result.value;
     }
   } finally {
+    signal?.removeEventListener("abort", cancel);
+    if (!completed) await reader.cancel().catch(() => undefined);
     reader.releaseLock();
+  }
+}
+
+async function* releaseAfter(chunks: AsyncIterable<Uint8Array>, release: () => void): AsyncIterable<Uint8Array> {
+  try {
+    yield* chunks;
+  } finally {
+    release();
+  }
+}
+
+async function* validateUploadBody(
+  chunks: AsyncIterable<Uint8Array>,
+  expected: ImmutableStreamIdentity,
+  signal: AbortSignal,
+): AsyncIterable<Uint8Array> {
+  const hash = createHash("sha256");
+  let size = 0;
+  for await (const chunk of chunks) {
+    if (signal.aborted) throw abortError();
+    if (!(chunk instanceof Uint8Array)) throw new ObjectStoreError("integrity", "put", { retries: 0, stage: "stream-body" });
+    size += chunk.byteLength;
+    if (!Number.isSafeInteger(size) || size > expected.size) {
+      throw new ObjectStoreError("integrity", "put", { retries: 0, stage: "stream-size" });
+    }
+    hash.update(chunk);
+    yield chunk;
+  }
+  if (size !== expected.size || hash.digest("hex") !== expected.hash) {
+    throw new ObjectStoreError("integrity", "put", { retries: 0, stage: "stream-hash" });
   }
 }
 
@@ -243,10 +375,4 @@ function abortError(): Error {
   const error = new Error("operation cancelled");
   error.name = "AbortError";
   return error;
-}
-
-function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.byteLength !== right.byteLength) return false;
-  for (let index = 0; index < left.byteLength; index += 1) if (left[index] !== right[index]) return false;
-  return true;
 }

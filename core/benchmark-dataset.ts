@@ -35,3 +35,19 @@ export async function measurePeakHeap<T>(operation: () => Promise<T>, sample: ()
     clearInterval(timer);
   }
 }
+
+export async function* streamBenchmarkFile(
+  recipe: BenchmarkFileRecipe,
+  chunkBytes: number,
+): AsyncIterable<Uint8Array> {
+  if (!Number.isSafeInteger(chunkBytes) || chunkBytes < 1) throw new Error("benchmark chunk size is invalid");
+  const chunk = new Uint8Array(Math.min(chunkBytes, recipe.size));
+  for (let index = 0; index < chunk.length; index += 1) chunk[index] = (recipe.seed + index * 31) & 0xff;
+  let remaining = recipe.size;
+  while (remaining > 0) {
+    const size = Math.min(remaining, chunk.byteLength);
+    yield size === chunk.byteLength ? chunk : chunk.subarray(0, size);
+    remaining -= size;
+    await Promise.resolve();
+  }
+}

@@ -1,4 +1,4 @@
-import { S3ObjectStore } from "../adapters/s3-object-store";
+import { S3ObjectStore, type S3ObjectStoreMetrics } from "../adapters/s3-object-store";
 import { discoverRepositoryDescriptors } from "../core/discovery";
 import { InMemoryRepositoryCore } from "../core/repository";
 import { pullCommitIntoRepository, pullCommitSetIntoRepository } from "../core/remote-pull";
@@ -6,8 +6,8 @@ import { createRepositoryDescriptor, readRepositoryDescriptorAnchor } from "../c
 import { probeWritableObjectStore } from "../core/connection-probe";
 import { buildVaultPutPublishEnvelope } from "../core/vault-publish-envelope";
 import { publishEnvelope } from "../core/remote-publish";
-import { downloadVerifiedBlob } from "../core/remote-blob";
-import { resolveVaultBlobDependencies } from "../core/remote-dependencies";
+import { downloadVerifiedBlob, verifyRemoteBlob } from "../core/remote-blob";
+import { verifyVaultBlobDependencies } from "../core/remote-dependencies";
 import type { StableCapture } from "../core/stable-capture";
 import { createRepositoryLocator, repositoryFingerprint, type RepositoryLocator } from "../core/locator";
 import { assertDescriptorDirectoryBinding, type PersistedRepositoryBinding } from "../core/repository-binding";
@@ -22,7 +22,11 @@ import type { ProtocolConfigTree } from "../core/config-tree";
 import type { CommitKind } from "../core/types";
 import { buildConfigSnapshotPublishEnvelope } from "../core/config-publish-envelope";
 import { replayFrozenDurableOutbox, type DurableOutboxEntry, type DurableOutboxReplaySource } from "../core/durable-outbox";
-import { readObjectBytes } from "../core/object-store";
+import { ObjectStoreError, readObjectBytes, verifyObjectStream } from "../core/object-store";
+import { verifyBlobWithAdvisoryCache, type BlobExistenceCacheEntry } from "../core/blob-existence-cache";
+import { repositoryPerformanceProfiles } from "../core/performance-profile";
+
+const REPOSITORY_TRANSFER_CONCURRENCY = repositoryPerformanceProfiles.desktop.downloadConcurrency;
 
 export interface V1ConfigHead {
   versionId: string;
@@ -47,6 +51,8 @@ export interface V1ConfigInspection {
 export class V1RepositoryService {
   private readonly locator: Readonly<RepositoryLocator>;
   private readonly prefix: string;
+  private readonly objectStore: S3ObjectStore;
+  private readonly blobExistenceCache = new Map<string, BlobExistenceCacheEntry>();
 
   constructor(private readonly settings: S3SyncSettings, prefix = settings.prefix) {
     this.locator = createRepositoryLocator(
@@ -54,6 +60,14 @@ export class V1RepositoryService {
       settings.endpoint.startsWith("http://127.0.0.1") || settings.endpoint.startsWith("http://localhost"),
     );
     this.prefix = this.locator.normalizedPrefix;
+    this.objectStore = new S3ObjectStore({
+      endpoint: this.locator.endpoint,
+      region: this.locator.region,
+      bucket: this.locator.bucket,
+      forcePathStyle: this.locator.forcePathStyle,
+      credentials: { accessKeyId: this.settings.accessKeyId, secretAccessKey: this.settings.secretAccessKey },
+      maximumConcurrency: REPOSITORY_TRANSFER_CONCURRENCY,
+    });
   }
   async discover(): Promise<Array<{ key: string; repositoryId: string; descriptorHash: string; configDir: string; historicalConfigDirs: string[] }>> {
     const store = this.store();
@@ -110,11 +124,11 @@ export class V1RepositoryService {
     if (state.disposition !== "resolved") throw new Error(`cannot publish ${path}: remote register is ${state.disposition}`);
     return state.heads;
   }
-  async resolvedVaultPut(repositoryId: string, descriptorHash: string, path: string): Promise<{ heads: string[]; hash: string } | undefined> {
+  async resolvedVaultPut(repositoryId: string, descriptorHash: string, path: string): Promise<{ heads: string[]; hash: string; size: number } | undefined> {
     return (await this.resolvedVaultPutWithAnchors(repositoryId, descriptorHash, path)).value;
   }
   async resolvedVaultPutWithAnchors(repositoryId: string, descriptorHash: string, path: string): Promise<{
-    value: { heads: string[]; hash: string } | undefined;
+    value: { heads: string[]; hash: string; size: number } | undefined;
     acceptedCommits: CommitFrontierAnchor[];
     observations: RemoteRegisterObservation[];
   }> {
@@ -125,13 +139,18 @@ export class V1RepositoryService {
     const observations = registerObservations(repository, repositoryId);
     if (state.heads.length === 0) return { value: undefined, acceptedCommits: pulled.acceptedCommits, observations };
     const version = repository.version(state.heads[0]);
-    return { value: version?.blob ? { heads: state.heads, hash: version.blob.hash } : undefined, acceptedCommits: pulled.acceptedCommits, observations };
+    return { value: version?.blob ? { heads: state.heads, hash: version.blob.hash, size: version.blob.size } : undefined, acceptedCommits: pulled.acceptedCommits, observations };
   }
   async listResolvedVaultPuts(repositoryId: string, descriptorHash: string): Promise<Array<{ path: string; hash: string; size: number; bytes: Uint8Array; heads: string[] }>> {
-    return (await this.listResolvedVaultPutsWithDiagnostics(repositoryId, descriptorHash)).files;
+    const listed = await this.listResolvedVaultPutsWithDiagnostics(repositoryId, descriptorHash);
+    const files = [];
+    for (const file of listed.files) {
+      files.push({ ...file, bytes: await this.downloadVaultBlob(repositoryId, file) });
+    }
+    return files;
   }
   async listResolvedVaultPutsWithDiagnostics(repositoryId: string, descriptorHash: string): Promise<{
-    files: Array<{ path: string; hash: string; size: number; bytes: Uint8Array; heads: string[] }>;
+    files: Array<{ path: string; hash: string; size: number; heads: string[] }>;
     blocked: Array<{ path: string; heads: string[]; reason: unknown }>;
     blockedCommitKeys: Array<{ key: string; reason: unknown }>;
     acceptedCommits: CommitFrontierAnchor[];
@@ -146,7 +165,12 @@ export class V1RepositoryService {
       if (!version?.blob) continue;
       dependencies.push({ path: version.logicalKey, hash: version.blob.hash, size: version.blob.size, heads: [...state.heads] });
     }
-    const result = await resolveVaultBlobDependencies(dependencies, (dependency) => downloadVerifiedBlob(this.store(), this.prefix, repositoryId, dependency));
+    const store = this.store();
+    const result = await verifyVaultBlobDependencies(
+      dependencies,
+      (dependency, signal) => verifyRemoteBlob(store, this.prefix, repositoryId, dependency, { signal }),
+      { concurrency: REPOSITORY_TRANSFER_CONCURRENCY },
+    );
     return {
       files: result.available.sort((left, right) => left.path.localeCompare(right.path)),
       blocked: result.blocked.sort((left, right) => left.path.localeCompare(right.path)),
@@ -154,6 +178,9 @@ export class V1RepositoryService {
       acceptedCommits: pulled.acceptedCommits,
       observations: registerObservations(repository, repositoryId),
     };
+  }
+  async downloadVaultBlob(repositoryId: string, blob: { hash: string; size: number }): Promise<Uint8Array> {
+    return downloadVerifiedBlob(this.store(), this.prefix, repositoryId, blob);
   }
   async inspectConfigRegister(repositoryId: string, descriptorHash: string): Promise<V1ConfigInspection> {
     const pulled = await this.pullAllCommitsWithDiagnostics(repositoryId, descriptorHash);
@@ -266,12 +293,33 @@ export class V1RepositoryService {
     await verifyWriterFrontiers(store, input.repositoryId, input.descriptorHash, input.writerFrontiers);
     await replayFrozenDurableOutbox(input.entry, input.source, {
       repositoryFingerprint: repositoryFingerprint(this.locator, input.repositoryId, input.descriptorHash),
-      putImmutable: async (object, body) => {
-        await store.putImmutable(object.key, await readReplayBody(body, object.hash, object.size));
+      putImmutable: async (object, openBody) => {
+        const publish = async (): Promise<void> => {
+          if (store.putImmutableStream) {
+            await store.putImmutableStream(object.key, openBody, { hash: object.hash, size: object.size });
+            return;
+          }
+          await store.putImmutable(object.key, await readReplayBody(await openBody(), object.hash, object.size));
+        };
+        if (object.kind !== "blob") {
+          await publish();
+          return;
+        }
+        await verifyBlobWithAdvisoryCache({
+          hash: object.hash,
+          size: object.size,
+          cache: {
+            get: async (hash) => this.blobExistenceCache.get(hash),
+            set: async (entry) => { this.blobExistenceCache.set(entry.hash, entry); },
+            delete: async (hash) => { this.blobExistenceCache.delete(hash); },
+          },
+          now: Date.now(),
+          verifyRemote: async () => remoteObjectIsVerified(store, object),
+          publishImmutable: publish,
+        });
       },
       verifyRemote: async (object) => {
-        const bytes = await readObjectBytes(store, object.key, { maximumBytes: object.size, expectedHash: object.hash });
-        if (bytes.byteLength !== object.size) throw new Error(`remote durable Outbox ${object.kind} size integrity mismatch`);
+        await verifyObjectStream(store, object.key, { hash: object.hash, size: object.size });
       },
     });
     const commit = input.entry.objects.at(-1)!;
@@ -338,18 +386,23 @@ export class V1RepositoryService {
     repositoryId: string,
     descriptorHash: string,
     onProgress?: (progress: { completedObjects: number; totalObjects: number; missingClosure: string[] }) => void,
-  ): Promise<{ verifiedObjects: number; totalObjects: number; missingClosure: string[]; commits: number; registers: number }> {
-    const result = await auditRemoteRepository(this.store(), this.prefix, repositoryId, descriptorHash, { onProgress });
+    options: { signal?: AbortSignal; sliceSize?: number; yieldToIdle?: () => Promise<void> } = {},
+  ): Promise<{ verifiedObjects: number; totalObjects: number; missingClosure: string[]; commits: number; registers: number; deletionEvidenceAllowed: true }> {
+    const result = await auditRemoteRepository(this.store(), this.prefix, repositoryId, descriptorHash, { onProgress, ...options });
     return {
       verifiedObjects: result.verifiedObjects,
       totalObjects: result.totalObjects,
       missingClosure: [...result.missingClosure],
       commits: result.commitKeys.length,
       registers: result.repository.allRegisters(repositoryId).size,
+      deletionEvidenceAllowed: result.deletionEvidenceAllowed,
     };
   }
+  performanceMetrics(): S3ObjectStoreMetrics {
+    return this.objectStore.metrics();
+  }
   private store(): S3ObjectStore {
-    return new S3ObjectStore({ endpoint: this.locator.endpoint, region: this.locator.region, bucket: this.locator.bucket, forcePathStyle: this.locator.forcePathStyle, credentials: { accessKeyId: this.settings.accessKeyId, secretAccessKey: this.settings.secretAccessKey } });
+    return this.objectStore;
   }
   private async requireDescriptor(repositoryId: string, descriptorHash: string): Promise<{ configDir: string; historicalConfigDirs: string[] }> {
     return readRepositoryDescriptorAnchor(this.store(), this.prefix, repositoryId, descriptorHash);
@@ -400,4 +453,17 @@ async function readReplayBody(body: AsyncIterable<Uint8Array>, expectedHash: str
   }
   if (size !== expectedSize || sha256Hex(bytes) !== expectedHash) throw new Error("durable Outbox replay content integrity mismatch");
   return bytes;
+}
+
+async function remoteObjectIsVerified(
+  store: S3ObjectStore,
+  object: { key: string; hash: string; size: number },
+): Promise<boolean> {
+  try {
+    await verifyObjectStream(store, object.key, { hash: object.hash, size: object.size });
+    return true;
+  } catch (error) {
+    if (error instanceof ObjectStoreError && (error.kind === "not-found" || error.kind === "integrity")) return false;
+    throw error;
+  }
 }

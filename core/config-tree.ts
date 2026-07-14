@@ -5,7 +5,7 @@ import { protocolLimits } from "../protocol/limits";
 import { validateConfigBlobDependencies, validateConfigTreeExcludedPaths, type ConfigTreeForProfile } from "../protocol/semantics";
 import { parseAndValidateBoundObject } from "../protocol/validation";
 import type { ImmutableObject } from "./immutable-object";
-import { readObjectBytes, type ObjectStore } from "./object-store";
+import { readObjectBytes, type ObjectStore, type ObjectStoreRequestOptions } from "./object-store";
 import { putVerifiedImmutable } from "./remote-publish";
 
 const encoder = new TextEncoder();
@@ -49,8 +49,10 @@ export async function downloadConfigTree(
   descriptorHash: string,
   treeHash: string,
   binding: ConfigTreeBinding,
+  options: ObjectStoreRequestOptions = {},
 ): Promise<ProtocolConfigTree> {
   const bytes = await readObjectBytes(store, configTreeKey(prefix, repositoryId, treeHash), {
+    ...options,
     maximumBytes: protocolLimits.configTreeBytes,
     expectedHash: treeHash,
   });

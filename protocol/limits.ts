@@ -26,36 +26,53 @@ export type CollectionLimitName = "parents" | "chunk-mutations" | "commit-chunks
 const encoder = new TextEncoder();
 
 export function utf8ByteLength(value: string): number {
-  return encoder.encode(value).byteLength;
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) > 0x7f) return encoder.encode(value).byteLength;
+  }
+  return value.length;
 }
 
 export function validateParsedJsonLimits(value: unknown, depth = 1): StructureLimitViolation[] {
-  if (depth > protocolLimits.jsonDepth) return ["json-depth-exceeded"];
+  const violations = new Set<StructureLimitViolation>();
+  collectParsedJsonLimitViolations(value, depth, violations);
+  return [...violations];
+}
+
+function collectParsedJsonLimitViolations(
+  value: unknown,
+  depth: number,
+  violations: Set<StructureLimitViolation>,
+): void {
+  if (depth > protocolLimits.jsonDepth) {
+    violations.add("json-depth-exceeded");
+    return;
+  }
   if (typeof value === "number") {
-    return Number.isSafeInteger(value) && !Object.is(value, -0)
-      ? []
-      : ["json-number-not-safe-integer"];
+    if (!Number.isSafeInteger(value) || Object.is(value, -0)) {
+      violations.add("json-number-not-safe-integer");
+    }
+    return;
   }
   if (typeof value === "string") {
-    return utf8ByteLength(value) > protocolLimits.jsonStringUtf8Bytes
-      ? ["json-string-bytes-exceeded"]
-      : [];
+    if (utf8ByteLength(value) > protocolLimits.jsonStringUtf8Bytes) {
+      violations.add("json-string-bytes-exceeded");
+    }
+    return;
   }
   if (Array.isArray(value)) {
-    if (value.length > protocolLimits.jsonArrayItems) return ["json-array-items-exceeded"];
-    return [...new Set(value.flatMap((item) => validateParsedJsonLimits(item, depth + 1)))];
+    if (value.length > protocolLimits.jsonArrayItems) {
+      violations.add("json-array-items-exceeded");
+      return;
+    }
+    for (const item of value) collectParsedJsonLimitViolations(item, depth + 1, violations);
+    return;
   }
   if (value && typeof value === "object") {
-    return [
-      ...new Set(
-        Object.entries(value).flatMap(([key, child]) => [
-          ...validateParsedJsonLimits(key, depth),
-          ...validateParsedJsonLimits(child, depth + 1),
-        ]),
-      ),
-    ];
+    for (const [key, child] of Object.entries(value)) {
+      collectParsedJsonLimitViolations(key, depth, violations);
+      collectParsedJsonLimitViolations(child, depth + 1, violations);
+    }
   }
-  return [];
 }
 
 export function isValidSequence(sequence: string): boolean {

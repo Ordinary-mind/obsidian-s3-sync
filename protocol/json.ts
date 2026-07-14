@@ -1,7 +1,5 @@
-import { validateParsedJsonLimits } from "./limits";
+import { utf8ByteLength, validateParsedJsonLimits } from "./limits";
 import { protocolLimits } from "./limits";
-
-const utf8Encoder = new TextEncoder();
 
 export type ProtocolJsonErrorCode =
   | "body-too-large"
@@ -41,12 +39,12 @@ export function parseBoundedProtocolJson(
 }
 
 export function parseCanonicalProtocolJson(bytes: Uint8Array, maxBytes: number): Record<string, unknown> {
-  const value = parseBoundedJson(bytes, maxBytes, "object");
+  const source = decodeBoundedUtf8(bytes, maxBytes);
+  const value = parseDecodedJson(source, "object");
   const structureViolations = validateParsedJsonLimits(value);
   if (structureViolations.length > 0) {
     throw new ProtocolJsonError(structureViolations[0], "JSON body exceeds a protocol structure limit");
   }
-  const source = decodeBoundedUtf8(bytes, maxBytes);
   if (canonicalizeProtocolJson(value) !== source) {
     throw new ProtocolJsonError("non-canonical-json", "JSON body is not RFC 8785 canonical");
   }
@@ -55,6 +53,10 @@ export function parseCanonicalProtocolJson(bytes: Uint8Array, maxBytes: number):
 
 export function parseBoundedJson(bytes: Uint8Array, maxBytes: number, root: "object" | "array" | "any" = "any"): unknown {
   const source = decodeBoundedUtf8(bytes, maxBytes);
+  return parseDecodedJson(source, root);
+}
+
+function parseDecodedJson(source: string, root: "object" | "array" | "any"): unknown {
   const value = new StrictJsonParser(source).parse();
   if (root === "object" && (!value || typeof value !== "object" || Array.isArray(value))) {
     throw new ProtocolJsonError("root-not-object", "JSON must have an object root");
@@ -234,7 +236,7 @@ class StrictJsonParser {
   }
 
   private finishString(value: string): string {
-    if (utf8Encoder.encode(value).byteLength > 4 * 1024) {
+    if (utf8ByteLength(value) > 4 * 1024) {
       this.fail("json-string-bytes-exceeded", "JSON string exceeds 4 KiB UTF-8 bytes");
     }
     return value;

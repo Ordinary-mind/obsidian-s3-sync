@@ -38,7 +38,7 @@ describe("recoverable remote repository audit", () => {
       onProgress: (value) => progress.push(value),
     });
     expect(audited.verifiedObjects).toBe(4);
-    expect(audited).toMatchObject({ totalObjects: 4, missingClosure: [] });
+    expect(audited).toMatchObject({ totalObjects: 4, missingClosure: [], status: "complete", deletionEvidenceAllowed: true });
     expect(progress.at(-1)).toEqual({ completedObjects: 4, totalObjects: 4, missingClosure: [] });
     expect(audited.repository.register(repositoryId, "vault", "notes/a.md").heads).toHaveLength(1);
     await expect(pollRemoteCommitKeys(store, "", repositoryId, new Set(audited.commitKeys))).resolves.toEqual([]);
@@ -83,6 +83,43 @@ describe("recoverable remote repository audit", () => {
       (failure: unknown) => failure,
     );
     expect(error).toMatchObject({ kind: "temporary", code: "audit-network" });
+    expect(remoteAuditFailureProgress(error)).toEqual({ completedObjects: 1, totalObjects: 1, missingClosure: [] });
+  });
+
+  it("cancels at an idle slice without creating missing-closure or deletion evidence", async () => {
+    const repositoryId = "123e4567-e89b-42d3-a456-426614174000";
+    const descriptorBytes = new TextEncoder().encode(JSON.stringify({
+      canonicalJson: "RFC8785",
+      configDir: ".obsidian",
+      hashAlgorithm: "sha256",
+      historicalConfigDirs: [],
+      protocol: 1,
+      repositoryId,
+    }));
+    const descriptorHash = sha256Hex(descriptorBytes);
+    const controller = new AbortController();
+    let yields = 0;
+    const store = {
+      list: async () => ({ keys: [] }),
+      head: async () => ({ size: descriptorBytes.byteLength }),
+      getStream: async () => objectBodyFromBytes(descriptorBytes),
+      putImmutable: async () => undefined,
+    };
+    const error = await auditRemoteRepository(store, "", repositoryId, descriptorHash, {
+      signal: controller.signal,
+      sliceSize: 1,
+      yieldToIdle: async () => {
+        yields += 1;
+        controller.abort();
+      },
+    }).then(() => undefined, (failure: unknown) => failure);
+    expect(yields).toBe(1);
+    expect(error).toMatchObject({
+      name: "RemoteAuditCancelled",
+      kind: "cancelled",
+      code: "audit-cancelled",
+      deletionEvidenceAllowed: false,
+    });
     expect(remoteAuditFailureProgress(error)).toEqual({ completedObjects: 1, totalObjects: 1, missingClosure: [] });
   });
 });

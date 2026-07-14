@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export type ObjectStoreOperation = "list" | "get" | "head" | "put" | "delete-probe";
 export type ObjectStoreFailureKind = "not-found" | "temporary" | "throttled" | "auth" | "integrity" | "cancelled";
 
@@ -20,6 +22,19 @@ export interface ObjectStore {
   getStream(key: string, options?: ObjectStoreRequestOptions): Promise<AsyncIterable<Uint8Array>>;
   head(key: string, options?: ObjectStoreRequestOptions): Promise<{ size: number }>;
   putImmutable(key: string, bytes: Uint8Array, options?: ObjectStoreRequestOptions): Promise<void>;
+  putImmutableStream?(
+    key: string,
+    openBody: ReplayableObjectBody,
+    expected: ImmutableStreamIdentity,
+    options?: ObjectStoreRequestOptions,
+  ): Promise<void>;
+}
+
+export type ReplayableObjectBody = () => Promise<AsyncIterable<Uint8Array>>;
+
+export interface ImmutableStreamIdentity {
+  hash: string;
+  size: number;
 }
 
 export interface ObjectStoreCapabilities {
@@ -55,14 +70,16 @@ export async function readObjectBytes(
   const hash = options.expectedHash === undefined ? undefined : createHash("sha256");
   let size = 0;
   for await (const chunk of await store.getStream(key, options)) {
+    if (options.signal?.aborted) throw cancelledGetError();
     if (!(chunk instanceof Uint8Array)) throw new ObjectStoreError("integrity", "get", { retries: 0, stage: "stream" });
     size += chunk.byteLength;
-    if (options.maximumBytes !== undefined && size > options.maximumBytes) {
+    if (!Number.isSafeInteger(size) || (options.maximumBytes !== undefined && size > options.maximumBytes)) {
       throw new ObjectStoreError("integrity", "get", { retries: 0, stage: "size-limit" });
     }
     hash?.update(chunk);
     chunks.push(chunk);
   }
+  if (options.signal?.aborted) throw cancelledGetError();
   if (hash && hash.digest("hex") !== options.expectedHash) {
     throw new ObjectStoreError("integrity", "get", { retries: 0, stage: "hash" });
   }
@@ -75,6 +92,49 @@ export async function readObjectBytes(
   return bytes;
 }
 
+export async function hashObjectStream(
+  chunks: AsyncIterable<Uint8Array>,
+  options: ObjectStoreRequestOptions & { maximumBytes?: number } = {},
+): Promise<{ hash: string; size: number }> {
+  const hash = createHash("sha256");
+  let size = 0;
+  for await (const chunk of chunks) {
+    if (options.signal?.aborted) throw cancelledGetError();
+    if (!(chunk instanceof Uint8Array)) throw new ObjectStoreError("integrity", "get", { retries: 0, stage: "stream" });
+    size += chunk.byteLength;
+    if (!Number.isSafeInteger(size) || (options.maximumBytes !== undefined && size > options.maximumBytes)) {
+      throw new ObjectStoreError("integrity", "get", { retries: 0, stage: "size-limit" });
+    }
+    hash.update(chunk);
+  }
+  if (options.signal?.aborted) throw cancelledGetError();
+  return { hash: hash.digest("hex"), size };
+}
+
+export async function verifyObjectStream(
+  store: Pick<ObjectStore, "getStream">,
+  key: string,
+  expected: ImmutableStreamIdentity,
+  options: ObjectStoreRequestOptions = {},
+): Promise<void> {
+  assertImmutableStreamIdentity(expected);
+  const actual = await hashObjectStream(await store.getStream(key, options), {
+    ...options,
+    maximumBytes: expected.size,
+  });
+  if (actual.size !== expected.size) {
+    throw new ObjectStoreError("integrity", "get", { retries: 0, stage: "size" });
+  }
+  if (actual.hash !== expected.hash) {
+    throw new ObjectStoreError("integrity", "get", { retries: 0, stage: "hash" });
+  }
+}
+
+export function assertImmutableStreamIdentity(expected: ImmutableStreamIdentity): void {
+  if (!/^[0-9a-f]{64}$/.test(expected.hash)) throw new Error("immutable stream Hash is invalid");
+  if (!Number.isSafeInteger(expected.size) || expected.size < 0) throw new Error("immutable stream size is invalid");
+}
+
 export async function* objectBodyFromBytes(bytes: Uint8Array): AsyncIterable<Uint8Array> {
   yield new Uint8Array(bytes);
 }
@@ -82,4 +142,7 @@ export async function* objectBodyFromBytes(bytes: Uint8Array): AsyncIterable<Uin
 export function canWriteAfterProbe(atomicCreateVerified: boolean): boolean {
   return atomicCreateVerified;
 }
-import { createHash } from "node:crypto";
+
+function cancelledGetError(): ObjectStoreError {
+  return new ObjectStoreError("cancelled", "get", { retries: 0, stage: "stream" });
+}

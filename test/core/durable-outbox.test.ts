@@ -58,6 +58,27 @@ describe("durable Outbox", () => {
     expect(entry.objects.at(-1)?.kind).toBe("commit");
   });
 
+  it("adopts an already verified staged Blob without reading it into the control envelope", async () => {
+    const stager = new MemoryStager();
+    const blobBytes = new TextEncoder().encode("large staged body");
+    const staged = await stager.stage(stream(blobBytes));
+    stager.order.length = 0;
+    const chunk = object("chunk", "h");
+    const commit = object("commit", "c");
+    const entry = await freezeDurableOutbox({
+      envelope: { blobs: [], configTrees: [], chunks: [chunk], commit },
+      preStagedObjects: [{ kind: "blob", key: "blob", hash: staged.hash, size: staged.size, contentRef: staged.ref }],
+      repositoryFingerprint: "f".repeat(64),
+      writerId: "writer",
+      sequence: "00000000000000000001",
+      previousCommitHash: null,
+      captureGeneration: 1,
+      mutations: [{ registerKey: "vault:a.md", versionId: `${commit.hash}:0:0`, kind: "put", parents: [], valueHash: staged.hash }],
+    }, stager);
+    expect(stager.order).toEqual(["h", "c"]);
+    expect(entry.objects[0]).toMatchObject({ kind: "blob", contentRef: staged.ref, size: blobBytes.byteLength });
+  });
+
   it("allows only FIFO publishing, preserves retries, and creates reconcile records after verification", async () => {
     const one = await entry(1);
     const two = await entry(2);
@@ -107,10 +128,10 @@ describe("durable Outbox", () => {
     let failOnce = true;
     const target = {
       repositoryFingerprint: "f".repeat(64),
-      putImmutable: async (item: { key: string }, body: AsyncIterable<Uint8Array>) => {
+      putImmutable: async (item: { key: string }, openBody: () => Promise<AsyncIterable<Uint8Array>>) => {
         calls.push(item.key);
         if (item.key === "chunk" && failOnce) { failOnce = false; throw new Error("crash"); }
-        const bytes = await readBytes(body);
+        const bytes = await readBytes(await openBody());
         const existing = stored.get(item.key);
         if (existing && !existing.every((byte, index) => byte === bytes[index])) throw new Error("collision");
         stored.set(item.key, bytes);

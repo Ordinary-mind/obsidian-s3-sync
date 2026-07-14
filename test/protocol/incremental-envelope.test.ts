@@ -31,4 +31,18 @@ describe("incremental Commit envelope validation", () => {
     validator.acceptChunk(0, changeChunkKey("", repositoryId, hashes[0]), chunks[0]);
     expect(() => validator.acceptChunk(1, changeChunkKey("", repositoryId, hashes[1]), chunks[1])).toThrow("vault-global-case-alias");
   });
+
+  it("slices bounded parsing from Schema and envelope semantics", async () => {
+    const vector = JSON.parse(readFileSync(new URL("../../protocol/vectors/vault-bootstrap-multi-chunk.json", import.meta.url), "utf8"));
+    const chunkBytes = vector.chunks.map((chunk: { canonicalJson: string }) => new TextEncoder().encode(chunk.canonicalJson));
+    const chunkKeys = vector.chunks.map((chunk: { sha256: string }) => changeChunkKey("", vector.commit.object.repositoryId, chunk.sha256));
+    const key = commitKey("", vector.commit.object.repositoryId, vector.commit.object.writerId, vector.commit.object.sequence, vector.commit.sha256);
+    const validator = new IncrementalCommitEnvelopeValidator(vector.commit.object.repositoryId, vector.commit.object.descriptorHash, vector.commit.object, key, vector.commit.sha256);
+    const phases: string[] = [];
+    for (let index = 0; index < chunkBytes.length; index += 1) {
+      await validator.acceptChunkIncrementally(index, chunkKeys[index], chunkBytes[index], async (phase) => { phases.push(phase); });
+    }
+    validator.finish();
+    expect(phases).toEqual(chunkBytes.flatMap(() => ["parse", "validate"]));
+  });
 });

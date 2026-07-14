@@ -239,28 +239,39 @@ export function validateCommitFields(commit: ProtocolCommit): ProtocolViolation[
 }
 
 export function validateChangeChunkObject(chunk: ProtocolChunk): ProtocolViolation[] {
-  const violations: ProtocolViolation[] = [];
-  if (chunk.mutations.length > 4096) violations.push("chunk-mutations-exceeded");
+  const violations = new Set<ProtocolViolation>();
+  if (chunk.mutations.length > 4096) violations.add("chunk-mutations-exceeded");
   if (chunk.channel === "vault") {
-    if (!isUtf8SortedUnique(chunk.mutations.map((mutation) => mutation.path ?? ""))) {
-      violations.push("vault-mutations-not-canonical");
+    let previousPath: string | undefined;
+    const foldedPutPaths = new Set<string>();
+    const foldedPutPathPrefixes = new Set<string>();
+    for (const mutation of chunk.mutations) {
+      const path = mutation.path;
+      if (!path || validateProtocolPath(path).length > 0) violations.add("vault-path-invalid");
+      if (path) {
+        if (previousPath !== undefined && compareUtf8(previousPath, path) >= 0) {
+          violations.add("vault-mutations-not-canonical");
+        }
+        previousPath = path;
+      }
+      if (path && mutation.kind === "put" && mutation.blobHash !== undefined) {
+        const folded = defaultCaseFold151(normalizeNfc151(path));
+        if (foldedPutPaths.has(folded)) violations.add("vault-put-case-alias");
+        if (foldedPutPathPrefixes.has(folded)) violations.add("vault-put-path-prefix-conflict");
+        for (let separator = folded.indexOf("/"); separator >= 0; separator = folded.indexOf("/", separator + 1)) {
+          const prefix = folded.slice(0, separator);
+          if (foldedPutPaths.has(prefix)) violations.add("vault-put-path-prefix-conflict");
+          foldedPutPathPrefixes.add(prefix);
+        }
+        foldedPutPaths.add(folded);
+      }
     }
-    if (chunk.mutations.some((mutation) => !mutation.path || validateProtocolPath(mutation.path).length > 0)) {
-      violations.push("vault-path-invalid");
-    }
-    const putPaths = chunk.mutations
-      .filter((mutation) => mutation.kind === "put" && mutation.blobHash !== undefined)
-      .map((mutation) => mutation.path!);
-    if (!isCaseFoldUnique(putPaths)) violations.push("vault-put-case-alias");
-    if (hasPathPrefixConflict(putPaths)) violations.push("vault-put-path-prefix-conflict");
   }
-  if (chunk.mutations.some((mutation) => mutation.parents.length > 1024)) {
-    violations.push("mutation-parents-exceeded");
+  for (const mutation of chunk.mutations) {
+    if (mutation.parents.length > 1024) violations.add("mutation-parents-exceeded");
+    if (!isUtf8SortedUnique(mutation.parents)) violations.add("parents-not-canonical");
   }
-  if (chunk.mutations.some((mutation) => !isUtf8SortedUnique(mutation.parents))) {
-    violations.push("parents-not-canonical");
-  }
-  return [...new Set(violations)];
+  return [...violations];
 }
 
 function isValidCreatedAt(value: string): boolean {
@@ -305,7 +316,8 @@ export function isUtf8SortedUnique(values: string[]): boolean {
   return true;
 }
 
-function compareUtf8(left: string, right: string): number {
+export function compareUtf8(left: string, right: string): number {
+  if (isAscii(left) && isAscii(right)) return left < right ? -1 : left > right ? 1 : 0;
   const leftBytes = utf8Encoder.encode(left);
   const rightBytes = utf8Encoder.encode(right);
   const length = Math.min(leftBytes.length, rightBytes.length);
@@ -313,6 +325,13 @@ function compareUtf8(left: string, right: string): number {
     if (leftBytes[index] !== rightBytes[index]) return leftBytes[index] - rightBytes[index];
   }
   return leftBytes.length - rightBytes.length;
+}
+
+function isAscii(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) > 0x7f) return false;
+  }
+  return true;
 }
 
 function isCaseFoldUnique(values: string[]): boolean {

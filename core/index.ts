@@ -69,6 +69,7 @@ export * from "./incremental-audit";
 export * from "./blob-existence-cache";
 export * from "./checkpoint";
 export * from "./benchmark-dataset";
+export * from "./performance-profile";
 export * from "./repository-statistics";
 export * from "./maintenance-plan";
 export * from "./diagnostic-bundle";

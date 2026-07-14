@@ -58,6 +58,7 @@ export interface DurablePublishedReconcile {
 
 export interface OutboxContentStager {
   stage(chunks: AsyncIterable<Uint8Array>, estimatedBytes?: number): Promise<StagedContent>;
+  verify(contentRef: string, expected: { hash: string; size: number }): Promise<void>;
 }
 
 export interface DurableOutboxReplaySource {
@@ -67,7 +68,10 @@ export interface DurableOutboxReplaySource {
 
 export interface DurableOutboxReplayTarget {
   readonly repositoryFingerprint: string;
-  putImmutable(object: Pick<DurableOutboxObject, "kind" | "key" | "hash" | "size">, body: AsyncIterable<Uint8Array>): Promise<void>;
+  putImmutable(
+    object: Pick<DurableOutboxObject, "kind" | "key" | "hash" | "size">,
+    openBody: () => Promise<AsyncIterable<Uint8Array>>,
+  ): Promise<void>;
   verifyRemote(object: Pick<DurableOutboxObject, "kind" | "key" | "hash" | "size">): Promise<void>;
 }
 
@@ -79,15 +83,23 @@ export async function freezeDurableOutbox(input: {
   previousCommitHash: string | null;
   captureGeneration: number;
   mutations: readonly DurableOutboxMutation[];
+  preStagedObjects?: readonly DurableOutboxObject[];
 }, stager: OutboxContentStager): Promise<DurableOutboxEntry> {
   assertWriterAndSequence(input.writerId, input.sequence);
   if (!/^[0-9a-f]{64}$/.test(input.repositoryFingerprint)) throw new Error("Outbox repository fingerprint is invalid");
   if (!Number.isSafeInteger(input.captureGeneration) || input.captureGeneration < 0) throw new Error("Outbox capture generation is invalid");
   if (input.envelope.commit.hash.length !== 64) throw new Error("Outbox Commit hash is invalid");
   const objects: DurableOutboxObject[] = [];
+  for (const object of input.preStagedObjects ?? []) {
+    assertPreStagedObject(object);
+    await stager.verify(object.contentRef, { hash: object.hash, size: object.size });
+    objects.push({ ...object });
+  }
   for (const [kind, values] of orderedEnvelopeObjects(input.envelope)) {
     for (const object of values) objects.push(await stageObject(stager, kind, object));
   }
+  assertUniqueObjects(objects);
+  assertObjectOrder(objects);
   const commitObject = objects.at(-1);
   if (!commitObject || commitObject.kind !== "commit" || commitObject.hash !== input.envelope.commit.hash) {
     throw new Error("Outbox Commit was not frozen last");
@@ -196,7 +208,7 @@ export async function replayFrozenDurableOutbox(
   assertDurableOutboxQueue([entry]);
   for (const object of entry.objects) {
     await source.verify(object.contentRef, { hash: object.hash, size: object.size });
-    await target.putImmutable(object, await source.read(object.contentRef));
+    await target.putImmutable(object, () => source.read(object.contentRef));
     await target.verifyRemote(object);
   }
 }
@@ -253,6 +265,22 @@ async function stageObject(
   const staged = await stager.stage(oneChunk(object.bytes), object.bytes.byteLength);
   if (staged.hash !== object.hash || staged.size !== object.bytes.byteLength) throw new Error(`Outbox ${kind} staging verification mismatch`);
   return { kind, key: object.key, hash: object.hash, size: staged.size, contentRef: staged.ref };
+}
+
+function assertPreStagedObject(object: DurableOutboxObject): void {
+  if (object.kind === "commit") throw new Error("Outbox Commit must be frozen from its canonical bytes");
+  if (!object.key || !/^[0-9a-f]{64}$/.test(object.hash)) throw new Error("pre-staged Outbox object identity is invalid");
+  if (!Number.isSafeInteger(object.size) || object.size < 0 || !object.contentRef) {
+    throw new Error("pre-staged Outbox object content reference is invalid");
+  }
+}
+
+function assertUniqueObjects(objects: readonly DurableOutboxObject[]): void {
+  const keys = new Set<string>();
+  for (const object of objects) {
+    if (keys.has(object.key)) throw new Error("Outbox contains a duplicate object key");
+    keys.add(object.key);
+  }
 }
 
 async function* oneChunk(bytes: Uint8Array): AsyncIterable<Uint8Array> {

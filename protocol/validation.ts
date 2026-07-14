@@ -1,7 +1,10 @@
-import Ajv2020 from "ajv/dist/2020.js";
-
-import schema from "./schemas/v1.schema.json";
 import { BoundedProtocolObject, parseBoundedProtocolJson } from "./json";
+import {
+  validateChangeChunkSchema,
+  validateCommitSchema,
+  validateConfigTreeSchema,
+  validateRepositoryDescriptorSchema,
+} from "./generated/v1-schema-validators";
 import {
   ProtocolChunk,
   ProtocolCommit,
@@ -11,7 +14,7 @@ import {
   validateCommitEnvelope,
   validateConfigTreeProfile,
   validateRepositoryDescriptor,
-  isUtf8SortedUnique,
+  compareUtf8,
 } from "./semantics";
 import { sha256Hex } from "./hash";
 import { assertCommitKey, assertContentAddressedKey, descriptorKey } from "./keys";
@@ -26,22 +29,46 @@ export class ProtocolValidationError extends Error {
   }
 }
 
-const ajv = new Ajv2020({ allErrors: true, strict: true });
-ajv.addSchema(schema);
+interface SchemaError {
+  instancePath?: string;
+  message?: string;
+}
+
+type SchemaValidator = ((value: unknown) => boolean) & { errors?: SchemaError[] | null };
+
+const schemaValidators: Readonly<Record<SchemaDefinition, SchemaValidator>> = Object.freeze({
+  RepositoryDescriptor: validateRepositoryDescriptorSchema as SchemaValidator,
+  ConfigTree: validateConfigTreeSchema as SchemaValidator,
+  ChangeChunk: validateChangeChunkSchema as SchemaValidator,
+  Commit: validateCommitSchema as SchemaValidator,
+});
 
 export function parseAndValidateProtocolObject(kind: BoundedProtocolObject, bytes: Uint8Array): Record<string, unknown> {
   const object = parseBoundedProtocolJson(kind, bytes);
+  return validateParsedProtocolObject(kind, object);
+}
+
+export function validateParsedProtocolObject(
+  kind: BoundedProtocolObject,
+  object: Record<string, unknown>,
+): Record<string, unknown> {
   const definition = definitionFor(kind);
-  const validate = ajv.getSchema(`${schema.$id}#/$defs/${definition}`);
-  if (!validate) throw new Error(`missing protocol schema definition: ${definition}`);
+  const validate = schemaValidators[definition];
   if (!validate(object)) {
-    throw new ProtocolValidationError("schema-invalid", ajv.errorsText(validate.errors));
+    throw new ProtocolValidationError("schema-invalid", schemaErrorsText(validate.errors));
   }
   const semanticViolations = singleObjectViolations(kind, object);
   if (semanticViolations.length > 0) {
     throw new ProtocolValidationError("semantic-invalid", semanticViolations.join(","));
   }
   return object;
+}
+
+function schemaErrorsText(errors: SchemaError[] | null | undefined): string {
+  if (!errors || errors.length === 0) return "protocol object does not match its Schema";
+  return errors
+    .map((error) => `data${error.instancePath ?? ""} ${error.message ?? "is invalid"}`)
+    .join(", ");
 }
 
 export function validateProtocolCommitEnvelope(
@@ -108,17 +135,12 @@ export function parseAndValidateKeyedCommitEnvelope(
   return envelope;
 }
 
-interface PathTrieNode {
-  terminal: boolean;
-  children: Map<string, PathTrieNode>;
-}
-
 export class IncrementalCommitEnvelopeValidator {
   private acceptedChunks = 0;
   private mutationCount = 0;
   private lastVaultPath: string | undefined;
   private readonly foldedPutPaths = new Set<string>();
-  private readonly putPathTrie: PathTrieNode = { terminal: false, children: new Map() };
+  private readonly foldedPutPathPrefixes = new Set<string>();
 
   constructor(
     private readonly repositoryId: string,
@@ -138,6 +160,27 @@ export class IncrementalCommitEnvelopeValidator {
   }
 
   acceptChunk(index: number, key: string, bytes: Uint8Array): ProtocolChunk {
+    const hash = this.assertChunkIdentity(index, key, bytes);
+    const chunk = parseAndValidateProtocolObject("change-chunk", bytes) as unknown as ProtocolChunk;
+    return this.acceptValidatedChunk(index, hash, chunk);
+  }
+
+  async acceptChunkIncrementally(
+    index: number,
+    key: string,
+    bytes: Uint8Array,
+    yieldToIdle: (phase: "parse" | "validate") => Promise<void>,
+  ): Promise<ProtocolChunk> {
+    const hash = this.assertChunkIdentity(index, key, bytes);
+    const object = parseBoundedProtocolJson("change-chunk", bytes);
+    await yieldToIdle("parse");
+    const chunk = validateParsedProtocolObject("change-chunk", object) as unknown as ProtocolChunk;
+    const accepted = this.acceptValidatedChunk(index, hash, chunk);
+    await yieldToIdle("validate");
+    return accepted;
+  }
+
+  private assertChunkIdentity(index: number, key: string, bytes: Uint8Array): string {
     if (index !== this.acceptedChunks || index >= this.commit.changeChunkHashes.length) {
       throw new ProtocolValidationError("commit-envelope-invalid", "chunk-index-not-contiguous");
     }
@@ -146,7 +189,13 @@ export class IncrementalCommitEnvelopeValidator {
     if (hash !== this.commit.changeChunkHashes[index]) {
       throw new ProtocolValidationError("commit-envelope-invalid", "chunk-hash-order-mismatch");
     }
-    const chunk = parseAndValidateProtocolObject("change-chunk", bytes) as unknown as ProtocolChunk;
+    return hash;
+  }
+
+  private acceptValidatedChunk(index: number, hash: string, chunk: ProtocolChunk): ProtocolChunk {
+    if (index !== this.acceptedChunks || hash !== this.commit.changeChunkHashes[index]) {
+      throw new ProtocolValidationError("commit-envelope-invalid", "chunk-index-not-contiguous");
+    }
     assertRepositoryBinding(chunk as unknown as Record<string, unknown>, this.repositoryId, this.descriptorHash);
     if (chunk.channel !== this.commit.channel) this.invalid("chunk-channel-mismatch");
     if (chunk.chunkIndex !== index || chunk.chunkCount !== this.commit.changeChunkHashes.length) this.invalid("chunk-index-not-contiguous");
@@ -165,7 +214,7 @@ export class IncrementalCommitEnvelopeValidator {
   private acceptMutation(mutation: ProtocolChunk["mutations"][number]): void {
     if (this.commit.channel === "vault") {
       const path = mutation.path!;
-      if (this.lastVaultPath !== undefined && !isUtf8SortedUnique([this.lastVaultPath, path])) this.invalid("vault-global-order");
+      if (this.lastVaultPath !== undefined && compareUtf8(this.lastVaultPath, path) >= 0) this.invalid("vault-global-order");
       this.lastVaultPath = path;
       if (mutation.kind === "put") this.acceptPutPath(path);
     }
@@ -177,17 +226,13 @@ export class IncrementalCommitEnvelopeValidator {
   private acceptPutPath(path: string): void {
     const folded = defaultCaseFold151(normalizeNfc151(path));
     if (this.foldedPutPaths.has(folded)) this.invalid("vault-global-case-alias");
-    this.foldedPutPaths.add(folded);
-    let node = this.putPathTrie;
-    const segments = folded.split("/");
-    for (let index = 0; index < segments.length; index += 1) {
-      if (node.terminal) this.invalid("vault-global-path-prefix-conflict");
-      const child = node.children.get(segments[index]) ?? { terminal: false, children: new Map<string, PathTrieNode>() };
-      node.children.set(segments[index], child);
-      node = child;
+    if (this.foldedPutPathPrefixes.has(folded)) this.invalid("vault-global-path-prefix-conflict");
+    for (let separator = folded.indexOf("/"); separator >= 0; separator = folded.indexOf("/", separator + 1)) {
+      const prefix = folded.slice(0, separator);
+      if (this.foldedPutPaths.has(prefix)) this.invalid("vault-global-path-prefix-conflict");
+      this.foldedPutPathPrefixes.add(prefix);
     }
-    if (node.children.size > 0) this.invalid("vault-global-path-prefix-conflict");
-    node.terminal = true;
+    this.foldedPutPaths.add(folded);
   }
 
   private invalid(violation: ProtocolViolation): never {

@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildVaultChangeEnvelope, buildVaultMultiChunkEnvelope } from "../../core/commit-builder";
+import { buildVaultChangeEnvelope, buildVaultMultiChunkEnvelope, buildVaultMultiChunkEnvelopeIncremental } from "../../core/commit-builder";
 import { parseAndValidateProtocolObject } from "../../protocol/validation";
 import { InMemoryRepositoryCore } from "../../core/repository";
 import { receiveCommitBytes } from "../../core/receive-repository";
 import { groupEquivalentHeads } from "../../core/register";
+import { protocolLimits } from "../../protocol/limits";
 
 describe("v1 Vault Commit builder", () => {
   it("canonicalizes, hashes and keys an immutable single-Chunk envelope", () => {
@@ -20,6 +21,35 @@ describe("v1 Vault Commit builder", () => {
     expect(decoded.map((chunk) => chunk.chunkIndex)).toEqual([0, 1]);
     expect(decoded.flatMap((chunk) => chunk.mutations.map((mutation: any) => mutation.path))).toEqual(["notes/a.md", "notes/b.md", "notes/c.md"]);
     expect(() => buildVaultMultiChunkEnvelope({ ...base, mutations: [mutations[0], mutations[0]] }, 1)).toThrow("duplicate Vault path");
+  });
+
+  it("splits before either the mutation-count or canonical-byte Chunk bound is exceeded", () => {
+    const base = { prefix: "", repositoryId: "123e4567-e89b-42d3-a456-426614174000", descriptorHash: "a".repeat(64), writerId: "123e4567-e89b-42d3-a456-426614174001", sequence: "00000000000000000001", previousCommitHash: null, createdAt: "2026-07-12T00:00:00.000Z", kind: "bootstrap" as const, clientVersion: "0.1.0" };
+    const mutations = Array.from({ length: protocolLimits.chunkMutations }, (_, index) => ({
+      path: `notes/${index.toString().padStart(4, "0")}-${"x".repeat(980)}.md`,
+      kind: "delete" as const,
+      parents: [],
+    }));
+    const result = buildVaultMultiChunkEnvelope({ ...base, mutations });
+    expect(result.chunks.length).toBeGreaterThan(1);
+    expect(result.chunks.every((chunk) => chunk.bytes.byteLength <= protocolLimits.changeChunkBytes)).toBe(true);
+    const commit = parseAndValidateProtocolObject("commit", result.commit.bytes) as any;
+    expect(commit.changeChunkHashes).toHaveLength(result.chunks.length);
+  });
+
+  it("incrementally sorts a large bootstrap with observable idle yields and deterministic output", async () => {
+    const base = { prefix: "", repositoryId: "123e4567-e89b-42d3-a456-426614174000", descriptorHash: "a".repeat(64), writerId: "123e4567-e89b-42d3-a456-426614174001", sequence: "00000000000000000001", previousCommitHash: null, createdAt: "2026-07-12T00:00:00.000Z", kind: "bootstrap" as const, clientVersion: "0.1.0" };
+    const mutations = Array.from({ length: 257 }, (_, index) => ({ path: `notes/${(256 - index).toString().padStart(4, "0")}.md`, kind: "delete" as const, parents: [] }));
+    let yields = 0;
+    const incremental = await buildVaultMultiChunkEnvelopeIncremental({ ...base, mutations }, {
+      workSlice: 16,
+      chunkMutationLimit: 64,
+      yieldToIdle: async () => { yields += 1; },
+    });
+    const synchronous = buildVaultMultiChunkEnvelope({ ...base, mutations }, 64);
+    expect(yields).toBeGreaterThan(10);
+    expect(incremental.commit.hash).toBe(synchronous.commit.hash);
+    expect(incremental.chunks.map((chunk) => chunk.hash)).toEqual(synchronous.chunks.map((chunk) => chunk.hash));
   });
 
   it("merges concurrent bootstrap roots in one repository and isolates different repositoryIds", () => {

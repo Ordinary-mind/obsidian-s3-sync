@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "generate:protocol": "node scripts/generate-protocol-validators.mjs",
     "generate:unicode": "node scripts/generate-unicode-case-folding.mjs && node scripts/generate-unicode-nfc.mjs",
+    "check:generated": "node scripts/generate-protocol-validators.mjs --check",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:types": "tsc -p tsconfig.test.json --noEmit",
@@ -16,7 +18,7 @@
     "test:s3-minio": "npm run test:s3-contract",
     "benchmark:core": "vitest bench --run test/benchmarks/core.bench.ts",
     "check:dependencies": "node scripts/check-dependencies.mjs",
-    "test:ci": "npm test && npm run test:types && npm run build && npm run check:dependencies && git diff --exit-code -- main.js"
+    "test:ci": "npm test && npm run test:types && npm run check:generated && npm run build && npm run check:dependencies && git diff --exit-code -- main.js"
   },
   "keywords": [
     "obsidian",
