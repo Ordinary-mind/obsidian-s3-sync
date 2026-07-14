@@ -72,6 +72,7 @@ export * from "./benchmark-dataset";
 export * from "./performance-profile";
 export * from "./repository-statistics";
 export * from "./maintenance-plan";
+export * from "./repository-generation";
 export * from "./diagnostic-bundle";
 export * from "./deterministic-simulator";
 export * from "./operational-status";

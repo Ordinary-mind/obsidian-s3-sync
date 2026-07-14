@@ -9,6 +9,7 @@ import {
   type ImmutableStreamIdentity,
   type ObjectStore,
   type ObjectStoreFailureKind,
+  type ObjectStoreListPage,
   type ObjectStoreListOptions,
   type ObjectStoreOperation,
   type ObjectStoreRequestOptions,
@@ -36,6 +37,7 @@ export interface S3ObjectStoreMetrics {
   requests: ConcurrencyMetrics;
   downloads: ConcurrencyMetrics;
   maximumObservedDownloadChunkBytes: number;
+  operations: Record<ObjectStoreOperation, number>;
 }
 
 export interface ConcurrencyMetrics {
@@ -51,6 +53,13 @@ export class S3ObjectStore implements ObjectStore {
   private readonly requestLimiter: ConcurrencyLimiter;
   private readonly downloadLimiter: ConcurrencyLimiter;
   private maximumObservedDownloadChunkBytes = 0;
+  private readonly operationCounts: Record<ObjectStoreOperation, number> = {
+    list: 0,
+    get: 0,
+    head: 0,
+    put: 0,
+    "delete-probe": 0,
+  };
 
   constructor(private readonly options: S3ObjectStoreOptions) {
     this.client = options.client ?? new S3Client({
@@ -65,15 +74,17 @@ export class S3ObjectStore implements ObjectStore {
     this.downloadLimiter = new ConcurrencyLimiter(maximumConcurrency);
   }
 
-  async list(prefix: string, continuationToken?: string, options?: ObjectStoreListOptions): Promise<{ keys: string[]; commonPrefixes?: string[]; continuationToken?: string }> {
+  async list(prefix: string, continuationToken?: string, options?: ObjectStoreListOptions): Promise<ObjectStoreListPage> {
     const result = await this.execute("list", "request", options?.signal, (signal) => this.client.send(new ListObjectsV2Command({
       Bucket: this.options.bucket,
       Prefix: prefix,
       ContinuationToken: continuationToken,
       Delimiter: options?.delimiter,
     }), { abortSignal: signal }));
+    const listed = normalizeListedObjects(result.Contents ?? []);
     return {
-      keys: [...new Set<string>((result.Contents ?? []).flatMap((entry: { Key?: string }): string[] => entry.Key ? [entry.Key] : []))].sort(),
+      keys: listed.keys,
+      objects: listed.objects,
       commonPrefixes: [...new Set<string>((result.CommonPrefixes ?? []).flatMap((entry: { Prefix?: string }): string[] => entry.Prefix ? [entry.Prefix] : []))].sort(),
       continuationToken: result.NextContinuationToken,
     };
@@ -168,6 +179,7 @@ export class S3ObjectStore implements ObjectStore {
       requests: this.requestLimiter.metrics(),
       downloads: this.downloadLimiter.metrics(),
       maximumObservedDownloadChunkBytes: this.maximumObservedDownloadChunkBytes,
+      operations: { ...this.operationCounts },
     };
   }
 
@@ -182,6 +194,7 @@ export class S3ObjectStore implements ObjectStore {
       let release: (() => void) | undefined;
       try {
         release = await this.requestLimiter.acquire(signal);
+        this.operationCounts[operation] += 1;
         return await withTimeout(request, this.options.requestTimeoutMs ?? 30_000, signal);
       } catch (cause) {
         const error = classifyS3Failure(cause, operation, attempt, stage, signal?.aborted === true);
@@ -211,6 +224,31 @@ export class S3ObjectStore implements ObjectStore {
     this.options.onDiagnostic?.(error);
     return error;
   }
+}
+
+function normalizeListedObjects(entries: Array<{ Key?: string; Size?: number }>): {
+  keys: string[];
+  objects: Array<{ key: string; size: number }>;
+} {
+  const keys = new Set<string>();
+  const byKey = new Map<string, number>();
+  for (const entry of entries) {
+    if (!entry.Key) continue;
+    keys.add(entry.Key);
+    if (entry.Size === undefined) continue;
+    if (!Number.isSafeInteger(entry.Size) || entry.Size < 0) {
+      throw new ObjectStoreError("integrity", "list", { retries: 0, stage: "response-metadata" });
+    }
+    const previous = byKey.get(entry.Key);
+    if (previous !== undefined && previous !== entry.Size) {
+      throw new ObjectStoreError("integrity", "list", { retries: 0, stage: "duplicate-metadata" });
+    }
+    byKey.set(entry.Key, entry.Size);
+  }
+  return {
+    keys: [...keys].sort(),
+    objects: [...byKey].map(([key, size]) => ({ key, size })).sort((left, right) => left.key.localeCompare(right.key)),
+  };
 }
 
 class ConcurrencyLimiter {

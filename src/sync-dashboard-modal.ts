@@ -84,6 +84,7 @@ export class SyncDashboardModal extends Modal {
 
     this.renderActions(status, mutatingAllowed, busy);
     this.renderAudit(status);
+    this.renderRepositorySpace(status);
     this.renderHighRiskOperation(status);
     this.renderDecisions(status);
   }
@@ -179,6 +180,33 @@ export class SyncDashboardModal extends Modal {
     }
   }
 
+  private renderRepositorySpace(status: OperationalStatus): void {
+    const space = status.audit.space;
+    if (!space || status.audit.state !== "complete") return;
+    const section = this.contentEl.createDiv({ cls: "s3-sync-dashboard-section" });
+    section.createEl("h3", { text: "仓库空间" });
+    const grid = section.createDiv({ cls: "s3-sync-status-grid" });
+    const rows: Array<[string, string]> = [
+      ["活跃对象", formatSpaceCategory(space.categories.active)],
+      ["冲突对象", formatSpaceCategory(space.categories.conflict)],
+      ["历史对象", formatSpaceCategory(space.categories.history)],
+      ["孤儿对象（仅报告）", formatSpaceCategory(space.categories.orphan)],
+      ["去重节省", formatBytes(space.dedupSavedBytes)],
+      ["历史增长", formatBytes(space.historyGrowthBytes)],
+    ];
+    if (space.requestEstimate) {
+      const request = space.requestEstimate;
+      rows.push([
+        "本次校验请求成本（估算）",
+        `${formatCurrency(request.amount, request.currency)} · List ${request.counts.list} / Read ${request.counts.get} / Put ${request.counts.put}`,
+      ]);
+    }
+    for (const [label, value] of rows) {
+      grid.createDiv({ cls: "s3-sync-status-label", text: label });
+      grid.createDiv({ cls: "s3-sync-status-value", text: value });
+    }
+  }
+
   private renderHighRiskOperation(status: OperationalStatus): void {
     if (!status.highRiskOperation) return;
     const section = this.contentEl.createDiv({ cls: "s3-sync-dashboard-section s3-sync-high-risk" });
@@ -260,6 +288,14 @@ function formatBytes(value: number): string {
     unit = units[index];
   }
   return `${amount.toFixed(amount >= 10 ? 1 : 2)} ${unit}`;
+}
+
+function formatSpaceCategory(category: { objects: number; bytes: number }): string {
+  return `${formatBytes(category.bytes)} · ${category.objects} 个`;
+}
+
+function formatCurrency(amount: number, currency: string): string {
+  return `${currency} ${amount.toLocaleString(undefined, { minimumFractionDigits: 6, maximumFractionDigits: 6 })}`;
 }
 
 function auditStateLabel(state: OperationalStatus["audit"]["state"]): string {

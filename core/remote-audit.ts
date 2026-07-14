@@ -1,4 +1,5 @@
 import { blobKey, changeChunkKey, configTreeKey, descriptorKey } from "../protocol/keys";
+import { canonicalizeProtocolJson } from "../protocol/json";
 import type { ConfigTreeForLineage, ProtocolCommit } from "../protocol/semantics";
 import { parseAndValidateKeyedCommitEnvelope, parseAndValidateProtocolObject, verifyRepositoryDescriptorAtKey } from "../protocol/validation";
 import { downloadConfigTree, type ConfigTreeBinding } from "./config-tree";
@@ -6,8 +7,14 @@ import { ObjectStoreError, readObjectBytes, type ObjectStore, type ObjectStoreFa
 import { receiveKeyedCommitBytes } from "./receive-repository";
 import { verifyRemoteBlob } from "./remote-blob";
 import { InMemoryRepositoryCore } from "./repository";
+import type { RepositoryObjectStat } from "./repository-statistics";
+import { createVersionId } from "./version-id";
 
 export interface RemoteAuditResult {
+  repositoryId: string;
+  descriptorHash: string;
+  configDir: string;
+  historicalConfigDirs: string[];
   repository: InMemoryRepositoryCore;
   commitKeys: string[];
   verifiedObjects: number;
@@ -15,6 +22,9 @@ export interface RemoteAuditResult {
   missingClosure: string[];
   status: "complete";
   deletionEvidenceAllowed: true;
+  reachableObjects: RepositoryObjectStat[];
+  versionObjectKeys: ReadonlyMap<string, readonly string[]>;
+  logicalReferencedBlobBytes: number;
 }
 
 export interface RemoteAuditProgress {
@@ -102,6 +112,9 @@ export async function auditRemoteRepository(
   const discovered = new Set<string>();
   const completed = new Set<string>();
   const missing = new Set<string>();
+  const reachableObjects = new Map<string, RepositoryObjectStat>();
+  const versionObjectKeys = new Map<string, readonly string[]>();
+  let logicalReferencedBlobBytes = 0;
   let workSinceYield = 0;
   const report = (): RemoteAuditProgress => {
     const progress = {
@@ -144,6 +157,21 @@ export async function auditRemoteRepository(
     }
     throw new RemoteAuditFailure(key, report(), error);
   };
+  const recordObject = (object: RepositoryObjectStat): void => {
+    const existing = reachableObjects.get(object.key);
+    if (existing && (existing.kind !== object.kind || existing.size !== object.size || existing.contentHash !== object.contentHash)) {
+      fail(object.key, new Error("reachable object metadata changed during audit"));
+    }
+    reachableObjects.set(object.key, { ...object });
+  };
+  const recordVersionObjects = (versionId: string, keys: readonly string[]): void => {
+    const normalized = [...new Set(keys)].sort(compareUtf8);
+    const existing = versionObjectKeys.get(versionId);
+    if (existing && (existing.length !== normalized.length || existing.some((key, index) => key !== normalized[index]))) {
+      fail(versionId, new Error("one Version ID resolved to different object dependencies"));
+    }
+    versionObjectKeys.set(versionId, normalized);
+  };
   const attempt = async <T>(key: string, operation: () => T | Promise<T>): Promise<T> => {
     if (options.signal?.aborted) throw new RemoteAuditCancelled(key, report());
     try { return await operation(); }
@@ -183,6 +211,7 @@ export async function auditRemoteRepository(
     const commitHash = commitObjectKey.match(/-([0-9a-f]{64})\.json$/)?.[1];
     if (!commitHash) fail(commitObjectKey, new Error("invalid Commit key during audit"));
     const commitBytes = await attempt(commitObjectKey, () => readObjectBytes(store, commitObjectKey, { signal: options.signal, maximumBytes: 256 * 1024, expectedHash: commitHash }));
+    recordObject({ key: commitObjectKey, kind: "commit", size: commitBytes.byteLength, contentHash: commitHash });
     const commit = await attempt(commitObjectKey, () => parseAndValidateProtocolObject("commit", commitBytes) as unknown as ProtocolCommit);
     const chunkKeys = commit.changeChunkHashes.map((hash) => changeChunkKey(prefix, repositoryId, hash));
     chunkKeys.forEach(discover);
@@ -197,6 +226,7 @@ export async function auditRemoteRepository(
             expectedHash: commit.changeChunkHashes[index],
           }));
         verifiedChunks.set(key, bytes);
+        recordObject({ key, kind: "change-chunk", size: bytes.byteLength, contentHash: commit.changeChunkHashes[index] });
       }
       chunkBytes.push(bytes);
       await cooperate(key);
@@ -204,9 +234,11 @@ export async function auditRemoteRepository(
     const envelope = await attempt(commitObjectKey, () => parseAndValidateKeyedCommitEnvelope(
       repositoryId, descriptorHash, commitObjectKey, commitBytes, chunkKeys, chunkBytes,
     ));
-    const configTrees = new Map<string, ConfigTreeForLineage>();
+    const configTrees = new Map<string, Awaited<ReturnType<typeof downloadConfigTree>>>();
     for (const chunk of envelope.chunks) {
-      for (const mutation of chunk.mutations) {
+      for (let mutationIndex = 0; mutationIndex < chunk.mutations.length; mutationIndex += 1) {
+        const mutation = chunk.mutations[mutationIndex];
+        const dependencies = [commitObjectKey, chunkKeys[chunk.chunkIndex]];
         if (commit.channel === "config" && mutation.treeHash && !configTrees.has(mutation.treeHash)) {
           const treeObjectKey = configTreeKey(prefix, repositoryId, mutation.treeHash);
           discover(treeObjectKey);
@@ -214,6 +246,8 @@ export async function auditRemoteRepository(
           if (!tree) {
             tree = await attempt(treeObjectKey, () => downloadConfigTree(store, prefix, repositoryId, descriptorHash, mutation.treeHash!, binding, { signal: options.signal }));
             verifiedTrees.set(mutation.treeHash, tree);
+            const treeBytes = new TextEncoder().encode(canonicalizeProtocolJson(tree));
+            recordObject({ key: treeObjectKey, kind: "config-tree", size: treeBytes.byteLength, contentHash: mutation.treeHash });
             await complete(treeObjectKey);
           }
           configTrees.set(mutation.treeHash, tree);
@@ -221,6 +255,7 @@ export async function auditRemoteRepository(
             if (item.kind !== "put" || !item.blobHash || item.size === undefined) continue;
             const objectKey = blobKey(prefix, repositoryId, item.blobHash);
             discover(objectKey);
+            recordObject({ key: objectKey, kind: "blob", size: item.size, contentHash: item.blobHash });
             const knownSize = verifiedBlobs.get(item.blobHash);
             if (knownSize !== undefined) {
               if (knownSize !== item.size) fail(objectKey, new Error("same Blob Hash has inconsistent declared sizes"));
@@ -231,9 +266,20 @@ export async function auditRemoteRepository(
             await complete(objectKey);
           }
         }
+        if (commit.channel === "config" && mutation.treeHash) {
+          const tree = configTrees.get(mutation.treeHash);
+          if (!tree) fail(configTreeKey(prefix, repositoryId, mutation.treeHash), new Error("ConfigTree dependency was not retained for Version accounting"));
+          dependencies.push(configTreeKey(prefix, repositoryId, mutation.treeHash));
+          for (const item of tree!.items) {
+            if (item.kind !== "put" || !item.blobHash || item.size === undefined) continue;
+            dependencies.push(blobKey(prefix, repositoryId, item.blobHash));
+            logicalReferencedBlobBytes += item.size;
+          }
+        }
         if (commit.channel === "vault" && mutation.kind === "put" && mutation.blobHash && mutation.size !== undefined) {
           const objectKey = blobKey(prefix, repositoryId, mutation.blobHash);
           discover(objectKey);
+          recordObject({ key: objectKey, kind: "blob", size: mutation.size, contentHash: mutation.blobHash });
           const knownSize = verifiedBlobs.get(mutation.blobHash);
           if (knownSize !== undefined && knownSize !== mutation.size) {
             fail(objectKey, new Error("same Blob Hash has inconsistent declared sizes"));
@@ -243,7 +289,10 @@ export async function auditRemoteRepository(
             verifiedBlobs.set(mutation.blobHash, mutation.size);
             await complete(objectKey);
           }
+          dependencies.push(objectKey);
+          logicalReferencedBlobBytes += mutation.size;
         }
+        recordVersionObjects(createVersionId(commitHash!, chunk.chunkIndex, mutationIndex), dependencies);
       }
     }
     await attempt(commitObjectKey, () => {
@@ -254,6 +303,10 @@ export async function auditRemoteRepository(
   }
   const progress = report();
   return {
+    repositoryId,
+    descriptorHash,
+    configDir: binding.configDir,
+    historicalConfigDirs: [...binding.historicalConfigDirs],
     repository,
     commitKeys,
     verifiedObjects: progress.completedObjects,
@@ -261,6 +314,9 @@ export async function auditRemoteRepository(
     missingClosure: progress.missingClosure,
     status: "complete",
     deletionEvidenceAllowed: true,
+    reachableObjects: [...reachableObjects.values()].sort((left, right) => compareUtf8(left.key, right.key)),
+    versionObjectKeys,
+    logicalReferencedBlobBytes,
   };
 }
 

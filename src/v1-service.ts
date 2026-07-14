@@ -25,8 +25,22 @@ import { replayFrozenDurableOutbox, type DurableOutboxEntry, type DurableOutboxR
 import { ObjectStoreError, readObjectBytes, verifyObjectStream } from "../core/object-store";
 import { verifyBlobWithAdvisoryCache, type BlobExistenceCacheEntry } from "../core/blob-existence-cache";
 import { repositoryPerformanceProfiles } from "../core/performance-profile";
+import {
+  calculateRepositorySpaceStatistics,
+  listRepositoryProtocolObjects,
+  repositoryObjectReachability,
+  type RepositoryRequestCounts,
+  type RepositorySpaceStatistics,
+} from "../core/repository-statistics";
+import {
+  executeRepositoryGenerationMigration,
+  writeRepositoryGeneration,
+  type RepositoryGenerationMigrationResult,
+  type RepositoryGenerationTargetBinding,
+} from "../core/repository-generation";
 
 const REPOSITORY_TRANSFER_CONCURRENCY = repositoryPerformanceProfiles.desktop.downloadConcurrency;
+const DEFAULT_REQUEST_PRICING = Object.freeze({ currency: "USD", list: 0.005, get: 0.0004, put: 0.005 });
 
 export interface V1ConfigHead {
   versionId: string;
@@ -387,8 +401,27 @@ export class V1RepositoryService {
     descriptorHash: string,
     onProgress?: (progress: { completedObjects: number; totalObjects: number; missingClosure: string[] }) => void,
     options: { signal?: AbortSignal; sliceSize?: number; yieldToIdle?: () => Promise<void> } = {},
-  ): Promise<{ verifiedObjects: number; totalObjects: number; missingClosure: string[]; commits: number; registers: number; deletionEvidenceAllowed: true }> {
+  ): Promise<{
+    verifiedObjects: number;
+    totalObjects: number;
+    missingClosure: string[];
+    commits: number;
+    registers: number;
+    deletionEvidenceAllowed: true;
+    space: RepositorySpaceStatistics;
+  }> {
+    const before = this.objectStore.metrics().operations;
     const result = await auditRemoteRepository(this.store(), this.prefix, repositoryId, descriptorHash, { onProgress, ...options });
+    const objects = await listRepositoryProtocolObjects(this.store(), this.prefix, repositoryId, options);
+    const reachability = repositoryObjectReachability(result, repositoryId);
+    const requestCounts = operationCountDifference(before, this.objectStore.metrics().operations);
+    const space = calculateRepositorySpaceStatistics({
+      objects,
+      ...reachability,
+      logicalReferencedBytes: result.logicalReferencedBlobBytes,
+      requestCounts,
+      pricePerThousandRequests: DEFAULT_REQUEST_PRICING,
+    });
     return {
       verifiedObjects: result.verifiedObjects,
       totalObjects: result.totalObjects,
@@ -396,7 +429,57 @@ export class V1RepositoryService {
       commits: result.commitKeys.length,
       registers: result.repository.allRegisters(repositoryId).size,
       deletionEvidenceAllowed: result.deletionEvidenceAllowed,
+      space,
     };
+  }
+  async migrateRepositoryGeneration(input: {
+    sourceRepositoryId: string;
+    sourceDescriptorHash: string;
+    sourceConfigDir: string;
+    sourceHistoricalConfigDirs: readonly string[];
+    targetRepositoryId: string;
+    targetConfigDir: string;
+    participantHistoricalConfigDirs: readonly string[];
+    writerId: string;
+    createdAt: string;
+    clientVersion: string;
+    switchDevices: (target: RepositoryGenerationTargetBinding) => Promise<void>;
+    signal?: AbortSignal;
+  }): Promise<RepositoryGenerationMigrationResult> {
+    const audit = (repositoryId: string, descriptorHash: string) => auditRemoteRepository(
+      this.store(),
+      this.prefix,
+      repositoryId,
+      descriptorHash,
+      { signal: input.signal },
+    );
+    return executeRepositoryGenerationMigration({
+      sourceRepositoryId: input.sourceRepositoryId,
+      sourceDescriptorHash: input.sourceDescriptorHash,
+      sourceConfigDir: input.sourceConfigDir,
+      sourceHistoricalConfigDirs: input.sourceHistoricalConfigDirs,
+      targetRepositoryId: input.targetRepositoryId,
+      targetConfigDir: input.targetConfigDir,
+      participantHistoricalConfigDirs: input.participantHistoricalConfigDirs,
+      auditSource: () => audit(input.sourceRepositoryId, input.sourceDescriptorHash),
+      createTargetDescriptor: (target) => createRepositoryDescriptor(this.store(), { prefix: this.prefix, ...target }),
+      writeTarget: async ({ sourceAudit, target }) => {
+        await writeRepositoryGeneration({
+          sourceStore: this.store(),
+          targetStore: this.store(),
+          sourcePrefix: this.prefix,
+          targetPrefix: this.prefix,
+          sourceAudit,
+          target,
+          writerId: input.writerId,
+          createdAt: input.createdAt,
+          clientVersion: input.clientVersion,
+          options: { signal: input.signal },
+        });
+      },
+      auditTarget: (target) => audit(target.repositoryId, target.descriptorHash),
+      switchDevices: input.switchDevices,
+    });
   }
   performanceMetrics(): S3ObjectStoreMetrics {
     return this.objectStore.metrics();
@@ -407,6 +490,18 @@ export class V1RepositoryService {
   private async requireDescriptor(repositoryId: string, descriptorHash: string): Promise<{ configDir: string; historicalConfigDirs: string[] }> {
     return readRepositoryDescriptorAnchor(this.store(), this.prefix, repositoryId, descriptorHash);
   }
+}
+
+function operationCountDifference(
+  before: S3ObjectStoreMetrics["operations"],
+  after: S3ObjectStoreMetrics["operations"],
+): RepositoryRequestCounts {
+  const difference = (operation: keyof S3ObjectStoreMetrics["operations"]): number => Math.max(0, after[operation] - before[operation]);
+  return {
+    list: difference("list"),
+    get: difference("get") + difference("head"),
+    put: difference("put"),
+  };
 }
 
 function registerObservations(repository: InMemoryRepositoryCore, repositoryId: string): RemoteRegisterObservation[] {

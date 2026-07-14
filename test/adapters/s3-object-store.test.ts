@@ -15,11 +15,12 @@ describe("v1 S3 ObjectStore adapter contract", () => {
   it("passes pagination and delimiter while normalizing duplicate unordered pages", async () => {
     const send = vi.fn(async (command: any) => {
       expect(command.input).toMatchObject({ Prefix: "root/", ContinuationToken: "next", Delimiter: "/" });
-      return { Contents: [{ Key: "root/b" }, { Key: "root/a" }, { Key: "root/a" }], CommonPrefixes: [{ Prefix: "root/z/" }], NextContinuationToken: "last" };
+      return { Contents: [{ Key: "root/b", Size: 2 }, { Key: "root/a", Size: 1 }, { Key: "root/a", Size: 1 }, { Key: "root/missing-size" }], CommonPrefixes: [{ Prefix: "root/z/" }], NextContinuationToken: "last" };
     });
     const store = new S3ObjectStore({ ...base, client: { send } });
     await expect(store.list("root/", "next", { delimiter: "/" })).resolves.toEqual({
-      keys: ["root/a", "root/b"],
+      keys: ["root/a", "root/b", "root/missing-size"],
+      objects: [{ key: "root/a", size: 1 }, { key: "root/b", size: 2 }],
       commonPrefixes: ["root/z/"],
       continuationToken: "last",
     });
@@ -62,6 +63,7 @@ describe("v1 S3 ObjectStore adapter contract", () => {
       requests: { active: 0, peakActive: 1 },
       downloads: { active: 0, peakActive: 1 },
       maximumObservedDownloadChunkBytes: 2,
+      operations: { get: 1, put: 2 },
     });
   });
 

@@ -53,6 +53,7 @@ import {
   derivePathDecision,
   mayRunMutatingSync,
   operationalStatusBarText,
+  summarizeRepositorySpace,
   type OperationalStatus,
   type PathDecisionRecord,
   type PreviewRemoteState,
@@ -1714,6 +1715,7 @@ export default class S3SyncPlugin extends Plugin {
           missingClosure: [...result.missingClosure],
           resumable: false,
           completedAt: now,
+          space: summarizeRepositorySpace(result.space),
         },
         lastError: undefined,
       });

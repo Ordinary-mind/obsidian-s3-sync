@@ -41,6 +41,14 @@ describe("recoverable remote repository audit", () => {
     expect(audited).toMatchObject({ totalObjects: 4, missingClosure: [], status: "complete", deletionEvidenceAllowed: true });
     expect(progress.at(-1)).toEqual({ completedObjects: 4, totalObjects: 4, missingClosure: [] });
     expect(audited.repository.register(repositoryId, "vault", "notes/a.md").heads).toHaveLength(1);
+    expect(audited.reachableObjects).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: blob.key, kind: "blob", size: 3 }),
+      expect.objectContaining({ key: envelope.chunk.key, kind: "change-chunk" }),
+      expect.objectContaining({ key: envelope.commit.key, kind: "commit" }),
+    ]));
+    const head = audited.repository.register(repositoryId, "vault", "notes/a.md").heads[0];
+    expect(audited.versionObjectKeys.get(head)).toEqual([blob.key, envelope.chunk.key, envelope.commit.key].sort());
+    expect(audited.logicalReferencedBlobBytes).toBe(3);
     await expect(pollRemoteCommitKeys(store, "", repositoryId, new Set(audited.commitKeys))).resolves.toEqual([]);
     await expect(pollRemoteCommitKeys(store, "", repositoryId)).resolves.toEqual(audited.commitKeys);
     await expect(pollRemoteCommitKeys(store, "", "123e4567-e89b-42d3-a456-426614174099")).resolves.toEqual([foreignKey]);

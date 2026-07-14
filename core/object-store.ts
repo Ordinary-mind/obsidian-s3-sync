@@ -11,8 +11,14 @@ export interface ObjectStoreListOptions extends ObjectStoreRequestOptions {
   delimiter?: string;
 }
 
+export interface ObjectStoreListedObject {
+  key: string;
+  size: number;
+}
+
 export interface ObjectStoreListPage {
   keys: string[];
+  objects?: ObjectStoreListedObject[];
   commonPrefixes?: string[];
   continuationToken?: string;
 }

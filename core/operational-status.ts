@@ -1,5 +1,6 @@
 import type { CoordinatorPhase } from "./sync-coordinator";
 import type { SyncDiagnosticCategory } from "./diagnostics";
+import type { RepositorySpaceStatistics } from "./repository-statistics";
 
 export type PathDecisionKind = "same" | "local-put" | "remote-put" | "tombstone" | "conflict" | "ignored" | "unknown";
 
@@ -16,6 +17,14 @@ export interface FullAuditStatus {
   missingClosure: string[];
   resumable: boolean;
   completedAt?: number;
+  space?: RepositorySpaceSummary;
+}
+
+export type RepositorySpaceSummary = Omit<RepositorySpaceStatistics, "orphanKeys">;
+
+export function summarizeRepositorySpace(space: RepositorySpaceStatistics): RepositorySpaceSummary {
+  const { orphanKeys: _orphanKeys, ...summary } = space;
+  return structuredClone(summary);
 }
 
 export interface OperationalStatus {

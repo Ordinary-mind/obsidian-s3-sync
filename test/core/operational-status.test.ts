@@ -13,6 +13,7 @@ import {
   repositoryHealthDisplayLabel,
   repositoryHealthLabel,
   retryCountdownSeconds,
+  summarizeRepositorySpace,
   type OperationalStatus,
 } from "../../core/operational-status";
 
@@ -72,5 +73,21 @@ describe("operational status", () => {
   it("requires every high-risk operation summary field", () => {
     expect(() => assertHighRiskSummaryComplete({ repositoryId: "repo", normalizedPrefix: "vault", objectCount: 10, totalBytes: 20, recoveryLocation: ".obsidian/recovery" })).not.toThrow();
     expect(() => assertHighRiskSummaryComplete({ repositoryId: "repo", normalizedPrefix: "vault", objectCount: -1, totalBytes: 20, recoveryLocation: ".obsidian/recovery" })).toThrow("incomplete");
+  });
+
+  it("persists space totals without retaining individual orphan object keys", () => {
+    const category = { objects: 0, bytes: 0, byKind: { blob: 0, "config-tree": 0, "change-chunk": 0, commit: 0 } };
+    const summary = summarizeRepositorySpace({
+      categories: { active: category, conflict: category, history: category, orphan: { ...category, objects: 2, bytes: 3 } },
+      uniqueBytes: 3,
+      reachableBytes: 0,
+      uniqueReferencedBlobBytes: 0,
+      logicalReferencedBytes: 0,
+      dedupSavedBytes: 0,
+      historyGrowthBytes: 0,
+      orphanKeys: ["private/object/one", "private/object/two"],
+    });
+    expect(summary.categories.orphan).toMatchObject({ objects: 2, bytes: 3 });
+    expect(summary).not.toHaveProperty("orphanKeys");
   });
 });
