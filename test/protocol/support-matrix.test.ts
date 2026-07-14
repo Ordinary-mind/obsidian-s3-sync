@@ -15,7 +15,7 @@ describe("protocol support matrix", () => {
       unicodeRuntimeSourceBytes: { caseFolding: number; nfc: number; total: number };
     };
     expect(matrix.protocol).toBe(1);
-    expect(matrix.status).toBe("task-0-complete");
+    expect(matrix.status).toBe("v1-pre-release-external-gates-pending");
     expect(matrix.runtimes).toContainEqual(
       expect.objectContaining({ name: "Node.js", version: "22.x", status: "supported-for-protocol-tests" }),
     );

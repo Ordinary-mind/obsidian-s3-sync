@@ -1,33 +1,195 @@
 {
   "designSection": 21,
   "scenarios": [
-    { "id": 1, "test": "test/core/editor-latch.test.ts" },
-    { "id": 2, "test": "test/core/stable-capture.test.ts" },
-    { "id": 3, "test": "test/core/durable-state.test.ts" },
-    { "id": 4, "test": "test/simulation/multi-client.test.ts" },
-    { "id": 5, "test": "test/core/safe-apply.test.ts" },
-    { "id": 6, "test": "test/core/presence.test.ts" },
-    { "id": 7, "test": "test/core/register.test.ts" },
-    { "id": 8, "test": "test/simulation/multi-client.test.ts" },
-    { "id": 9, "test": "test/core/hash-cache.test.ts" },
-    { "id": 10, "test": "test/core/remote-pull.test.ts" },
-    { "id": 11, "test": "test/core/remote-merge-state.test.ts" },
-    { "id": 12, "test": "test/simulation/multi-client.test.ts" },
-    { "id": 13, "test": "test/core/config-batch-apply.test.ts" },
-    { "id": 14, "test": "test/core/config-scope.test.ts" },
-    { "id": 15, "test": "test/core/repository-e2e.test.ts" },
-    { "id": 16, "test": "test/core/vault-onboarding.test.ts" },
-    { "id": 17, "test": "test/core/reattach.test.ts" },
-    { "id": 18, "test": "test/adapters/local-file-adapter.test.ts" },
-    { "id": 19, "test": "test/core/structural-conflict.test.ts" },
-    { "id": 20, "test": "test/core/repository-wizard.test.ts" },
-    { "id": 21, "test": "test/core/safe-apply.test.ts" },
-    { "id": 22, "test": "test/core/config-scope.test.ts" },
-    { "id": 23, "test": "test/core/config-scan.test.ts" },
-    { "id": 24, "test": "test/core/apply-plan.test.ts" },
-    { "id": 25, "test": "test/core/repository-binding.test.ts" },
-    { "id": 26, "test": "test/core/editor-latch.test.ts" },
-    { "id": 27, "test": "test/simulation/multi-client.test.ts" },
-    { "id": 28, "test": "test/core/config-delete.test.ts" }
+    {
+      "id": 1,
+      "evidence": [
+        { "test": "test/core/editor-latch.test.ts", "title": "freezes projected heads across later editor generations" },
+        { "test": "test/simulation/multi-client.test.ts", "title": "keeps an editor baseline frozen while a later remote root arrives" }
+      ]
+    },
+    {
+      "id": 2,
+      "evidence": [
+        { "test": "test/core/stable-capture.test.ts", "title": "returns an immutable first read only when the second full read matches" },
+        { "test": "test/core/apply-plan.test.ts", "title": "does not overwrite local divergence or stale remote plans" }
+      ]
+    },
+    {
+      "id": 3,
+      "evidence": [
+        { "test": "test/core/dirty-record.test.ts", "title": "freezes projected heads and never accepts later observed heads" },
+        { "test": "test/core/durable-state.test.ts", "title": "uses schema, generation, checksum, and falls back to the older valid copy" }
+      ]
+    },
+    {
+      "id": 4,
+      "evidence": [
+        { "test": "test/core/durable-outbox.test.ts", "title": "replays only verified frozen references in object order and safely retries after a crash" },
+        { "test": "test/simulation/multi-client.test.ts", "title": "replays frozen bytes across restart and links the next generation only to its exact local predecessor" }
+      ]
+    },
+    {
+      "id": 5,
+      "evidence": [
+        { "test": "test/core/safe-apply.test.ts", "title": "resumes safely after every injected I/O or state boundary" },
+        { "test": "test/core/safe-apply.test.ts", "title": "blocks editor, remote-head, and external-write races at every persisted apply phase" }
+      ]
+    },
+    {
+      "id": 6,
+      "evidence": [
+        { "test": "test/core/presence.test.ts", "title": "allows deletion evidence only after a complete stable direct recheck" }
+      ]
+    },
+    {
+      "id": 7,
+      "evidence": [
+        { "test": "test/core/register.test.ts", "title": "is invariant under 1,000 reordered and duplicate deliveries" },
+        { "test": "test/core/register.test.ts", "title": "verifies a pending child when its parent arrives" }
+      ]
+    },
+    {
+      "id": 8,
+      "evidence": [
+        { "test": "test/simulation/multi-client.test.ts", "title": "preserves modify/delete conflicts and simultaneous conflicting resolutions" },
+        { "test": "test/core/conflict-resolution-concurrency.test.ts", "title": "keeps an unseen concurrent root as a new conflict after a resolution publishes" }
+      ]
+    },
+    {
+      "id": 9,
+      "evidence": [
+        { "test": "test/core/dirty-record.test.ts", "title": "ignores repeated mtime-only notifications when content bytes are unchanged" }
+      ]
+    },
+    {
+      "id": 10,
+      "evidence": [
+        { "test": "test/core/remote-pull.test.ts", "title": "fetches every referenced Chunk before admitting a Commit into the core" },
+        { "test": "test/core/remote-publish.test.ts", "title": "never exposes a Commit before every dependency is stored" }
+      ]
+    },
+    {
+      "id": 11,
+      "evidence": [
+        { "test": "test/core/remote-merge-state.test.ts", "title": "updates observed state and pending apply without changing projection" },
+        { "test": "test/core/sync-coordinator.test.ts", "title": "keeps ingested and observed state while one path remains pending across restart" }
+      ]
+    },
+    {
+      "id": 12,
+      "evidence": [
+        { "test": "test/simulation/multi-client.test.ts", "title": "keeps concurrent ConfigTrees as whole-snapshot heads visible to a third client" }
+      ]
+    },
+    {
+      "id": 13,
+      "evidence": [
+        { "test": "test/core/config-batch-apply.test.ts", "title": "requires exact risk confirmation and rolls back when reloaded Tree differs" },
+        { "test": "test/core/config-batch-apply.test.ts", "title": "preserves a concurrent edit during rollback and enters recovery-required" }
+      ]
+    },
+    {
+      "id": 14,
+      "evidence": [
+        { "test": "test/core/config-scope.test.ts", "title": "permanently excludes credentials, plugin code and repository state under a custom configDir" }
+      ]
+    },
+    {
+      "id": 15,
+      "evidence": [
+        { "test": "test/core/repository-generation.test.ts", "title": "rewrites current and conflicting values, verifies both generations and retains the source" },
+        { "test": "test/core/repository-e2e.test.ts", "title": "isolates repository generations sharing one Prefix" }
+      ]
+    },
+    {
+      "id": 16,
+      "evidence": [
+        { "test": "test/core/vault-onboarding.test.ts", "title": "covers remote/local empty combinations without inventing deletion parents" },
+        { "test": "test/core/commit-builder.test.ts", "title": "merges concurrent bootstrap roots in one repository and isolates different repositoryIds" }
+      ]
+    },
+    {
+      "id": 17,
+      "evidence": [
+        { "test": "test/core/reattach.test.ts", "title": "rebuilds an empty Vault from remote state while forcing non-empty Vaults through reattachment" }
+      ]
+    },
+    {
+      "id": 18,
+      "evidence": [
+        { "test": "test/adapters/local-file-adapter.test.ts", "title": "rejects path escape and uses conservative-only materialization on mobile" },
+        { "test": "test/adapters/runtime-contract.test.ts", "title": "validates write/read, rename, and no-clobber copy in an isolated plugin directory" }
+      ]
+    },
+    {
+      "id": 19,
+      "evidence": [
+        { "test": "test/core/structural-conflict.test.ts", "title": "preserves both heads for file-directory collisions" },
+        { "test": "test/core/structural-conflict.test.ts", "title": "reports case-fold aliases without choosing a platform-specific winner" }
+      ]
+    },
+    {
+      "id": 20,
+      "evidence": [
+        { "test": "test/core/repository-wizard.test.ts", "title": "rejects conflict-root aliases and requires a new generation for exact directory identity changes" },
+        { "test": "test/core/repository-wizard.test.ts", "title": "requires explicit confirmation of every verified history candidate and keeps confirmed additions" }
+      ]
+    },
+    {
+      "id": 21,
+      "evidence": [
+        { "test": "test/core/safe-apply.test.ts", "title": "applies both file-directory shape directions as one resumable group and stops on unplanned children" },
+        { "test": "test/core/safe-apply.test.ts", "title": "resumes a shape transform after every group Journal persistence boundary" }
+      ]
+    },
+    {
+      "id": 22,
+      "evidence": [
+        { "test": "test/core/config-scope.test.ts", "title": "derives paths from the actual custom configDir and never includes core/workspace state" },
+        { "test": "test/core/config-profile.test.ts", "title": "uses the three frozen defaults and rejects raw enable/core/workspace files" }
+      ]
+    },
+    {
+      "id": 23,
+      "evidence": [
+        { "test": "test/core/config-scan.test.ts", "title": "retries unknown, scope changes, and content changes" }
+      ]
+    },
+    {
+      "id": 24,
+      "evidence": [
+        { "test": "test/core/apply-plan.test.ts", "title": "does not overwrite local divergence or stale remote plans" },
+        { "test": "test/core/safe-apply.test.ts", "title": "refuses projection accounting if an editor change arrives after install" }
+      ]
+    },
+    {
+      "id": 25,
+      "evidence": [
+        { "test": "test/core/repository-binding.test.ts", "title": "rejects persisted directory fields that differ from the verified Descriptor" },
+        { "test": "test/core/remote-audit.test.ts", "title": "rejects a replaced descriptor anchor before interpreting repository contents" }
+      ]
+    },
+    {
+      "id": 26,
+      "evidence": [
+        { "test": "test/core/editor-latch.test.ts", "title": "keeps the old projection waiting and records other disk candidates without guessing" },
+        { "test": "test/core/editor-latch.test.ts", "title": "requires explicit source evidence before creating local concurrency" }
+      ]
+    },
+    {
+      "id": 27,
+      "evidence": [
+        { "test": "test/core/dirty-record.test.ts", "title": "does not freeze a root delete until its root put is confirmed published" },
+        { "test": "test/simulation/multi-client.test.ts", "title": "publishes a new root put before allowing its waiting delete" }
+      ]
+    },
+    {
+      "id": 28,
+      "evidence": [
+        { "test": "test/core/config-delete.test.ts", "title": "requires a direct parent Tree to manage each delete" },
+        { "test": "test/core/register.test.ts", "title": "keeps Config snapshots pending until their Tree arrives and isolates deletes without parent management" }
+      ]
+    }
   ]
 }

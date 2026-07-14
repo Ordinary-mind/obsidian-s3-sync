@@ -50,4 +50,30 @@ describe("state-loss reattachment", () => {
       destructiveApplyAuthorized: false,
     });
   });
+
+  it("rebuilds an empty Vault from remote state while forcing non-empty Vaults through reattachment", () => {
+    const remoteRegisters = [{
+      path: "remote.md",
+      heads: [{ versionId: `${"2".repeat(64)}:0:0`, kind: "put" as const, hash: "c".repeat(64), size: 1 }],
+    }];
+    const empty = planStateLossRecovery({ localFiles: [], remoteRegisters });
+    expect(empty).toMatchObject({
+      strategy: "rebuild-empty-local",
+      publicationAuthorized: false,
+      destructiveApplyAuthorized: false,
+      onboarding: { actions: [{ kind: "project-remote-put" }] },
+    });
+
+    const nonEmpty = planStateLossRecovery({
+      localFiles: [{ path: "local.md", hash: "d".repeat(64), size: 1, stagedRef: "staged/local" }],
+      remoteRegisters,
+    });
+    expect(nonEmpty).toMatchObject({
+      strategy: "require-non-destructive-onboarding",
+      autoSyncDisabled: true,
+      projectionConfirmationRequired: true,
+      publicationAuthorized: false,
+      destructiveApplyAuthorized: false,
+    });
+  });
 });

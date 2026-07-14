@@ -13,11 +13,11 @@
 
 ## 当前状态
 
-**v1 协议设计基线与任务 0 已于 2026-07-13 完成验收**，但尚无可用于真实数据的稳定版本。Schema、固定向量、Unicode 15.1 数据、确定性测试底座、供应商/Obsidian 适配器契约和 Node 22 CI 均已进入版本控制；后续实现将按任务 1 起的依赖顺序推进。
+**v1 协议、同步内核、Vault/ConfigTree 产品闭环与发布安全审计已实现**，但仍是不可用于真实数据的预发布版本。发布前还必须完成 Task 16 的真实对象存储和桌面生命周期验收；移动端明确不属于 v1 支持范围。
 
 现有 `src/sync-engine.ts` 和 `src/s3-remote.ts` 是早期 legacy prototype，仍使用共享 `.s3-sync/manifest.json` 和路径直写对象。它们只可作为 Obsidian API、设置页和 UI 参考，不能作为新同步核心继续扩展。
 
-任务 0 的机器可读协议基础已经可在无 Obsidian、无 AWS、无网络的 Node 22 测试环境运行。插件当前已提供 v1 仓库的只读发现、对象验证和寄存器重建摘要；它不会发布或应用远端内容。legacy 同步、自动调度和“本地重建远端”入口均已禁用，直到 v1 发布与安全应用闭环完成。
+机器可读协议、确定性多客户端模拟、Durable Outbox、Journal 安全应用、冲突处理、配置快照、仓库世代迁移和脱敏诊断均可在无网络的 Node 22 测试环境运行。legacy 同步和“本地重建远端”入口保持禁用；v1 发布/应用仅能经过不可变 Outbox、完整验证与非破坏性接入路径。
 
 ## v1 协议概览
 
@@ -102,7 +102,7 @@ $env:S3_FORCE_PATH_STYLE = "false"
 npm run test:s3-aws
 ```
 
-标准 AWS endpoint 形如 `https://s3.ap-southeast-1.amazonaws.com`；中国区 endpoint 形如 `https://s3.cn-north-1.amazonaws.com.cn`。测试成功时会报告一个通过的用例，并验证同 Key 的两个并发条件写恰有一次成功，且后续 `GET`、`HEAD`、`LIST` 读取一致。
+标准 AWS endpoint 形如 `https://s3.ap-southeast-1.amazonaws.com`；中国区 endpoint 形如 `https://s3.cn-north-1.amazonaws.com.cn`。测试会验证同 Key 的两个并发条件写恰有一次成功，且后续 `GET`、`HEAD`、`LIST` 读取一致；同时执行下述仓库级恢复合同。
 
 测试 IAM 最小权限为 Bucket 上的 `s3:ListBucket`，以及 `contract/*` 对象上的 `s3:GetObject` 和 `s3:PutObject`。不要授予 `s3:DeleteObject`。可测试 MinIO 时运行 `npm run test:s3-minio`；它使用 Docker Compose 的本地默认凭证，不需要任何云端密钥。
 
@@ -121,12 +121,14 @@ $env:S3_FORCE_PATH_STYLE = "true"
 npm run test:s3-baidu
 ```
 
-成功输出必须显示 `Baidu Cloud BOS ObjectStore contract`。请在轮换旧密钥后使用新的受限凭证，且绝不把它们写入仓库文件。
+成功输出必须显示对应供应商的 `ObjectStore contract` 与 `repository release acceptance`。仓库级合同会在随机 `contract/release/*` 下执行多 Chunk 续传、第三客户端恢复、世代隔离和 ConfigTree 恢复。MinIO 还会自动开启测试 Bucket Versioning，验证条件重试不产生多余版本；云端若要运行同项检查，需显式设置 `S3_TEST_VERSIONING=1` 并临时授予 Bucket Versioning/ListObjectVersions 权限。请在轮换旧密钥后使用新的受限凭证，且绝不把它们写入仓库文件。
 
 ## 设计与实施
 
 - [design.md](design.md)：v1 协议、安全不变量、状态机和验收场景。
 - [tasks.md](tasks.md)：从协议证明、同步内核到配置快照和发布验收的实施顺序。
+- [docs/protocol-compatibility.md](docs/protocol-compatibility.md)：协议、运行时和供应商兼容边界。
+- [docs/release-v1.md](docs/release-v1.md)：旧原型迁移、灾难恢复和发布门禁。
 - [需求.md](需求.md)：项目背景和最初目标。
 
 实施顺序固定为：协议与测试向量 -> 纯 TypeScript 领域核心 -> 本地持久状态和安全应用 -> Vault 产品闭环 -> 配置快照 -> 发布加固。

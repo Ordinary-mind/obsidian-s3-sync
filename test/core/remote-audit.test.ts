@@ -5,6 +5,7 @@ import { ObjectStoreError, objectBodyFromBytes } from "../../core/object-store";
 import { auditRemoteRepository, pollRemoteCommitKeys, remoteAuditFailureProgress } from "../../core/remote-audit";
 import { createRepositoryDescriptor } from "../../core/repository-bootstrap";
 import { sha256Hex } from "../../protocol/hash";
+import { canonicalizeProtocolJson } from "../../protocol/json";
 
 describe("recoverable remote repository audit", () => {
   it("rebuilds from immutable remote objects and treats a marker only as a poll filter", async () => {
@@ -67,6 +68,36 @@ describe("recoverable remote repository audit", () => {
       totalObjects: 1,
       missingClosure: [expect.stringContaining("/format.json")],
     });
+  });
+
+  it("rejects a replaced descriptor anchor before interpreting repository contents", async () => {
+    const objects = new Map<string, Uint8Array>();
+    let listed = false;
+    const store = {
+      list: async () => { listed = true; return { keys: [] }; },
+      head: async (key: string) => ({ size: objects.get(key)!.byteLength }),
+      getStream: async (key: string) => objectBodyFromBytes(objects.get(key)!),
+      putImmutable: async (key: string, bytes: Uint8Array) => { objects.set(key, new Uint8Array(bytes)); },
+    };
+    const repositoryId = "123e4567-e89b-42d3-a456-426614174000";
+    const descriptor = await createRepositoryDescriptor(store, {
+      prefix: "vault",
+      repositoryId,
+      configDir: ".obsidian",
+      historicalConfigDirs: [],
+    });
+    objects.set(descriptor.key, new TextEncoder().encode(canonicalizeProtocolJson({
+      protocol: 1,
+      repositoryId,
+      configDir: ".config",
+      historicalConfigDirs: [".obsidian"],
+      hashAlgorithm: "sha256",
+      canonicalJson: "RFC8785",
+    })));
+
+    await expect(auditRemoteRepository(store, "vault", repositoryId, descriptor.descriptorHash))
+      .rejects.toMatchObject({ kind: "integrity", objectKey: descriptor.key });
+    expect(listed).toBe(false);
   });
 
   it("retains partial coverage without claiming a missing closure on a temporary list failure", async () => {

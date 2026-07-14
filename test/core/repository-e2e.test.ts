@@ -14,4 +14,30 @@ describe("v1 repository receive and recovery workflow", () => {
     recovered.restoreVersions(parseRepositoryState(serialized).versions);
     expect(recovered.allRegisters(vector.commit.object.repositoryId)).toEqual(repository.allRegisters(vector.commit.object.repositoryId));
   });
+
+  it("isolates repository generations sharing one Prefix", () => {
+    const oldRepositoryId = "123e4567-e89b-42d3-a456-426614174000";
+    const newRepositoryId = "123e4567-e89b-42d3-a456-426614174010";
+    const repository = new InMemoryRepositoryCore();
+    repository.ingest({
+      repositoryId: oldRepositoryId,
+      channel: "vault",
+      logicalKey: "notes/a.md",
+      versionId: "old-generation",
+      parents: [],
+      blob: { hash: "a".repeat(64), size: 1 },
+    });
+    repository.ingest({
+      repositoryId: newRepositoryId,
+      channel: "vault",
+      logicalKey: "notes/a.md",
+      versionId: "new-generation",
+      parents: [],
+      blob: { hash: "b".repeat(64), size: 1 },
+    });
+
+    expect(repository.register(oldRepositoryId, "vault", "notes/a.md").heads).toEqual(["old-generation"]);
+    expect(repository.register(newRepositoryId, "vault", "notes/a.md").heads).toEqual(["new-generation"]);
+    expect(repository.allRegisters(oldRepositoryId).get("vault:notes/a.md")?.heads).not.toContain("new-generation");
+  });
 });

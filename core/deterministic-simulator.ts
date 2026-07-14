@@ -5,6 +5,35 @@ import type { RegisterVersion } from "./register";
 
 export type SimulatedValue = { kind: "put"; hash: string; size: number } | { kind: "delete" };
 
+export const simulatedLocalIoBoundaries = [
+  "state-read",
+  "state-write",
+  "scan-list",
+  "capture-read",
+  "staging-write",
+  "preimage-check",
+  "recovery-move",
+  "recovery-hash",
+  "install",
+  "projection-account",
+] as const;
+
+export type SimulatedLocalIoBoundary = typeof simulatedLocalIoBoundaries[number];
+
+export class SimulatedOfflineError extends Error {
+  constructor(readonly clientId: string) {
+    super(`simulator client is offline: ${clientId}`);
+    this.name = "SimulatedOfflineError";
+  }
+}
+
+export class SimulatedLocalIoError extends Error {
+  constructor(readonly clientId: string, readonly boundary: SimulatedLocalIoBoundary) {
+    super(`simulated local I/O failure at ${boundary}`);
+    this.name = "SimulatedLocalIoError";
+  }
+}
+
 interface SimulatedDirtyRecord {
   channel: "vault" | "config";
   logicalKey: string;
@@ -32,6 +61,11 @@ interface SimulatedProjection {
   value: SimulatedValue;
 }
 
+interface SimulatedRemoteVersion {
+  version: RegisterVersion;
+  visibleAt: number;
+}
+
 interface SimulatedClient {
   id: string;
   writerId: string;
@@ -43,6 +77,9 @@ interface SimulatedClient {
   localValues: Map<string, SimulatedValue>;
   conflicts: Set<string>;
   pendingApply: Set<string>;
+  online: boolean;
+  ioFaults: Map<SimulatedLocalIoBoundary, number>;
+  ioTrace: SimulatedLocalIoBoundary[];
 }
 
 export interface SimulatedClientSnapshot {
@@ -56,11 +93,13 @@ export interface SimulatedClientSnapshot {
   localValues: Array<[string, SimulatedValue]>;
   conflicts: string[];
   pendingApply: string[];
+  online: boolean;
 }
 
 export class DeterministicSyncSimulator {
-  private readonly remote = new Map<string, RegisterVersion>();
+  private readonly remote = new Map<string, SimulatedRemoteVersion>();
   private readonly clients = new Map<string, SimulatedClient>();
+  private remoteClock = 0;
 
   constructor(readonly repositoryId = "123e4567-e89b-42d3-a456-426614174000") {}
 
@@ -77,7 +116,28 @@ export class DeterministicSyncSimulator {
       localValues: new Map(),
       conflicts: new Set(),
       pendingApply: new Set(),
+      online: true,
+      ioFaults: new Map(),
+      ioTrace: [],
     });
+  }
+
+  disconnect(clientId: string): void { this.client(clientId).online = false; }
+  reconnect(clientId: string): void { this.client(clientId).online = true; }
+  isOnline(clientId: string): boolean { return this.client(clientId).online; }
+  advanceRemoteVisibility(ticks = 1): void {
+    if (!Number.isSafeInteger(ticks) || ticks < 0) throw new Error("simulator visibility ticks are invalid");
+    this.remoteClock += ticks;
+  }
+
+  injectLocalIoFailure(clientId: string, boundary: SimulatedLocalIoBoundary, count = 1): void {
+    if (!Number.isSafeInteger(count) || count <= 0) throw new Error("simulator I/O fault count is invalid");
+    const client = this.client(clientId);
+    client.ioFaults.set(boundary, (client.ioFaults.get(boundary) ?? 0) + count);
+  }
+
+  localIoTrace(clientId: string): SimulatedLocalIoBoundary[] {
+    return [...this.client(clientId).ioTrace];
   }
 
   edit(clientId: string, logicalKey: string, value: SimulatedValue, channel: "vault" | "config" = "vault"): void {
@@ -116,6 +176,9 @@ export class DeterministicSyncSimulator {
       const predecessor = client.outbox.find((entry) => entry.versionId === dirty.localPredecessorVersion);
       if (predecessor?.parents.length === 0 && predecessor.state !== "published") throw new Error("root put must be verified published before its delete freezes");
     }
+    this.crossLocalIoBoundary(client, "capture-read");
+    this.crossLocalIoBoundary(client, "staging-write");
+    this.crossLocalIoBoundary(client, "state-write");
     const sequence = client.nextSequence;
     const body = {
       repositoryId: this.repositoryId,
@@ -147,8 +210,11 @@ export class DeterministicSyncSimulator {
     return copyOutbox(entry);
   }
 
-  publishNext(clientId: string): SimulatedOutbox | undefined {
+  publishNext(clientId: string, options: { visibleAfter?: number } = {}): SimulatedOutbox | undefined {
     const client = this.client(clientId);
+    this.assertOnline(client);
+    const visibleAfter = options.visibleAfter ?? 0;
+    if (!Number.isSafeInteger(visibleAfter) || visibleAfter < 0) throw new Error("simulator visibility delay is invalid");
     const entry = client.outbox.find((candidate) => candidate.state === "frozen");
     if (!entry) return undefined;
     if (entry.parents.some((parent) => !this.remote.has(parent))) throw new Error("simulator Outbox parent is not remotely visible yet");
@@ -161,7 +227,7 @@ export class DeterministicSyncSimulator {
       ...(entry.value.kind === "put" ? { blob: { hash: entry.value.hash, size: entry.value.size } } : {}),
       ...(entry.channel === "config" ? { configTree: { items: entry.value.kind === "put" ? [{ path: "snapshot", kind: "put" }] : [{ path: "snapshot", kind: "delete" }] } } : {}),
     };
-    this.remote.set(version.versionId, version);
+    this.remote.set(version.versionId, { version, visibleAt: this.remoteClock + visibleAfter });
     entry.state = "published";
     client.core.ingest(version);
     const registerKey = key(entry.channel, entry.logicalKey);
@@ -173,7 +239,12 @@ export class DeterministicSyncSimulator {
 
   pull(clientId: string, options: { order?: "forward" | "reverse" | "hash"; duplicate?: number; visibleVersionIds?: ReadonlySet<string> } = {}): void {
     const client = this.client(clientId);
-    let versions = [...this.remote.values()].filter((version) => !options.visibleVersionIds || options.visibleVersionIds.has(version.versionId));
+    this.assertOnline(client);
+    this.crossLocalIoBoundary(client, "scan-list");
+    let versions = [...this.remote.values()]
+      .filter((remote) => remote.visibleAt <= this.remoteClock)
+      .map((remote) => remote.version)
+      .filter((version) => !options.visibleVersionIds || options.visibleVersionIds.has(version.versionId));
     if (options.order === "reverse") versions.reverse();
     else if (options.order === "hash") versions.sort((left, right) => left.versionId < right.versionId ? -1 : 1);
     const duplicate = options.duplicate ?? 1;
@@ -193,6 +264,7 @@ export class DeterministicSyncSimulator {
 
   snapshotClient(clientId: string): SimulatedClientSnapshot {
     const client = this.client(clientId);
+    this.crossLocalIoBoundary(client, "state-read");
     return {
       id: client.id,
       writerId: client.writerId,
@@ -204,6 +276,7 @@ export class DeterministicSyncSimulator {
       localValues: [...client.localValues].map(([name, value]) => [name, { ...value }]),
       conflicts: [...client.conflicts],
       pendingApply: [...client.pendingApply],
+      online: client.online,
     };
   }
 
@@ -221,6 +294,9 @@ export class DeterministicSyncSimulator {
       localValues: new Map(snapshot.localValues.map(([name, value]) => [name, { ...value }])),
       conflicts: new Set(snapshot.conflicts),
       pendingApply: new Set(snapshot.pendingApply),
+      online: snapshot.online,
+      ioFaults: new Map(),
+      ioTrace: [],
     });
   }
 
@@ -235,15 +311,44 @@ export class DeterministicSyncSimulator {
   outbox(clientId: string): SimulatedOutbox[] { return this.client(clientId).outbox.map(copyOutbox); }
   conflicts(clientId: string): string[] { return [...this.client(clientId).conflicts].sort(); }
   pendingApply(clientId: string): string[] { return [...this.client(clientId).pendingApply].sort(); }
-  remoteVersions(): RegisterVersion[] { return [...this.remote.values()].map((version) => structuredClone(version)); }
+  dirtyRegisters(clientId: string): string[] { return [...this.client(clientId).dirty.keys()].sort(); }
+  remoteVersions(): RegisterVersion[] { return [...this.remote.values()].map(({ version }) => structuredClone(version)); }
 
   assertInvariants(): void {
     for (const client of this.clients.values()) {
       const sequences = client.outbox.map((entry) => entry.sequence);
       if (new Set(sequences).size !== sequences.length) throw new Error("simulator reused an Outbox sequence");
+      if (sequences.some((sequence, index) => sequence !== index + 1) || client.nextSequence !== sequences.length + 1) {
+        throw new Error("simulator Outbox sequence is not contiguous");
+      }
       for (const entry of client.outbox) {
         if (sha256Hex(entry.bytes) !== entry.commitHash) throw new Error("simulator Outbox bytes changed");
         if (entry.state === "published" && !this.remote.has(entry.versionId)) throw new Error("published simulator content is unreachable");
+      }
+    }
+    for (const { version } of this.remote.values()) {
+      if (version.parents.some((parent) => !this.remote.has(parent))) throw new Error("published simulator parent is unreachable");
+    }
+  }
+
+  assertConvergedHeads(clientIds: readonly string[] = [...this.clients.keys()]): void {
+    const expected = new InMemoryRepositoryCore();
+    for (const { version } of this.remote.values()) expected.ingest(version);
+    const expectedRegisters = expected.allRegisters(this.repositoryId);
+    for (const clientId of clientIds) {
+      const client = this.client(clientId);
+      const actual = client.core.allRegisters(this.repositoryId);
+      const registerKeys = new Set([...expectedRegisters.keys(), ...actual.keys()]);
+      for (const registerKey of registerKeys) {
+        const [channel, ...logicalKeyParts] = registerKey.split(":");
+        const logicalKey = logicalKeyParts.join(":");
+        const expectedState = expected.register(this.repositoryId, channel as "vault" | "config", logicalKey);
+        const actualState = client.core.register(this.repositoryId, channel as "vault" | "config", logicalKey);
+        if (!sameStrings(actualState.heads, expectedState.heads)
+          || !sameStrings(actualState.pending, expectedState.pending)
+          || !sameStrings(actualState.invalid, expectedState.invalid)) {
+          throw new Error(`simulator client ${clientId} did not converge at ${registerKey}`);
+        }
       }
     }
   }
@@ -265,11 +370,37 @@ export class DeterministicSyncSimulator {
       }
       const version = client.core.version(state.heads[0])!;
       const value: SimulatedValue = version.blob ? { kind: "put", hash: version.blob.hash, size: version.blob.size } : { kind: "delete" };
-      client.projections.set(registerKey, { heads: [...state.heads], value });
+      client.pendingApply.add(registerKey);
+      if (sameValue(client.localValues.get(registerKey), value)) {
+        this.crossLocalIoBoundary(client, "projection-account");
+        client.projections.set(registerKey, { heads: [...state.heads], value });
+        client.pendingApply.delete(registerKey);
+        client.conflicts.delete(registerKey);
+        continue;
+      }
+      this.crossLocalIoBoundary(client, "preimage-check");
+      this.crossLocalIoBoundary(client, "recovery-move");
+      this.crossLocalIoBoundary(client, "recovery-hash");
+      this.crossLocalIoBoundary(client, "install");
       client.localValues.set(registerKey, value);
+      this.crossLocalIoBoundary(client, "projection-account");
+      client.projections.set(registerKey, { heads: [...state.heads], value });
       client.pendingApply.delete(registerKey);
       client.conflicts.delete(registerKey);
     }
+  }
+
+  private assertOnline(client: SimulatedClient): void {
+    if (!client.online) throw new SimulatedOfflineError(client.id);
+  }
+
+  private crossLocalIoBoundary(client: SimulatedClient, boundary: SimulatedLocalIoBoundary): void {
+    client.ioTrace.push(boundary);
+    const remaining = client.ioFaults.get(boundary) ?? 0;
+    if (remaining <= 0) return;
+    if (remaining === 1) client.ioFaults.delete(boundary);
+    else client.ioFaults.set(boundary, remaining - 1);
+    throw new SimulatedLocalIoError(client.id, boundary);
   }
 
   private client(id: string): SimulatedClient {
@@ -283,3 +414,6 @@ function key(channel: "vault" | "config", logicalKey: string): string { return `
 function deterministicId(source: string): string { return sha256Hex(new TextEncoder().encode(source)).slice(0, 32); }
 function copyOutbox(entry: SimulatedOutbox): SimulatedOutbox { return { ...entry, value: { ...entry.value }, parents: [...entry.parents], bytes: new Uint8Array(entry.bytes) }; }
 function sameValue(left: SimulatedValue | undefined, right: SimulatedValue): boolean { return !!left && left.kind === right.kind && (left.kind === "delete" || right.kind === "delete" || left.hash === right.hash && left.size === right.size); }
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
