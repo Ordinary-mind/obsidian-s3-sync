@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 
 import { unicode151CaseFolding } from "../../protocol/unicode/15.1.0/case-folding";
 import { defaultCaseFold151, normalizeNfc151, unicodeVersion } from "../../protocol/unicode";
+import { compareUtf8, validateChangeChunkObject } from "../../protocol/semantics";
 
 describe("Unicode 15.1 Default Case Folding", () => {
   it("uses the generated C/F mapping rather than the host locale", () => {
@@ -45,5 +46,35 @@ describe("Unicode 15.1 Default Case Folding", () => {
       expect(normalizeNfc151(vector.input)).toBe(vector.nfc);
       expect(defaultCaseFold151(normalizeNfc151(vector.input))).toBe(vector.caseFoldKey);
     }
+  });
+
+  it("replays runtime-independent UTF-8 ordering, case-fold and prefix-conflict vectors", () => {
+    const vector = JSON.parse(
+      readFileSync(new URL("../../protocol/vectors/unicode-ordering.json", import.meta.url), "utf8"),
+    ) as {
+      unicodeVersion: string;
+      utf8Unsorted: string[];
+      utf8Sorted: string[];
+      caseFoldAliases: [string, string];
+      prefixConflict: [string, string];
+    };
+    expect(vector.unicodeVersion).toBe(unicodeVersion);
+    expect([...vector.utf8Unsorted].sort(compareUtf8)).toEqual(vector.utf8Sorted);
+    expect(defaultCaseFold151(vector.caseFoldAliases[0])).toBe(defaultCaseFold151(vector.caseFoldAliases[1]));
+    expect(validateChangeChunkObject({
+      protocol: 1,
+      repositoryId: "123e4567-e89b-42d3-a456-426614174000",
+      descriptorHash: "a".repeat(64),
+      channel: "vault",
+      chunkIndex: 0,
+      chunkCount: 1,
+      mutations: vector.prefixConflict.map((path, index) => ({
+        path,
+        kind: "put" as const,
+        blobHash: String(index + 1).repeat(64),
+        size: 1,
+        parents: [],
+      })),
+    })).toContain("vault-put-path-prefix-conflict");
   });
 });

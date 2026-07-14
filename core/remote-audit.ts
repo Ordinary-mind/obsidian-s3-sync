@@ -48,10 +48,10 @@ export class RemoteAuditFailure extends Error {
   constructor(
     readonly objectKey: string,
     readonly progress: RemoteAuditProgress,
-    cause: unknown,
+    failure: unknown,
   ) {
-    const kind = auditFailureKind(cause);
-    super("Full audit could not verify a reachable repository object", { cause });
+    const kind = auditFailureKind(failure);
+    super("Full audit could not verify a reachable repository object");
     this.name = "RemoteAuditFailure";
     this.kind = kind;
     this.code = kind === "auth" ? "audit-authentication"

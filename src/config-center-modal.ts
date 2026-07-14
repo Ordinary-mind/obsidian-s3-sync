@@ -2,6 +2,7 @@ import { Modal, Notice, Setting, setIcon, type App, type ButtonComponent, type I
 import { detectSensitivePluginData } from "../core/config-compatibility";
 import { diffManagedConfigItems, type ConfigDiffEntry } from "../core/config-diff";
 import { summarizeConfigProfileTransition } from "../core/config-ui-state";
+import { logSafeError, safeErrorMessage } from "../core/safe-error";
 import type { ConfigProfile } from "../core/types";
 import type {
   ConfigApplyPreview,
@@ -57,7 +58,7 @@ export class ConfigCenterModal extends Modal {
       if (!sourceIds.has(this.mergeProfileSourceId)) this.mergeProfileSourceId = "local";
       if (!sourceIds.has(this.mergeEnabledSourceId)) this.mergeEnabledSourceId = "local";
     } catch (error) {
-      new Notice(`S3 Sync 配置：${errorMessage(error)}`);
+      new Notice(`S3 Sync 配置：${safeErrorMessage(error)}`);
     } finally {
       this.busy = false;
       this.render();
@@ -463,7 +464,7 @@ export class ConfigCenterModal extends Modal {
           this.mergeError = undefined;
         } catch (error) {
           this.mergeCandidate = undefined;
-          this.mergeError = errorMessage(error);
+          this.mergeError = safeErrorMessage(error);
         }
         this.render();
       },
@@ -541,8 +542,8 @@ export class ConfigCenterModal extends Modal {
     this.render();
     try { await operation(); }
     catch (error) {
-      new Notice(`S3 Sync 配置：${errorMessage(error)}`);
-      console.error(error);
+      new Notice(`S3 Sync 配置：${safeErrorMessage(error)}`);
+      logSafeError("S3 Sync ConfigTree operation failed", error);
     } finally {
       this.busy = false;
       this.render();
@@ -766,7 +767,6 @@ function itemSummary(source: ConfigTreeSourceView, path: string): string {
   return item?.kind === "put" ? `put ${item.hash.slice(0, 8)}` : "delete";
 }
 
-function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 
 function compareUtf8(left: string, right: string): number {
   const encoder = new TextEncoder(); const a = encoder.encode(left); const b = encoder.encode(right);

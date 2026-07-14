@@ -9,6 +9,7 @@ import type { PluginManifestInfo } from "./plugin-compatibility";
 import { isConfigItemCovered, validateConfigProfile } from "./config-profile";
 import { vaultPathCaseFoldKey } from "./path";
 import type { ConfigProfile } from "./types";
+import { safeErrorMessage } from "./safe-error";
 
 export interface ConfigInspectionPort {
   stat(path: string): Promise<{ type: "file" | "folder" | "symlink" | "other"; size?: number } | null>;
@@ -107,7 +108,7 @@ export async function inspectConfigWorkspaceOnce(input: {
       confirmedAbsentPaths,
     };
   } catch (error) {
-    return unknown(errorMessage(error));
+    return unknown(safeErrorMessage(error));
   }
 }
 
@@ -149,7 +150,7 @@ export async function captureLocalConfigSnapshot(input: {
   try {
     treeHash = buildConfigTreeObject("", tree, input.binding, sizes).hash;
   } catch (error) {
-    return { status: "retry", reason: errorMessage(error) };
+    return { status: "retry", reason: safeErrorMessage(error) };
   }
   return {
     status: "captured",
@@ -177,7 +178,7 @@ export async function discoverLocalPluginInventory(port: ConfigInspectionPort): 
       if (!bytes) entries.push({ directoryId, error: "manifest.json is missing" });
       else entries.push({ directoryId, manifest: parsePluginManifest(bytes) });
     } catch (error) {
-      entries.push({ directoryId, error: errorMessage(error) });
+      entries.push({ directoryId, error: safeErrorMessage(error) });
     }
   }
   return entries;
@@ -241,8 +242,6 @@ function baseName(path: string): string {
   const index = path.lastIndexOf("/");
   return index < 0 ? path : path.slice(index + 1);
 }
-
-function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 
 function compareUtf8(left: string, right: string): number {
   const encoder = new TextEncoder(); const a = encoder.encode(left); const b = encoder.encode(right);

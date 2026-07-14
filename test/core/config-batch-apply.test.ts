@@ -146,6 +146,9 @@ describe("safe ConfigTree batch apply", () => {
     const state = new MemoryConfigState(plan);
     await expect(applicator(files, state, plan.targetTreeHash).apply(plan, { ...confirmation(plan), acceptPluginCode: false }))
       .resolves.toEqual({ status: "confirmation-required" });
+    expect(files.log).toEqual([]);
+    expect(state.journals).toEqual([]);
+    expect(state.accounted).toBe(0);
     const result = await applicator(files, state, "c".repeat(64)).apply(plan, confirmation(plan));
     expect(result.status).toBe("rolled-back");
     expect(state.accounted).toBe(0);

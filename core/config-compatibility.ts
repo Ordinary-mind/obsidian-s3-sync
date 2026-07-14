@@ -4,6 +4,7 @@ import { validateConfigProfile } from "./config-profile";
 import { validatePortablePluginId, vaultPathCaseFoldKey } from "./path";
 import type { ManagedConfigItem } from "./config-snapshot-builder";
 import type { ConfigProfile } from "./types";
+import { safeErrorMessage } from "./safe-error";
 
 export interface PortableConfigSnapshotView {
   profile: ConfigProfile;
@@ -71,7 +72,7 @@ export function assessConfigTreeCompatibility(input: {
         reasons.push(`portable package ${id} is incompatible with the declared target`);
       }
     } catch (error) {
-      reasons.push(`portable package ${id} manifest is invalid: ${errorMessage(error)}`);
+      reasons.push(`portable package ${id} manifest is invalid: ${safeErrorMessage(error)}`);
     }
     const codePaths = puts.filter((item) => /\.(?:js|css)$/i.test(item.path)).map((item) => item.path).sort(compareUtf8);
     if (codePaths.length > 0) risks.push({ kind: "plugin-code", pluginId: id, paths: codePaths });
@@ -117,7 +118,7 @@ export function validatePortablePluginManifests(
         reasons.push(`portable plugin ${id} manifest is not portable for the declared target`);
       }
     } catch (error) {
-      reasons.push(`portable plugin ${id} manifest is invalid: ${errorMessage(error)}`);
+      reasons.push(`portable plugin ${id} manifest is invalid: ${safeErrorMessage(error)}`);
     }
   }
   return reasons;
@@ -133,8 +134,6 @@ export function detectSensitivePluginData(bytes: Uint8Array): { indicators: stri
     limitation: "启发式检查可能漏报；plugin data 将以明文存储在远端。",
   };
 }
-
-function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 
 function isCanonicalPluginIdArray(values: readonly string[]): boolean {
   const aliases = new Set<string>();

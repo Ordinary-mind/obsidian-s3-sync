@@ -14,7 +14,7 @@ export interface DiagnosticEvent {
 export interface DiagnosticBundle {
   schemaVersion: 1;
   generatedAt: number;
-  repositoryId?: string;
+  repositoryIdHash?: string;
   normalizedPrefix?: string;
   status: Record<string, unknown>;
   events: Array<Omit<DiagnosticEvent, "path"> & { pathHash?: string }>;
@@ -34,7 +34,7 @@ export function buildRedactedDiagnosticBundle(input: {
   return {
     schemaVersion: 1,
     generatedAt: input.generatedAt,
-    ...(input.repositoryId ? { repositoryId: input.repositoryId } : {}),
+    ...(input.repositoryId ? { repositoryIdHash: hashPrivateValue(input.repositoryId, input.pathSalt) } : {}),
     ...(input.normalizedPrefix !== undefined ? { normalizedPrefix: redactPrefix(input.normalizedPrefix, input.pathSalt) } : {}),
     status: redactRecord(input.status, sensitive, input.pathSalt),
     events: input.events.map((event) => ({
@@ -94,6 +94,7 @@ function redactValue(value: unknown, sensitive: readonly string[], pathSalt: str
 
 function redactText(value: string, sensitive: readonly string[]): string {
   let result = value
+    .replace(/(?:https?|s3):\/\/[^\s,;]+/gi, "[endpoint-redacted]")
     .replace(/AKIA[0-9A-Z]{16}/g, "[access-key-redacted]")
     .replace(/(secret|password|token|credential)(\s*[=:]\s*)[^\s,;]+/gi, "$1$2[redacted]");
   for (const secret of sensitive) result = result.split(secret).join("[redacted]");
@@ -105,15 +106,15 @@ function redactPrefix(prefix: string, salt: string): string {
 }
 
 function isSensitiveKey(key: string): boolean {
-  return /(secret|password|token|credential|access.?key|body|bytes|content|data\.json)/i.test(key);
+  return /(secret|password|token|credential|access.?key|body|bytes|content|data\.json|endpoint|bucket|region)/i.test(key);
 }
 
 function isSingularPrivateLocationKey(key: string): boolean {
-  return /^(?:path|recoveryLocation|normalizedPrefix|prefix)$/i.test(key);
+  return /^(?:path|key|objectKey|contentRef|recoveryLocation|normalizedPrefix|prefix|scopePrefix|repositoryId|configDir)$/i.test(key);
 }
 
 function isPrivateLocationCollectionKey(key: string): boolean {
-  return /^(?:paths|missingClosure)$/i.test(key);
+  return /^(?:paths|keys|missingClosure|orphanKeys|historicalConfigDirs)$/i.test(key);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return !!value && typeof value === "object" && !Array.isArray(value); }

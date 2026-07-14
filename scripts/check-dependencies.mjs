@@ -16,12 +16,25 @@ if (manifest.isDesktopOnly !== true && mobile?.status !== "verified-runtime-cont
 
 const allowedLicense = /^(?:MIT|ISC|Apache-2\.0|BSD-(?:2|3)-Clause|CC0-1\.0|0BSD|Unlicense)(?: OR (?:MIT|ISC|Apache-2\.0|BSD-(?:2|3)-Clause))*$/;
 const unreviewed = [];
+const untrustedSources = [];
+const missingIntegrity = [];
+const installScripts = [];
 for (const [path, metadata] of Object.entries(lock.packages ?? {})) {
   if (path === "" || metadata.dev || metadata.optional) continue;
   if (typeof metadata.license !== "string" || !allowedLicense.test(metadata.license)) {
     unreviewed.push(`${path}:${metadata.license ?? "missing"}`);
   }
+  if (typeof metadata.resolved !== "string" || !metadata.resolved.startsWith("https://registry.npmjs.org/")) {
+    untrustedSources.push(`${path}:${metadata.resolved ?? "missing"}`);
+  }
+  if (typeof metadata.integrity !== "string" || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(metadata.integrity)) {
+    missingIntegrity.push(path);
+  }
+  if (metadata.hasInstallScript === true) installScripts.push(path);
 }
 if (unreviewed.length > 0) throw new Error(`production dependency licenses need review: ${unreviewed.join(", ")}`);
+if (untrustedSources.length > 0) throw new Error(`production dependency sources need review: ${untrustedSources.join(", ")}`);
+if (missingIntegrity.length > 0) throw new Error(`production dependency integrity is missing: ${missingIntegrity.join(", ")}`);
+if (installScripts.length > 0) throw new Error(`production dependency install scripts need review: ${installScripts.join(", ")}`);
 
-process.stdout.write(`dependency check passed; bundle=${bundle.size} bytes; mobile=${mobile?.status}\n`);
+process.stdout.write(`dependency check passed; bundle=${bundle.size} bytes; mobile=${mobile?.status}; productionSources=registry.npmjs.org; installScripts=0\n`);

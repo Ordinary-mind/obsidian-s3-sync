@@ -27,9 +27,17 @@ describe("remote Commit pull", () => {
     expect(stagingEvents).toEqual([...vector.chunks.map((_: unknown, index: number) => `write:${index}`), ...vector.chunks.map((_: unknown, index: number) => `read:${index}`), "dispose"]);
     expect(repository.register(vector.commit.object.repositoryId, "vault", "notes/first.md").heads).toHaveLength(1);
     const missingCommitKey = `${root}/commits/${vector.commit.object.writerId}/00000000000000000002-${"f".repeat(64)}.json`;
-    const isolated = await pullCommitSetIntoRepository(store, "", vector.commit.object.repositoryId, vector.commit.object.descriptorHash, [missingCommitKey, commitKey], { configDir: ".obsidian", historicalConfigDirs: [] });
+    const malformedBytes = new TextEncoder().encode('{"protocol":1,"protocol":2}');
+    const malformedHash = sha256Hex(malformedBytes);
+    const malformedCommitKey = `${root}/commits/${vector.commit.object.writerId}/00000000000000000003-${malformedHash}.json`;
+    objects.set(malformedCommitKey, malformedBytes);
+    const isolated = await pullCommitSetIntoRepository(store, "", vector.commit.object.repositoryId, vector.commit.object.descriptorHash, [malformedCommitKey, missingCommitKey, commitKey], { configDir: ".obsidian", historicalConfigDirs: [] });
     expect(isolated.repository.register(vector.commit.object.repositoryId, "vault", "notes/first.md").heads).toHaveLength(1);
-    expect(isolated.blockedCommitKeys).toEqual([expect.objectContaining({ key: missingCommitKey })]);
+    expect(isolated.blockedCommitKeys).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: missingCommitKey }),
+      expect.objectContaining({ key: malformedCommitKey }),
+    ]));
+    expect(isolated.acceptedCommits).toHaveLength(1);
 
     const invalidObjects = new Map(objects);
     invalidObjects.set(changeChunkKey("", vector.commit.object.repositoryId, vector.chunks.at(-1).sha256), new TextEncoder().encode("tampered"));

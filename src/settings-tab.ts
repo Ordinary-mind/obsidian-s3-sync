@@ -1,6 +1,7 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type { S3SyncSettings } from "./types";
 import { plaintextCredentialWarning } from "../core/plugin-data";
+import { safeErrorMessage } from "../core/safe-error";
 import type S3SyncPlugin from "./main";
 
 export class S3SyncSettingTab extends PluginSettingTab {
@@ -73,7 +74,7 @@ export class S3SyncSettingTab extends PluginSettingTab {
             await this.plugin.updateConnectionSettings({ ...this.connectionDraft });
             new Notice("S3 Sync：连接设置已应用。");
           } catch (error) {
-            new Notice(`S3 Sync：连接设置未应用：${error instanceof Error ? error.message : String(error)}`);
+            new Notice(`S3 Sync：连接设置未应用：${safeErrorMessage(error)}`);
           }
         }));
 

@@ -1,0 +1,7 @@
+{
+  "unicodeVersion": "15.1.0",
+  "utf8Unsorted": ["😀", "é", "z", "Å", "a"],
+  "utf8Sorted": ["a", "z", "Å", "é", "😀"],
+  "caseFoldAliases": ["Straße/Note.md", "STRASSE/note.md"],
+  "prefixConflict": ["Notes/Active", "notes/active/child.md"]
+}

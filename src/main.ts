@@ -49,6 +49,7 @@ import { localConcurrentRecordBlocksAutomaticWork } from "../core/local-concurre
 import { SyncDashboardModal } from "./sync-dashboard-modal";
 import { buildRedactedDiagnosticBundle } from "../core/diagnostic-bundle";
 import { diagnosticCategory, type SyncDiagnosticCategory } from "../core/diagnostics";
+import { logSafeError, safeErrorMessage } from "../core/safe-error";
 import {
   derivePathDecision,
   mayRunMutatingSync,
@@ -391,7 +392,7 @@ export default class S3SyncPlugin extends Plugin {
   async openFile(path: string): Promise<void> {
     const file = getTFile(this.app.vault, path);
     if (!file) {
-      new Notice(`文件不存在：${path}`);
+      new Notice("文件不存在或已移动。");
       return;
     }
     await this.app.workspace.getLeaf(false).openFile(file);
@@ -1247,7 +1248,7 @@ export default class S3SyncPlugin extends Plugin {
           const failed = await failDurableOutboxPublicationTransaction(store, entry.id, failure);
           this.applyDurableOutboxSnapshot(failed.payload, false);
         } catch (stateError) {
-          console.error("S3 Sync failed to record durable Outbox failure", stateError);
+          logSafeError("S3 Sync failed to record durable Outbox failure", stateError);
         }
         throw error;
       }
@@ -1818,15 +1819,15 @@ export default class S3SyncPlugin extends Plugin {
             previousCommitHash: null,
           };
         await this.saveSyncData();
-        new Notice(`S3 Sync connected and selected repository: ${repositories[0].repositoryId}`);
+        new Notice("S3 Sync：连接成功并已验证当前仓库。");
         return;
       }
       new Notice(repositories.length === 0
-        ? `S3 Sync connected. No repository exists at Prefix: ${prefix}`
-        : `S3 Sync connected. Found ${repositories.length} repositories; select one explicitly.`);
+        ? "S3 Sync：连接成功；当前范围内没有仓库。"
+        : `S3 Sync：连接成功；发现 ${repositories.length} 个仓库，请显式选择。`);
     } catch (error) {
       new Notice(`S3 Sync 连接失败：${this.errorMessage(error)}`);
-      console.error(error);
+      logSafeError("S3 Sync connection failed", error);
     } finally {
       this.endRepositoryOperation("vault");
     }
@@ -1847,7 +1848,7 @@ export default class S3SyncPlugin extends Plugin {
       new Notice(`S3 Sync v1：已只读验证 ${summary.registers} 个寄存器；冲突 ${summary.concurrent}，等待依赖 ${summary.pending}，无效 ${summary.invalid}`);
     } catch (error) {
       new Notice(`S3 Sync v1 仓库发现失败：${this.errorMessage(error)}`);
-      console.error(error);
+      logSafeError("S3 Sync repository discovery failed", error);
     } finally {
       this.endRepositoryOperation("vault");
     }
@@ -1882,10 +1883,10 @@ export default class S3SyncPlugin extends Plugin {
         previousCommitHash: null,
       };
       await this.saveSyncData();
-      new Notice(`S3 Sync v1 repository created: ${result.repositoryId}`);
+      new Notice("S3 Sync v1：仓库已创建并验证。");
     } catch (error) {
       new Notice(`S3 Sync v1 repository creation failed: ${this.errorMessage(error)}`);
-      console.error(error);
+      logSafeError("S3 Sync repository creation failed", error);
     } finally {
       this.endRepositoryOperation("vault");
     }
@@ -1917,7 +1918,7 @@ export default class S3SyncPlugin extends Plugin {
           throw new Error("不能用新仓库覆盖当前因果状态；请执行非破坏性重新接入");
         }
         await this.assertV1RepositoryBinding(this.data.v1);
-        new Notice(`S3 Sync v1 repository already selected: ${repositories[0].repositoryId}`);
+        new Notice("S3 Sync v1：当前仓库已选择并验证。");
         return;
       }
       this.data.v1 = {
@@ -1935,10 +1936,10 @@ export default class S3SyncPlugin extends Plugin {
         previousCommitHash: null,
       };
       await this.saveSyncData();
-      new Notice(`S3 Sync v1 repository selected: ${repositories[0].repositoryId}`);
+      new Notice("S3 Sync v1：仓库已选择并验证。");
     } catch (error) {
       new Notice(`S3 Sync v1 repository selection failed: ${this.errorMessage(error)}`);
-      console.error(error);
+      logSafeError("S3 Sync repository selection failed", error);
     } finally {
       this.endRepositoryOperation("vault");
     }
@@ -2039,11 +2040,11 @@ export default class S3SyncPlugin extends Plugin {
       }
       this.updateOperationalStatus({ lastSuccessfulPublish: Date.now(), ...(notify ? { phase: "idle" as const } : {}) });
       await this.saveSyncData();
-      if (notify) new Notice(`S3 Sync v1 published: ${file.path}`);
+      if (notify) new Notice("S3 Sync v1：当前文件已发布并验证。");
       return { status: "success" };
     } catch (error) {
       if (notify) this.recordOperationalError(error, true);
-      console.error(error);
+      logSafeError("S3 Sync Vault publication failed", error);
       return { status: "failed", error };
     } finally {
       if (notify) this.endRepositoryOperation("vault");
@@ -2156,7 +2157,7 @@ export default class S3SyncPlugin extends Plugin {
       return { status: "success" };
     } catch (error) {
       if (notify) this.recordOperationalError(error, true);
-      console.error(error);
+      logSafeError("S3 Sync Vault pull failed", error);
       return { status: "failed", error };
     } finally {
       if (notify) this.endRepositoryOperation("vault");
@@ -2175,7 +2176,7 @@ export default class S3SyncPlugin extends Plugin {
       new RuntimeContractModal(this.app, result).open();
     } catch (error) {
       new Notice(`S3 Sync v1 runtime contract failed: ${this.errorMessage(error)}`);
-      console.error(error);
+      logSafeError("S3 Sync runtime contract failed", error);
     }
   }
 
@@ -2303,7 +2304,7 @@ export default class S3SyncPlugin extends Plugin {
   private queueCausalStatePersistence(): void {
     this.causalStatePersistence = this.causalStatePersistence
       .then(() => this.savePluginData())
-      .catch((error) => console.error("S3 Sync failed to persist v1 causal state", error));
+      .catch((error) => logSafeError("S3 Sync failed to persist v1 causal state", error));
   }
 
   private stopSchedulingAndFlush(): void {
@@ -2426,7 +2427,7 @@ export default class S3SyncPlugin extends Plugin {
       succeeded = true;
     } catch (error) {
       new Notice(`S3 Sync 同步失败：${this.errorMessage(error)}`);
-      console.error(error);
+      logSafeError("S3 Sync round failed", error);
     } finally {
       this.updateStatus();
       if (succeeded && this.settings.autoSync && engine.hasQueuedWork()) {
@@ -2454,7 +2455,7 @@ export default class S3SyncPlugin extends Plugin {
       succeeded = true;
     } catch (error) {
       new Notice(`S3 Sync 完整同步失败：${this.errorMessage(error)}`);
-      console.error(error);
+      logSafeError("S3 Sync full round failed", error);
     } finally {
       this.updateStatus();
       if (succeeded && this.settings.autoSync && engine.hasQueuedWork()) {
@@ -3016,7 +3017,7 @@ export default class S3SyncPlugin extends Plugin {
   }
 
   private errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
+    return safeErrorMessage(error);
   }
 }
 

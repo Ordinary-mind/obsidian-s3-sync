@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { safeErrorMessage } from "../core/safe-error";
 import { createReadStream } from "node:fs";
 import { constants, copyFile, link, lstat, mkdir, rmdir, unlink } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -138,7 +139,7 @@ async function observeRegularFile(path: string): Promise<LocalFileObservation> {
   try {
     stat = await lstat(path);
   } catch (error) {
-    return hasCode(error, "ENOENT") ? { kind: "absent" } : { kind: "unknown", reason: errorMessage(error) };
+    return hasCode(error, "ENOENT") ? { kind: "absent" } : { kind: "unknown", reason: safeErrorMessage(error) };
   }
   if (!stat.isFile() || stat.isSymbolicLink()) return { kind: "unknown", reason: "path is not a regular file" };
   const hash = createHash("sha256");
@@ -151,7 +152,7 @@ async function observeRegularFile(path: string): Promise<LocalFileObservation> {
       if (!Number.isSafeInteger(size)) return { kind: "unknown", reason: "file size exceeds safe integer range" };
     }
   } catch (error) {
-    return { kind: "unknown", reason: errorMessage(error) };
+    return { kind: "unknown", reason: safeErrorMessage(error) };
   }
   return { kind: "present", hash: hash.digest("hex"), size };
 }
@@ -167,8 +168,4 @@ async function sameFileIdentity(left: string, right: string): Promise<boolean> {
 
 function hasCode(error: unknown, code: string): boolean {
   return !!error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === code;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

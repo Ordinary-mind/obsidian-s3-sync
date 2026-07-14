@@ -402,7 +402,7 @@ function classifyS3Failure(cause: unknown, operation: ObjectStoreOperation, retr
   else if (status === 429 || name === "SlowDown" || code === "SlowDown" || name === "ThrottlingException") kind = "throttled";
   else if (status === 412 || name === "PreconditionFailed") kind = "integrity";
   else kind = "temporary";
-  return new ObjectStoreError(kind, operation, { status, requestId, retries, stage }, { cause });
+  return new ObjectStoreError(kind, operation, { status, requestId, retries, stage });
 }
 
 function isPreconditionFailure(error: unknown): boolean {

@@ -17,8 +17,11 @@ describe("redacted diagnostics and policies", () => {
         decisions: [{ path: "private/note.md", decision: "conflict", reason: "local change" }],
         missingClosure: ["private/protocol/object"],
         recoveryLocation: ".obsidian/private-recovery",
+        repositoryId: "repository-private",
+        endpoint: "https://user:pass@s3.example.com?token=value",
+        bucket: "private-bucket",
       },
-      events: [{ at: 1, category: "authentication", stage: "GET", message: "password=super-secret", path: "private/note.md" }],
+      events: [{ at: 1, category: "authentication", stage: "GET", message: "password=super-secret https://user:pass@s3.example.com?token=x", path: "private/note.md" }],
     });
     const source = JSON.stringify(bundle);
     expect(source).not.toContain("private/note.md");
@@ -27,6 +30,10 @@ describe("redacted diagnostics and policies", () => {
     expect(source).not.toContain("private-recovery");
     expect(source).not.toContain("super-secret");
     expect(source).not.toContain("vault bytes");
+    expect(source).not.toContain("repository-private");
+    expect(source).not.toContain("private-bucket");
+    expect(source).not.toContain("s3.example.com");
+    expect(bundle.repositoryIdHash).toMatch(/^[0-9a-f]{64}$/);
     expect(bundle.events[0].pathHash).toMatch(/^[0-9a-f]{64}$/);
     expect(bundle.status).toMatchObject({
       decisions: [{ pathHash: expect.stringMatching(/^[0-9a-f]{64}$/), decision: "conflict", reason: "local change" }],
@@ -36,11 +43,29 @@ describe("redacted diagnostics and policies", () => {
     expect(redactEndpoint("https://user:pass@s3.example.com?token=x#secret")).toBe("https://s3.example.com");
   });
 
-  it("keeps DeleteObject out of the normal policy and scopes it in maintenance", () => {
-    const minimal = readFileSync(new URL("../../docs/s3-policy-minimal.json", import.meta.url), "utf8");
-    const maintenance = readFileSync(new URL("../../docs/s3-policy-maintenance.json", import.meta.url), "utf8");
-    expect(minimal).not.toContain("DeleteObject");
-    expect(maintenance).toContain("DeleteObject");
-    expect(maintenance).toContain("REPLACE_OLD_REPOSITORY_ID");
+  it("keeps normal, probe and old-generation capabilities in separate scoped policies", () => {
+    const policy = (name: string) => JSON.parse(readFileSync(new URL(`../../docs/${name}`, import.meta.url), "utf8")) as {
+      Statement: Array<{ Action: string | string[]; Resource: string; Condition?: unknown }>;
+    };
+    const minimal = policy("s3-policy-minimal.json");
+    const probe = policy("s3-policy-probe.json");
+    const maintenance = policy("s3-policy-maintenance.json");
+    const actions = (value: string | string[]) => Array.isArray(value) ? value : [value];
+    expect(minimal.Statement.flatMap((statement) => actions(statement.Action))).not.toContain("s3:DeleteObject");
+    expect(minimal.Statement.find((statement) => actions(statement.Action).includes("s3:ListBucket"))?.Condition).toBeDefined();
+    const probeDeletes = probe.Statement.filter((item) => actions(item.Action).includes("s3:DeleteObject"));
+    const maintenanceDeletes = maintenance.Statement.filter((item) => actions(item.Action).includes("s3:DeleteObject"));
+    expect(probeDeletes).toHaveLength(1);
+    expect(maintenanceDeletes).toHaveLength(1);
+    for (const statement of probeDeletes) {
+      expect(statement.Resource.endsWith("/.obsidian-s3-sync/v1/probes/*")).toBe(true);
+    }
+    for (const statement of maintenanceDeletes) {
+      expect(statement.Resource).toContain("/repositories/REPLACE_OLD_REPOSITORY_ID/*");
+      expect(statement.Resource).not.toContain("/probes/");
+    }
+    const maintenanceList = maintenance.Statement.find((statement) => actions(statement.Action).includes("s3:ListBucket"));
+    expect(maintenanceList?.Condition).toBeDefined();
+    expect(JSON.stringify(maintenanceList)).toContain("REPLACE_OLD_REPOSITORY_ID/*");
   });
 });

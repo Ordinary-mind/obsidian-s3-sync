@@ -12,7 +12,7 @@
       "name": "Obsidian desktop",
       "status": "verified-runtime-contract-tests",
       "staticApi": ["vault.configDir", "vault rename event", "workspace editor-change event"],
-      "verified": ["vault.configDir", "workspace editor-change event", "isolated write/readback", "durable write across plugin reload", "rename", "rename rejects an existing target", "copy rejects an existing target"],
+      "verified": ["vault.configDir", "workspace editor-change event", "isolated write/readback", "durable write across plugin reload", "rename", "rename rejects an existing target", "copy rejects an existing target", "Unicode 15.1 case-fold", "UTF-8 byte ordering", "path segment prefix conflict"],
       "requirements": []
     },
     {

@@ -1,6 +1,7 @@
 import { canonicalizeProtocolJson, parseBoundedJson } from "../protocol/json";
 import { validatePortablePluginId, vaultPathCaseFoldKey } from "./path";
 import type { ConfigProfile } from "./types";
+import { safeErrorMessage } from "./safe-error";
 
 const communityPluginsMaximumBytes = 4 * 1024 * 1024;
 const communityPluginsMaximumIds = 100_000;
@@ -20,7 +21,7 @@ export function observeCommunityPluginIds(observation: CommunityPluginFileObserv
   try {
     return { status: "complete", ids: parseCommunityPluginIds(observation.bytes) };
   } catch (error) {
-    return { status: "unknown", reason: error instanceof Error ? error.message : String(error) };
+    return { status: "unknown", reason: safeErrorMessage(error) };
   }
 }
 

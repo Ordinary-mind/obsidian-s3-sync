@@ -74,7 +74,7 @@ describe("local ConfigTree inspection", () => {
     symlink.folders.add("themes");
     symlink.symlinks.add("themes/external.css");
     await expect(inspectConfigWorkspaceOnce({ port: symlink, profile })).resolves.toMatchObject({
-      observation: { status: "unknown", reason: expect.stringContaining("safely inspectable") },
+      observation: { status: "unknown", reason: "本地路径或文件状态无法安全确认。" },
     });
 
     const changed = new MemoryConfigPort();

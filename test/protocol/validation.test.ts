@@ -58,6 +58,31 @@ describe("protocol receive validation pipeline", () => {
     ).toThrow(expect.objectContaining({ code: "schema-invalid" }));
   });
 
+  it("default-rejects unknown fields and future versions for every remote JSON object kind", () => {
+    const cases = [
+      ["descriptor", vector("../../protocol/vectors/repository-descriptor-basic.json").object],
+      ["config-tree", vector("../../protocol/vectors/config-tree-basic.json").object],
+      ["change-chunk", vector("../../protocol/vectors/vault-change-chunk-put-delete.json").object],
+      ["commit", vector("../../protocol/vectors/vault-bootstrap-commit.json").object],
+    ] as const;
+    for (const [kind, object] of cases) {
+      for (const candidate of [{ ...object, futureField: true }, { ...object, protocol: 2 }]) {
+        expect(() => parseAndValidateProtocolObject(kind, encoder.encode(canonicalizeProtocolJson(candidate))))
+          .toThrow(expect.objectContaining({ code: "schema-invalid" }));
+      }
+    }
+  });
+
+  it("rejects duplicate members and non-canonical JSON before Schema validation", () => {
+    for (const [source, code] of [
+      ['{"protocol":1,"protocol":1}', "duplicate-key"],
+      ['{"z":1,"a":2}', "non-canonical-json"],
+    ] as const) {
+      expect(() => parseAndValidateProtocolObject("descriptor", encoder.encode(source)))
+        .toThrow(expect.objectContaining({ code }));
+    }
+  });
+
   it("rejects object-local Commit and Change Chunk violations before dependency loading", () => {
     const chunk = vector("../../protocol/vectors/vault-change-chunk-put-delete.json");
     const commit = vector("../../protocol/vectors/vault-bootstrap-commit.json");

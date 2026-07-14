@@ -167,10 +167,10 @@ export function assessRepositoryWizardLocalSafety(input: {
     if (input.confirmedHistoricalConfigDirs !== undefined) {
       confirmedHistoricalConfigDirs = normalizeHistoricalCandidates(configDir, input.confirmedHistoricalConfigDirs);
     }
-  } catch (error) {
+  } catch {
     reasons.push({
       kind: "repository-directories-invalid",
-      message: error instanceof Error ? error.message : "repository directories are invalid",
+      message: "repository directories are invalid",
     });
   }
 
@@ -196,12 +196,12 @@ export function assessRepositoryWizardLocalSafety(input: {
       ...requiredHistoricalConfigDirs,
       ...confirmedHistoricalConfigDirs,
     ]);
-  } catch (error) {
+  } catch {
     return {
       status: "blocked",
       reasons: [{
         kind: "repository-directories-invalid",
-        message: error instanceof Error ? error.message : "repository directories are invalid",
+        message: "repository directories are invalid",
       }],
       requiredHistoricalConfigDirs,
     };

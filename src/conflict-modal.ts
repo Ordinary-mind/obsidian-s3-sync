@@ -1,4 +1,6 @@
 import { Modal, Notice, Setting } from "obsidian";
+import { hashPrivateValue } from "../core/diagnostic-bundle";
+import { logSafeError, safeErrorMessage } from "../core/safe-error";
 import type S3SyncPlugin from "./main";
 
 export class ConflictModal extends Modal {
@@ -43,7 +45,7 @@ export class ConflictModal extends Modal {
           .setButtonText("复制诊断信息")
           .onClick(async () => {
             await navigator.clipboard.writeText([
-              `path=${conflict.path}`,
+              `pathHash=${hashPrivateValue(conflict.path, this.plugin.data.v1?.repositoryId ?? this.plugin.manifest.id)}`,
               `baseHash=${conflict.baseHash ?? "null"}`,
               `localHash=${conflict.localHash ?? "null"}`,
               `remoteHash=${conflict.remoteHash ?? "null"}`,
@@ -68,8 +70,8 @@ export class ConflictModal extends Modal {
               new Notice("已使用本地版本");
               this.render();
             } catch (error) {
-              new Notice(`解决冲突失败：${this.errorMessage(error)}`);
-              console.error(error);
+              new Notice(`解决冲突失败：${safeErrorMessage(error)}`);
+              logSafeError("S3 Sync local conflict resolution failed", error);
             }
           }))
         .addButton((button) => button
@@ -80,8 +82,8 @@ export class ConflictModal extends Modal {
               new Notice("已使用远端版本");
               this.render();
             } catch (error) {
-              new Notice(`解决冲突失败：${this.errorMessage(error)}`);
-              console.error(error);
+              new Notice(`解决冲突失败：${safeErrorMessage(error)}`);
+              logSafeError("S3 Sync remote conflict resolution failed", error);
             }
           }));
     }
@@ -90,9 +92,5 @@ export class ConflictModal extends Modal {
   private addMeta(container: HTMLElement, label: string, value: string): void {
     container.createDiv({ cls: "s3-sync-conflict-label", text: label });
     container.createDiv({ cls: "s3-sync-conflict-value", text: value });
-  }
-
-  private errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
   }
 }

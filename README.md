@@ -80,6 +80,8 @@ Prefix 可以根据 Vault 名称提出建议，但确认后不会随 Vault 改�
 
 普通同步只要求 List、Head/Get 和 Put 权限，但 Put 必须支持 `If-None-Match: *` 或等价原子“仅不存在时创建”；不支持的存储只能只读诊断。DeleteObject 不是 v1 正常同步的最低权限；旧世代删除和维护使用独立权限或供应商控制台。
 
+权限模板位于 `docs/s3-policy-minimal.json`、`docs/s3-policy-probe.json` 和 `docs/s3-policy-maintenance.json`。普通设备只使用 minimal；可删除 probe 和旧世代的凭证必须分开授予，并严格替换为对应独立 Prefix/旧 repositoryId。
+
 ## 真实 S3 合同测试
 
 真实存储服务验证只用于确认 S3 adapter 的能力，不会同步 Vault，也不会创建或应用 v1 仓库。请使用专用测试 Bucket，或将 IAM 权限限制到 `contract/*` 前缀。测试会创建不可变对象，默认不执行 `DeleteObject`。

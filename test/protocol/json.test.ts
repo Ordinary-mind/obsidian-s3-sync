@@ -18,6 +18,12 @@ function expectCode(source: Uint8Array, code: ProtocolJsonError["code"]) {
   );
 }
 
+function expectConfigCode(source: Uint8Array, code: ProtocolJsonError["code"]) {
+  expect(() => parseCanonicalProtocolJson(source, protocolLimits.configTreeBytes)).toThrow(
+    expect.objectContaining({ code }),
+  );
+}
+
 describe("strict v1 protocol JSON", () => {
   it("accepts the fixed canonical descriptor bytes", () => {
     const vector = JSON.parse(
@@ -108,6 +114,24 @@ describe("strict v1 protocol JSON", () => {
     expect(() => parseBoundedProtocolJson("config-tree", encoder.encode(oversized))).toThrow(
       expect.objectContaining({ code: "json-array-items-exceeded" }),
     );
+  });
+
+  it("rejects protocol-specific arrays before parsing the first excess element", () => {
+    for (const [field, limit] of [
+      ["parents", protocolLimits.mutationParents],
+      ["changeChunkHashes", protocolLimits.commitChunks],
+      ["mutations", protocolLimits.chunkMutations],
+    ] as const) {
+      const entries = `${"null,".repeat(limit)}null`;
+      expectConfigCode(encoder.encode(`{"${field}":[${entries}]}`), "json-array-items-exceeded");
+    }
+  });
+
+  it("stops escaped and raw strings at the first UTF-8 byte beyond the limit", () => {
+    const raw = "é".repeat(protocolLimits.jsonStringUtf8Bytes / 2 + 1);
+    expectConfigCode(encoder.encode(`{"value":"${raw}"}`), "json-string-bytes-exceeded");
+    const escaped = "\\u00e9".repeat(protocolLimits.jsonStringUtf8Bytes / 2 + 1);
+    expectConfigCode(encoder.encode(`{"value":"${escaped}"}`), "json-string-bytes-exceeded");
   });
 
   it("uses RFC 8785 member-name ordering independently from protocol array ordering", () => {

@@ -18,7 +18,8 @@ export function diagnosticCategory(error: unknown): SyncDiagnosticCategory {
   if (source.includes("repository") || source.includes("descriptor") || source.includes("reattach") || source.includes("frontier anchor")) return "repository-identity";
   if (source.includes("local-path") || source.includes("filesystem") || source.includes("no-clobber")
     || source.includes("path occupied") || source.includes("active file") || source.includes("stable capture")
-    || source.includes("local causal") || source.includes("editor generation") || source.includes("regular file")) return "local-path";
+    || source.includes("local causal") || source.includes("editor generation") || source.includes("regular file")
+    || source.includes("config path") || source.includes("safely inspectable")) return "local-path";
   if (source.includes("conflict") || source.includes("concurrent") || source.includes("reconcil")) return "conflict";
   return "network";
 }

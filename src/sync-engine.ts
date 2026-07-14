@@ -462,7 +462,7 @@ export class SyncEngine {
       detectedAt: nowIso(),
       resolved: false,
     };
-    new Notice(`S3 Sync 发现冲突：${path}`);
+    new Notice("S3 Sync：发现冲突，请在冲突视图中处理。");
     return true;
   }
 

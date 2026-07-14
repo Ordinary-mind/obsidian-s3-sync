@@ -12,6 +12,7 @@ import {
   retryCountdownSeconds,
   type OperationalStatus,
 } from "../core/operational-status";
+import { v1SecurityBoundaryDisclosures } from "../core/security-boundary";
 
 export class SyncDashboardModal extends Modal {
   private refreshTimer: number | null = null;
@@ -85,6 +86,7 @@ export class SyncDashboardModal extends Modal {
     this.renderActions(status, mutatingAllowed, busy);
     this.renderAudit(status);
     this.renderRepositorySpace(status);
+    this.renderSecurityBoundary();
     this.renderHighRiskOperation(status);
     this.renderDecisions(status);
   }
@@ -204,6 +206,16 @@ export class SyncDashboardModal extends Modal {
     for (const [label, value] of rows) {
       grid.createDiv({ cls: "s3-sync-status-label", text: label });
       grid.createDiv({ cls: "s3-sync-status-value", text: value });
+    }
+  }
+
+  private renderSecurityBoundary(): void {
+    const section = this.contentEl.createDiv({ cls: "s3-sync-dashboard-section" });
+    section.createEl("h3", { text: "v1 信任与加密边界" });
+    const grid = section.createDiv({ cls: "s3-sync-status-grid" });
+    for (const disclosure of v1SecurityBoundaryDisclosures) {
+      grid.createDiv({ cls: "s3-sync-status-label", text: disclosure.label });
+      grid.createDiv({ cls: "s3-sync-status-value", text: disclosure.detail });
     }
   }
 

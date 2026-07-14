@@ -60,9 +60,8 @@ export class ObjectStoreError extends Error {
     readonly kind: ObjectStoreFailureKind,
     readonly operation: ObjectStoreOperation,
     readonly details: { status?: number; requestId?: string; retries: number; stage: string },
-    options?: { cause?: unknown },
   ) {
-    super(`ObjectStore ${operation} failed during ${details.stage}`, options);
+    super(`ObjectStore ${operation} failed during ${details.stage}`);
     this.name = "ObjectStoreError";
   }
 }

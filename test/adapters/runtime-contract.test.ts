@@ -46,7 +46,7 @@ describe("desktop runtime contract", () => {
   it("validates write/read, rename, and no-clobber copy in an isolated plugin directory", async () => {
     const adapter = new FakeAdapter();
     await expect(runDesktopRuntimeContract(adapter, ".obsidian", "obsidian-s3-sync", "session-one", false, "test-run")).resolves.toEqual({
-      configDir: ".obsidian",
+      configDirAvailable: true,
       durableWriteReadback: true,
       durableAcrossPluginReload: null,
       editorChangeObserved: false,
@@ -55,6 +55,9 @@ describe("desktop runtime contract", () => {
       renameRejectsExistingTarget: true,
       renameNoClobberPreservesBytes: true,
       copyRejectsExistingTarget: true,
+      unicodeCaseFold151: true,
+      utf8Ordering: true,
+      pathPrefixConflict: true,
     });
     await expect(runDesktopRuntimeContract(adapter, ".obsidian", "obsidian-s3-sync", "session-two", true, "second-run")).resolves.toMatchObject({
       durableWriteReadback: true,

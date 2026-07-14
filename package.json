@@ -18,7 +18,8 @@
     "test:s3-minio": "npm run test:s3-contract",
     "benchmark:core": "vitest bench --run test/benchmarks/core.bench.ts",
     "check:dependencies": "node scripts/check-dependencies.mjs",
-    "test:ci": "npm test && npm run test:types && npm run check:generated && npm run build && npm run check:dependencies && git diff --exit-code -- main.js"
+    "check:vulnerabilities": "npm audit --omit=dev --audit-level=high",
+    "test:ci": "npm test && npm run test:types && npm run check:generated && npm run build && npm run check:dependencies && npm run check:vulnerabilities && git diff --exit-code -- main.js"
   },
   "keywords": [
     "obsidian",

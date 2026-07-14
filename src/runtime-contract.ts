@@ -1,3 +1,6 @@
+import { compareUtf8, validateChangeChunkObject } from "../protocol/semantics";
+import { defaultCaseFold151 } from "../protocol/unicode";
+
 export interface RuntimeContractAdapter {
   copy(path: string, target: string): Promise<void>;
   exists(path: string): Promise<boolean>;
@@ -9,7 +12,7 @@ export interface RuntimeContractAdapter {
 }
 
 export interface DesktopRuntimeContractResult {
-  configDir: string;
+  configDirAvailable: boolean;
   durableWriteReadback: boolean;
   durableAcrossPluginReload: boolean | null;
   editorChangeObserved: boolean;
@@ -18,6 +21,9 @@ export interface DesktopRuntimeContractResult {
   renameRejectsExistingTarget: boolean;
   renameNoClobberPreservesBytes: boolean;
   copyRejectsExistingTarget: boolean;
+  unicodeCaseFold151: boolean;
+  utf8Ordering: boolean;
+  pathPrefixConflict: boolean;
 }
 
 export async function runDesktopRuntimeContract(
@@ -78,7 +84,7 @@ export async function runDesktopRuntimeContract(
     }
 
     return {
-      configDir,
+      configDirAvailable: true,
       durableWriteReadback,
       durableAcrossPluginReload,
       editorChangeObserved,
@@ -87,6 +93,23 @@ export async function runDesktopRuntimeContract(
       renameRejectsExistingTarget,
       renameNoClobberPreservesBytes,
       copyRejectsExistingTarget,
+      unicodeCaseFold151: defaultCaseFold151("Straße/Note.md") === defaultCaseFold151("STRASSE/note.md"),
+      utf8Ordering: ["😀", "é", "z", "Å", "a"].sort(compareUtf8).join("\u0000") === ["a", "z", "Å", "é", "😀"].join("\u0000"),
+      pathPrefixConflict: validateChangeChunkObject({
+        protocol: 1,
+        repositoryId: "123e4567-e89b-42d3-a456-426614174000",
+        descriptorHash: "a".repeat(64),
+        channel: "vault",
+        chunkIndex: 0,
+        chunkCount: 1,
+        mutations: ["Notes/Active", "notes/active/child.md"].map((path, index) => ({
+          path,
+          kind: "put" as const,
+          blobHash: String(index + 1).repeat(64),
+          size: 1,
+          parents: [],
+        })),
+      }).includes("vault-put-path-prefix-conflict"),
     };
   } finally {
     if (await adapter.exists(root)) await adapter.rmdir(root, true);

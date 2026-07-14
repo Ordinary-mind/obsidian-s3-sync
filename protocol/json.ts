@@ -143,10 +143,10 @@ class StrictJsonParser {
     return value;
   }
 
-  private parseValue(): unknown {
+  private parseValue(arrayItemLimit: number = protocolLimits.jsonArrayItems): unknown {
     const current = this.source[this.offset];
     if (current === "{") return this.parseObject();
-    if (current === "[") return this.parseArray();
+    if (current === "[") return this.parseArray(arrayItemLimit);
     if (current === '"') return this.parseString();
     if (current === "t" && this.consumeLiteral("true")) return true;
     if (current === "f" && this.consumeLiteral("false")) return false;
@@ -170,7 +170,7 @@ class StrictJsonParser {
       this.skipWhitespace();
       if (!this.consume(":")) this.fail("invalid-json", "expected ':' after object key");
       this.skipWhitespace();
-      result[key] = this.parseValue();
+      result[key] = this.parseValue(arrayItemLimitForKey(key));
       this.skipWhitespace();
       if (this.consume("}")) return this.leaveContainer(result);
       if (!this.consume(",")) this.fail("invalid-json", "expected ',' or '}' in object");
@@ -178,15 +178,17 @@ class StrictJsonParser {
     }
   }
 
-  private parseArray(): unknown[] {
+  private parseArray(maximumItems: number): unknown[] {
     const result: unknown[] = [];
     this.enterContainer();
     this.offset += 1;
     this.skipWhitespace();
     if (this.consume("]")) return this.leaveContainer(result);
     while (true) {
+      if (result.length >= maximumItems) {
+        this.fail("json-array-items-exceeded", `JSON array exceeds the ${maximumItems.toLocaleString("en-US")} item field limit`);
+      }
       result.push(this.parseValue());
-      if (result.length > 100000) this.fail("json-array-items-exceeded", "JSON array exceeds 100,000 items");
       this.skipWhitespace();
       if (this.consume("]")) return this.leaveContainer(result);
       if (!this.consume(",")) this.fail("invalid-json", "expected ',' or ']' in array");
@@ -196,24 +198,41 @@ class StrictJsonParser {
 
   private parseString(): string {
     let result = "";
+    let utf8Bytes = 0;
     this.offset += 1;
     while (this.offset < this.source.length) {
       const current = this.source[this.offset++];
-      if (current === '"') return this.finishString(result);
+      if (current === '"') return result;
       if (current < " ") this.fail("invalid-json", "control character in JSON string");
       if (current !== "\\") {
-        result += current;
+        let fragment = current;
+        const codeUnit = current.charCodeAt(0);
+        if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+          const low = this.source[this.offset];
+          if (!low || low.charCodeAt(0) < 0xdc00 || low.charCodeAt(0) > 0xdfff) {
+            this.fail("unpaired-surrogate", "protocol strings must contain Unicode scalar values");
+          }
+          fragment += low;
+          this.offset += 1;
+        } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+          this.fail("unpaired-surrogate", "protocol strings must contain Unicode scalar values");
+        }
+        utf8Bytes = this.addStringFragmentBytes(utf8Bytes, fragment);
+        result += fragment;
         continue;
       }
       const escape = this.source[this.offset++];
-      if (escape === '"' || escape === "\\" || escape === "/") result += escape;
-      else if (escape === "b") result += "\b";
-      else if (escape === "f") result += "\f";
-      else if (escape === "n") result += "\n";
-      else if (escape === "r") result += "\r";
-      else if (escape === "t") result += "\t";
-      else if (escape === "u") result += this.parseUnicodeEscape();
-      else this.fail("invalid-json", "invalid JSON string escape");
+      let fragment: string;
+      if (escape === '"' || escape === "\\" || escape === "/") fragment = escape;
+      else if (escape === "b") fragment = "\b";
+      else if (escape === "f") fragment = "\f";
+      else if (escape === "n") fragment = "\n";
+      else if (escape === "r") fragment = "\r";
+      else if (escape === "t") fragment = "\t";
+      else if (escape === "u") fragment = this.parseUnicodeEscape();
+      else return this.fail("invalid-json", "invalid JSON string escape");
+      utf8Bytes = this.addStringFragmentBytes(utf8Bytes, fragment);
+      result += fragment;
     }
     this.fail("invalid-json", "unterminated JSON string");
   }
@@ -235,11 +254,12 @@ class StrictJsonParser {
     return String.fromCharCode(codePoint);
   }
 
-  private finishString(value: string): string {
-    if (utf8ByteLength(value) > 4 * 1024) {
+  private addStringFragmentBytes(currentBytes: number, fragment: string): number {
+    const next = currentBytes + utf8ByteLength(fragment);
+    if (next > protocolLimits.jsonStringUtf8Bytes) {
       this.fail("json-string-bytes-exceeded", "JSON string exceeds 4 KiB UTF-8 bytes");
     }
-    return value;
+    return next;
   }
 
   private readEscapedCodeUnit(): number {
@@ -289,4 +309,12 @@ class StrictJsonParser {
   private fail(code: ProtocolJsonErrorCode, message: string): never {
     throw new ProtocolJsonError(code, `${message} at offset ${this.offset}`);
   }
+}
+
+function arrayItemLimitForKey(key: string): number {
+  if (key === "parents") return protocolLimits.mutationParents;
+  if (key === "changeChunkHashes") return protocolLimits.commitChunks;
+  if (key === "mutations") return protocolLimits.chunkMutations;
+  if (key === "items") return protocolLimits.configTreeItems;
+  return protocolLimits.jsonArrayItems;
 }

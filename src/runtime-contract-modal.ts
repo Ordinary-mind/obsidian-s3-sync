@@ -10,7 +10,7 @@ export class RuntimeContractModal extends Modal {
   onOpen(): void {
     const text = [
       "S3 Sync v1 runtime contract",
-      `configDir=${this.result.configDir}`,
+      `configDir available=${this.result.configDirAvailable}`,
       `durable write/read=${this.result.durableWriteReadback}`,
       `durable across plugin reload=${this.result.durableAcrossPluginReload === null ? "pending reload" : this.result.durableAcrossPluginReload}`,
       `editor-change observed=${this.result.editorChangeObserved}`,
@@ -19,6 +19,9 @@ export class RuntimeContractModal extends Modal {
       `rename no-clobber=${this.result.renameRejectsExistingTarget}`,
       `rename no-clobber preserves bytes=${this.result.renameNoClobberPreservesBytes}`,
       `copy no-clobber=${this.result.copyRejectsExistingTarget}`,
+      `Unicode 15.1 case-fold=${this.result.unicodeCaseFold151}`,
+      `UTF-8 ordering=${this.result.utf8Ordering}`,
+      `path prefix conflict=${this.result.pathPrefixConflict}`,
     ].join("\n");
 
     this.contentEl.empty();

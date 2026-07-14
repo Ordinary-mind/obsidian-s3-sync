@@ -38,4 +38,19 @@ describe("actual configDir portable scope", () => {
       ],
     })).toEqual(["plugins/portable/manifest.json"]);
   });
+
+  it("permanently excludes credentials, plugin code and repository state under a custom configDir", () => {
+    expect(portableConfigPaths({
+      actualConfigDir: ".custom",
+      historicalConfigDirs: [".obsidian"],
+      profile: { ...profile, syncThemes: true, portablePluginIds: ["obsidian-s3-sync"], pluginPackages: ["obsidian-s3-sync"], pluginData: ["obsidian-s3-sync"] },
+      vaultPaths: [
+        ".custom/plugins/obsidian-s3-sync/main.js",
+        ".custom/plugins/obsidian-s3-sync/data.json",
+        ".custom/.obsidian-s3-sync-local/repository/state-a.json",
+        ".obsidian/plugins/obsidian-s3-sync/data.json",
+        ".custom/themes/safe/theme.css",
+      ],
+    })).toEqual(["themes/safe/theme.css"]);
+  });
 });

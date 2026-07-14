@@ -74,5 +74,7 @@ export * from "./repository-statistics";
 export * from "./maintenance-plan";
 export * from "./repository-generation";
 export * from "./diagnostic-bundle";
+export * from "./safe-error";
+export * from "./security-boundary";
 export * from "./deterministic-simulator";
 export * from "./operational-status";
