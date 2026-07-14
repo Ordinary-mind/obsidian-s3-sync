@@ -84,11 +84,23 @@ export class ImmutableContentStaging {
     }
   }
 
-  async verify(content: StagedContent): Promise<void> {
-    if (content.ref !== contentStagingRef(content.hash)) {
+  async verify(content: StagedContent): Promise<void>;
+  async verify(contentRef: string, expected: { hash: string; size: number }): Promise<void>;
+  async verify(content: StagedContent | string, expected?: { hash: string; size: number }): Promise<void> {
+    const resolved = typeof content === "string"
+      ? { ref: content, ...(expected ?? invalidExpectedContent()) }
+      : content;
+    if (resolved.ref !== contentStagingRef(resolved.hash)) {
       throw new ContentStagingIntegrityError("content staging reference does not match its hash");
     }
-    await assertHashAndSize(this.adapter, content.ref, { hash: content.hash, size: content.size });
+    await assertHashAndSize(this.adapter, resolved.ref, { hash: resolved.hash, size: resolved.size });
+  }
+
+  async read(contentRef: string): Promise<AsyncIterable<Uint8Array>> {
+    if (!/^staged\/sha256\/[0-9a-f]{2}\/[0-9a-f]{64}$/.test(contentRef)) {
+      throw new ContentStagingIntegrityError("content staging reference is invalid");
+    }
+    return this.adapter.read(contentRef);
   }
 
   private async checkAvailableSpace(estimatedBytes: number | undefined): Promise<void> {
@@ -98,6 +110,10 @@ export class ImmutableContentStaging {
       throw new ContentStagingSpaceError(estimatedBytes, available);
     }
   }
+}
+
+function invalidExpectedContent(): never {
+  throw new ContentStagingIntegrityError("content staging verification needs an expected hash and size");
 }
 
 export function contentStagingRef(hash: string): string {

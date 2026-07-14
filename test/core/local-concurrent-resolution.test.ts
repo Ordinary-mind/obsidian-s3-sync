@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { resolveLocalConcurrentRecord } from "../../core/local-concurrent-resolution";
+import {
+  localConcurrentRecordBlocksAutomaticWork,
+  markLocalConcurrentSelectionPublished,
+  resolveLocalConcurrentRecord,
+  selectLocalConcurrentRecordResolution,
+} from "../../core/local-concurrent-resolution";
 import type { LocalConcurrentRecord } from "../../core/dirty-record";
 
 describe("LocalConcurrentRecord resolution", () => {
@@ -19,5 +24,13 @@ describe("LocalConcurrentRecord resolution", () => {
   it("requires an explicitly staged merge or confirmed deletion evidence", () => {
     expect(() => resolveLocalConcurrentRecord({ record, choice: "merged" })).toThrow("staged");
     expect(() => resolveLocalConcurrentRecord({ record, choice: "delete", confirmedDelete: record.editorValue })).toThrow("confirmed deletion");
+  });
+
+  it("persists the user's selection and blocks automatic work until it is published", () => {
+    const selected = selectLocalConcurrentRecordResolution({ record, choice: "editor" });
+    expect(selected.selection).toMatchObject({ choice: "editor", state: "selected", parents: ["old-projected"] });
+    expect(localConcurrentRecordBlocksAutomaticWork(selected)).toBe(true);
+    const published = markLocalConcurrentSelectionPublished(selected);
+    expect(localConcurrentRecordBlocksAutomaticWork(published)).toBe(false);
   });
 });

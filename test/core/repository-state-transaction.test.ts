@@ -5,15 +5,36 @@ import { repositoryDurablePayload } from "../../core/repository-durable-payload"
 import { writeRepositoryStateTransaction } from "../../core/repository-state-transaction";
 import {
   beginDurableOutboxPublicationTransaction,
+  clearPublishedLocalConcurrentRecordTransaction,
   confirmDurableOutboxPublishedTransaction,
   freezeDurableOutboxStateTransaction,
+  markDurableWriterForkTransaction,
+  persistLocalConcurrentRecordTransaction,
+  persistRecoveryRecordTransaction,
+  queueDeleteAfterFrozenRootPutTransaction,
+  rebindVerifiedRepositoryRouteStateTransaction,
+  reconcilePublishedMutationStateTransaction,
+  rotateDrainedDurableWriterTransaction,
 } from "../../core/repository-state-transaction";
 import type { DurableOutboxEntry } from "../../core/durable-outbox";
+import { markLocalConcurrentSelectionPublished, selectLocalConcurrentRecordResolution } from "../../core/local-concurrent-resolution";
+import { createRecoveryRecord, requestRecoveryCleanup } from "../../core/recovery-record";
 
 class Files implements DurableStateFileAdapter {
   readonly values = new Map<string, string>();
+  failNextWrite: "before" | "torn" | undefined;
   async read(name: "state-a.json" | "state-b.json") { return this.values.get(name); }
-  async write(name: "state-a.json" | "state-b.json", source: string) { this.values.set(name, source); }
+  async write(name: "state-a.json" | "state-b.json", source: string) {
+    const failure = this.failNextWrite;
+    this.failNextWrite = undefined;
+    if (failure === "before") throw new Error("injected process termination before state write");
+    this.values.set(name, failure === "torn" ? source.slice(0, -1) : source);
+  }
+  clone(): Files {
+    const copy = new Files();
+    for (const [name, source] of this.values) copy.values.set(name, source);
+    return copy;
+  }
 }
 
 describe("atomic repository state transaction", () => {
@@ -68,13 +89,16 @@ describe("atomic repository state transaction", () => {
       previousCommitHash: frozen.commitHash,
       dirtyIntents: { "a.md": { generation: 1 } },
       durableOutbox: [{ state: "queued", captureGeneration: 1 }],
+      localPredecessors: { "vault:a.md": `${frozen.commitHash}:0:0` },
     });
     await beginDurableOutboxPublicationTransaction(store, frozen.id);
-    const confirmed = await confirmDurableOutboxPublishedTransaction(store, frozen.id, frozen.commitHash, {});
+    const confirmed = await confirmDurableOutboxPublishedTransaction(store, frozen.id, frozen.commitHash, verifiedPatch(frozen));
     expect(confirmed.payload).toMatchObject({
       dirtyIntents: { "a.md": { generation: 1 } },
       durableOutbox: [{ state: "published" }],
       publishedReconciles: [{ outboxId: frozen.id, state: "pending", publishedVersionId: `${frozen.commitHash}:0:0` }],
+      sparseSeenCommits: { [frozen.commitHash]: { hash: frozen.commitHash, sequence: frozen.sequence } },
+      verifiedLocalPublications: { [`${frozen.commitHash}:0:0`]: { outboxId: frozen.id, registerKey: "vault:a.md" } },
     });
   });
 
@@ -84,11 +108,239 @@ describe("atomic repository state transaction", () => {
     await expect(freezeDurableOutboxStateTransaction(store, outbox("b".repeat(64), "00000000000000000002", null))).rejects.toThrow("writer cursor");
     await expect(store.load()).resolves.toMatchObject({ generation: 1, payload: { nextSequence: "00000000000000000001", durableOutbox: [] } });
   });
+
+  it("atomically rebinds a verified route and retags frozen Outbox metadata without changing Commit bytes", async () => {
+    const store = new DurableStateStore<StateJsonValue>(new Files());
+    await writeRepositoryStateTransaction(store, payload("00000000000000000001", 1));
+    const frozen = outbox("b".repeat(64), "00000000000000000001", null);
+    await freezeDurableOutboxStateTransaction(store, frozen);
+    const candidate = createRepositoryLocator({ endpoint: "https://route-two.example.com", region: "next", bucket: "vault", forcePathStyle: false, prefix: "team" });
+    const rebound = await rebindVerifiedRepositoryRouteStateTransaction(store, candidate);
+    const nextFingerprint = repositoryFingerprint(candidate, repositoryId, descriptorHash);
+    expect(rebound.payload).toMatchObject({
+      repositoryFingerprint: nextFingerprint,
+      locator: candidate,
+      durableOutbox: [{ id: frozen.id, commitHash: frozen.commitHash, repositoryFingerprint: nextFingerprint }],
+    });
+    const wrongBucket = createRepositoryLocator({ endpoint: "https://route-two.example.com", region: "next", bucket: "other", forcePathStyle: false, prefix: "team" });
+    await expect(rebindVerifiedRepositoryRouteStateTransaction(store, wrongBucket)).rejects.toThrow("reattachment");
+  });
+
+  it("persists LocalConcurrent selection state and clears it only after publication", async () => {
+    const store = new DurableStateStore<StateJsonValue>(new Files());
+    await writeRepositoryStateTransaction(store, payload("00000000000000000001", 1));
+    const record = {
+      path: "a.md",
+      generation: 2,
+      basisHeads: ["old"],
+      editorValue: { kind: "put" as const, blob: { hash: "a".repeat(64), size: 1 }, stagedPath: "staged/editor" },
+      externalValue: { kind: "put" as const, blob: { hash: "b".repeat(64), size: 1 }, stagedPath: "staged/external" },
+    };
+    const selected = selectLocalConcurrentRecordResolution({ record, choice: "editor" });
+    await persistLocalConcurrentRecordTransaction(store, selected);
+    await expect(clearPublishedLocalConcurrentRecordTransaction(store, record.path)).rejects.toThrow("not published");
+    await persistLocalConcurrentRecordTransaction(store, markLocalConcurrentSelectionPublished(selected));
+    await expect(clearPublishedLocalConcurrentRecordTransaction(store, record.path)).rejects.toThrow("unretained recovery content");
+    await persistRecoveryRecordTransaction(store, createRecoveryRecord({
+      id: "local-concurrent-external",
+      contentRef: "staged/external",
+      logicalPath: record.path,
+      source: "local-concurrent",
+      hash: "b".repeat(64),
+      size: 1,
+      capturedAt: 1,
+    }));
+    const cleared = await clearPublishedLocalConcurrentRecordTransaction(store, record.path);
+    expect(cleared.payload).toMatchObject({ localConcurrentRecords: {} });
+  });
+
+  it("adopts only a matching published value and binds a different next generation to the frozen Version ID", async () => {
+    const adoptedStore = new DurableStateStore<StateJsonValue>(new Files());
+    await writeRepositoryStateTransaction(adoptedStore, payload("00000000000000000001", 1));
+    const adoptedOutbox = outbox("b".repeat(64), "00000000000000000001", null);
+    await freezeDurableOutboxStateTransaction(adoptedStore, adoptedOutbox);
+    await beginDurableOutboxPublicationTransaction(adoptedStore, adoptedOutbox.id);
+    await confirmDurableOutboxPublishedTransaction(adoptedStore, adoptedOutbox.id, adoptedOutbox.commitHash, verifiedPatch(adoptedOutbox));
+    const adopted = await reconcilePublishedMutationStateTransaction(adoptedStore, {
+      outboxId: adoptedOutbox.id,
+      registerKey: "vault:a.md",
+      projectionKey: "a.md",
+      observation: { kind: "put", hash: "c".repeat(64), size: 1, stagedPath: `staged/${"c".repeat(64)}` },
+    });
+    expect(adopted.payload).toMatchObject({
+      dirtyIntents: {},
+      projections: { "a.md": { projectedHeads: [`${adoptedOutbox.commitHash}:0:0`], projectedValueHash: "c".repeat(64) } },
+      publishedReconciles: [{ state: "adopted" }],
+    });
+
+    const changedStore = new DurableStateStore<StateJsonValue>(new Files());
+    await writeRepositoryStateTransaction(changedStore, payload("00000000000000000001", 1));
+    const changedOutbox = outbox("d".repeat(64), "00000000000000000001", null);
+    await freezeDurableOutboxStateTransaction(changedStore, changedOutbox);
+    await beginDurableOutboxPublicationTransaction(changedStore, changedOutbox.id);
+    await confirmDurableOutboxPublishedTransaction(changedStore, changedOutbox.id, changedOutbox.commitHash, verifiedPatch(changedOutbox));
+    await writeRepositoryStateTransaction(changedStore, {
+      dirtyIntents: { "a.md": { path: "a.md", queueId: "a.md", generation: 2, basisHeads: ["new-remote-head"], awaitingLocalWrite: true } },
+      observedRegisters: { "vault:a.md": { key: "vault:a.md", heads: ["new-remote-head"], pending: [], invalid: [], disposition: "resolved", valueHash: "f".repeat(64) } },
+    });
+    const changed = await reconcilePublishedMutationStateTransaction(changedStore, {
+      outboxId: changedOutbox.id,
+      registerKey: "vault:a.md",
+      projectionKey: "a.md",
+      observation: { kind: "put", hash: "e".repeat(64), size: 2, stagedPath: `staged/${"e".repeat(64)}` },
+    });
+    expect(changed.payload).toMatchObject({
+      dirtyIntents: { "a.md": { generation: 2, basisHeads: [], localPredecessorVersion: `${changedOutbox.commitHash}:0:0` } },
+      publishedReconciles: [{ state: "next-generation" }],
+    });
+  });
+
+  it("keeps an unknown publication observation pending and persists explicit recovery cleanup transitions", async () => {
+    const store = new DurableStateStore<StateJsonValue>(new Files());
+    await writeRepositoryStateTransaction(store, payload("00000000000000000001", 1));
+    const frozen = outbox("b".repeat(64), "00000000000000000001", null);
+    await freezeDurableOutboxStateTransaction(store, frozen);
+    await beginDurableOutboxPublicationTransaction(store, frozen.id);
+    await confirmDurableOutboxPublishedTransaction(store, frozen.id, frozen.commitHash, verifiedPatch(frozen));
+    const pending = await reconcilePublishedMutationStateTransaction(store, {
+      outboxId: frozen.id,
+      registerKey: "vault:a.md",
+      projectionKey: "a.md",
+      observation: { kind: "unknown" },
+    });
+    expect(pending.payload).toMatchObject({ publishedReconciles: [{ state: "pending" }], dirtyIntents: { "a.md": { generation: 1 } } });
+
+    const recovery = createRecoveryRecord({ id: "r", contentRef: "recovery/r", logicalPath: "a.md", source: "apply-before-image", hash: "a".repeat(64), size: 1, capturedAt: 1 });
+    await persistRecoveryRecordTransaction(store, recovery);
+    await expect(persistRecoveryRecordTransaction(store, { ...recovery, cleanupState: "cleaned" })).rejects.toThrow("transition");
+    const requested = requestRecoveryCleanup(recovery, { explicit: true, reviewedHash: recovery.lastStableHash, reviewedSize: recovery.lastStableSize });
+    await persistRecoveryRecordTransaction(store, requested);
+    await persistRecoveryRecordTransaction(store, { ...requested, cleanupState: "cleaned" });
+  });
+
+  it("persists a root-put deletion while waiting and freezes it only with the verified put Version ID", async () => {
+    const files = new Files();
+    let store = new DurableStateStore<StateJsonValue>(files);
+    await writeRepositoryStateTransaction(store, payload("00000000000000000001", 1));
+    const rootPut = outbox("b".repeat(64), "00000000000000000001", null);
+    await freezeDurableOutboxStateTransaction(store, rootPut);
+    await queueDeleteAfterFrozenRootPutTransaction(store, {
+      registerKey: "vault:a.md",
+      projectionKey: "a.md",
+      rootOutboxId: rootPut.id,
+      generation: 2,
+      evidence: { source: "vault-event", generation: 2 },
+    });
+    store = new DurableStateStore<StateJsonValue>(files);
+    const deletion = outbox("d".repeat(64), "00000000000000000002", rootPut.commitHash, {
+      kind: "delete",
+      parents: [`${rootPut.commitHash}:0:0`],
+      valueHash: null,
+      stagedContentRef: undefined,
+    });
+    await expect(freezeDurableOutboxStateTransaction(store, deletion)).rejects.toThrow("before its root put is verified");
+    await beginDurableOutboxPublicationTransaction(store, rootPut.id);
+    await confirmDurableOutboxPublishedTransaction(store, rootPut.id, rootPut.commitHash, verifiedPatch(rootPut));
+    const frozenDelete = await freezeDurableOutboxStateTransaction(store, deletion);
+    expect(frozenDelete.payload).toMatchObject({ waitingRootDeletes: {}, durableOutbox: [{ state: "published" }, { mutations: [{ kind: "delete", parents: [`${rootPut.commitHash}:0:0`] }] }] });
+    await beginDurableOutboxPublicationTransaction(store, deletion.id);
+    const publishedDelete = await confirmDurableOutboxPublishedTransaction(store, deletion.id, deletion.commitHash, verifiedPatch(deletion));
+    expect(publishedDelete.payload).toMatchObject({
+      verifiedLocalPublications: { [`${deletion.commitHash}:0:0`]: { registerKey: "vault:a.md", commitHash: deletion.commitHash } },
+    });
+  });
+
+  it("stops a forked writer from freezing new work, drains verified bytes, then rotates without losing predecessors", async () => {
+    const store = new DurableStateStore<StateJsonValue>(new Files());
+    await writeRepositoryStateTransaction(store, payload("00000000000000000001", 1));
+    const first = outbox("b".repeat(64), "00000000000000000001", null);
+    const second = outbox("d".repeat(64), "00000000000000000002", first.commitHash);
+    await freezeDurableOutboxStateTransaction(store, first);
+    await freezeDurableOutboxStateTransaction(store, second);
+    const forked = await markDurableWriterForkTransaction(store, writerId, new Set([first.id, second.id]));
+    expect(forked.payload).toMatchObject({ writerForkState: { writerId, disposition: "drain" } });
+    expect((forked.payload as Record<string, StateJsonValue>).durableOutbox).toEqual(expect.arrayContaining([
+      expect.objectContaining({ writerDisposition: "forked-draining" }),
+    ]));
+    await expect(freezeDurableOutboxStateTransaction(store, outbox("e".repeat(64), "00000000000000000003", second.commitHash))).rejects.toThrow("forked writer");
+    for (const entry of [first, second]) {
+      await beginDurableOutboxPublicationTransaction(store, entry.id);
+      await confirmDurableOutboxPublishedTransaction(store, entry.id, entry.commitHash, verifiedPatch(entry));
+    }
+    const nextWriterId = "123e4567-e89b-42d3-a456-426614174002";
+    const rotated = await rotateDrainedDurableWriterTransaction(store, nextWriterId);
+    expect(rotated.payload).toMatchObject({
+      writerId: nextWriterId,
+      nextSequence: "00000000000000000001",
+      previousCommitHash: null,
+      localPredecessors: { "vault:a.md": `${second.commitHash}:0:0` },
+    });
+  });
+
+  it("recovers or safely stops after process termination at every Task 5 state boundary", async () => {
+    const files = new Files();
+    await writeRepositoryStateTransaction(new DurableStateStore<StateJsonValue>(files), payload("00000000000000000001", 1));
+    const rootPut = outbox("b".repeat(64), "00000000000000000001", null);
+    const deletion = outbox("d".repeat(64), "00000000000000000002", rootPut.commitHash, {
+      kind: "delete",
+      parents: [`${rootPut.commitHash}:0:0`],
+      valueHash: null,
+      stagedContentRef: undefined,
+    });
+
+    await auditCrashBoundary(files, (store) => freezeDurableOutboxStateTransaction(store, rootPut));
+    await auditCrashBoundary(files, (store) => queueDeleteAfterFrozenRootPutTransaction(store, {
+      registerKey: "vault:a.md",
+      projectionKey: "a.md",
+      rootOutboxId: rootPut.id,
+      generation: 2,
+      evidence: { source: "vault-event", generation: 2 },
+    }));
+    await auditCrashBoundary(files, (store) => beginDurableOutboxPublicationTransaction(store, rootPut.id));
+    await auditCrashBoundary(files, (store) => confirmDurableOutboxPublishedTransaction(store, rootPut.id, rootPut.commitHash, verifiedPatch(rootPut)));
+    await auditCrashBoundary(files, (store) => freezeDurableOutboxStateTransaction(store, deletion));
+    await auditCrashBoundary(files, (store) => beginDurableOutboxPublicationTransaction(store, deletion.id));
+    await auditCrashBoundary(files, (store) => confirmDurableOutboxPublishedTransaction(store, deletion.id, deletion.commitHash, verifiedPatch(deletion)));
+    await auditCrashBoundary(files, (store) => reconcilePublishedMutationStateTransaction(store, {
+      outboxId: deletion.id,
+      registerKey: "vault:a.md",
+      projectionKey: "a.md",
+      observation: { kind: "delete", evidence: { source: "stable-scan", generation: 2 } },
+    }));
+
+    const concurrent = {
+      path: "b.md",
+      generation: 2,
+      basisHeads: ["old"],
+      editorValue: { kind: "put" as const, blob: { hash: "a".repeat(64), size: 1 }, stagedPath: "staged/editor" },
+      externalValue: { kind: "put" as const, blob: { hash: "e".repeat(64), size: 1 }, stagedPath: "staged/external" },
+    };
+    const selected = selectLocalConcurrentRecordResolution({ record: concurrent, choice: "editor" });
+    await auditCrashBoundary(files, (store) => persistLocalConcurrentRecordTransaction(store, selected));
+    const recovery = createRecoveryRecord({ id: "external", contentRef: "staged/external", logicalPath: "b.md", source: "local-concurrent", hash: "e".repeat(64), size: 1, capturedAt: 1 });
+    await auditCrashBoundary(files, (store) => persistRecoveryRecordTransaction(store, recovery));
+    await auditCrashBoundary(files, (store) => persistLocalConcurrentRecordTransaction(store, markLocalConcurrentSelectionPublished(selected)));
+    await auditCrashBoundary(files, (store) => clearPublishedLocalConcurrentRecordTransaction(store, concurrent.path));
+    await auditCrashBoundary(files, (store) => markDurableWriterForkTransaction(store, writerId, new Set([rootPut.id, deletion.id])));
+    await auditCrashBoundary(files, (store) => rotateDrainedDurableWriterTransaction(store, "123e4567-e89b-42d3-a456-426614174002"));
+    const candidate = createRepositoryLocator({ endpoint: "https://route-two.example.com", region: "next", bucket: "vault", forcePathStyle: false, prefix: "team" });
+    await auditCrashBoundary(files, (store) => rebindVerifiedRepositoryRouteStateTransaction(store, candidate));
+  });
 });
 
-function outbox(commitHash: string, sequence: string, previousCommitHash: string | null): DurableOutboxEntry {
+function outbox(
+  commitHash: string,
+  sequence: string,
+  previousCommitHash: string | null,
+  mutation: Partial<DurableOutboxEntry["mutations"][number]> = {},
+): DurableOutboxEntry {
   return {
     id: commitHash,
+    repositoryFingerprint: repositoryFingerprint(
+      createRepositoryLocator({ endpoint: "https://s3.example.com", region: "test", bucket: "vault", forcePathStyle: true, prefix: "team" }),
+      "123e4567-e89b-42d3-a456-426614174000",
+      "a".repeat(64),
+    ),
     writerId: "123e4567-e89b-42d3-a456-426614174001",
     sequence,
     previousCommitHash,
@@ -97,6 +349,45 @@ function outbox(commitHash: string, sequence: string, previousCommitHash: string
     state: "queued",
     writerDisposition: "active",
     objects: [{ kind: "commit", key: "commit", hash: commitHash, size: 1, contentRef: `staged/${commitHash}` }],
-    mutations: [{ registerKey: "vault:a.md", versionId: `${commitHash}:0:0`, valueHash: "c".repeat(64), stagedContentRef: `staged/${"c".repeat(64)}` }],
+    mutations: [{
+      registerKey: "vault:a.md",
+      versionId: `${commitHash}:0:0`,
+      kind: "put",
+      parents: [],
+      valueHash: "c".repeat(64),
+      stagedContentRef: `staged/${"c".repeat(64)}`,
+      ...mutation,
+    }],
   };
+}
+
+function verifiedPatch(entry: DurableOutboxEntry): { observedRegisters: StateJsonValue; pendingApply: StateJsonValue } {
+  const mutation = entry.mutations[0];
+  return {
+    observedRegisters: {
+      [mutation.registerKey]: {
+        key: mutation.registerKey,
+        heads: [mutation.versionId],
+        pending: [],
+        invalid: [],
+        disposition: "resolved",
+        valueHash: mutation.valueHash,
+      },
+    },
+    pendingApply: {},
+  };
+}
+
+async function auditCrashBoundary(
+  files: Files,
+  operation: (store: DurableStateStore<StateJsonValue>) => Promise<unknown>,
+): Promise<void> {
+  const before = await new DurableStateStore<StateJsonValue>(files).load();
+  for (const failure of ["before", "torn"] as const) {
+    const crashedFiles = files.clone();
+    crashedFiles.failNextWrite = failure;
+    await expect(operation(new DurableStateStore<StateJsonValue>(crashedFiles))).rejects.toThrow();
+    await expect(new DurableStateStore<StateJsonValue>(crashedFiles).load()).resolves.toEqual(before);
+  }
+  await operation(new DurableStateStore<StateJsonValue>(files));
 }

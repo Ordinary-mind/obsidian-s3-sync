@@ -47,6 +47,10 @@ export class V1RepositoryService {
   ): Promise<void> {
     assertDescriptorDirectoryBinding(binding, await this.requireDescriptor(repositoryId, descriptorHash));
   }
+  async verifyFrontierAnchor(repositoryId: string, descriptorHash: string, anchor: CommitFrontierAnchor): Promise<void> {
+    await this.requireDescriptor(repositoryId, descriptorHash);
+    await verifyWriterFrontiers(this.store(), repositoryId, descriptorHash, { [anchor.writerId]: [anchor] });
+  }
   async publishVaultPut(input: {
     repositoryId: string;
     descriptorHash: string;

@@ -23,23 +23,55 @@ import { createRepositoryLocator } from "../core/locator";
 import { assertPersistedRepositoryBinding, createPersistedRepositoryBinding } from "../core/repository-binding";
 import { advanceWriterFrontiers, type CommitFrontierAnchor } from "../core/commit-frontier";
 import { DurableStateStore, type StateJsonValue } from "../core/durable-state";
-import { openRepositoryStateFiles } from "../core/local-state-files";
+import { openRepositoryStateFiles, scanResidualRepositoryStateRoots } from "../core/local-state-files";
 import { repositoryDurablePayload } from "../core/repository-durable-payload";
-import { validateRepositoryStatePayload, writeRepositoryStateTransaction } from "../core/repository-state-transaction";
+import {
+  rebindVerifiedRepositoryRouteStateTransaction,
+  validateRepositoryStatePayload,
+  writeRepositoryStateTransaction,
+} from "../core/repository-state-transaction";
 import { advanceIngestedCommitState } from "../core/ingested-state";
 import { mergeVerifiedRegisterObservations, type VerifiedRegisterObservation } from "../core/remote-merge-state";
-import { assertPluginDataContainsNoOperationalState, type PersistedRepositorySelection } from "../core/plugin-data";
-import type { DurableOutboxEntry } from "../core/durable-outbox";
+import {
+  assertPluginDataContainsNoOperationalState,
+  effectivePersistedRepositoryPrefix,
+  type CredentialStorage,
+  type PersistedRepositorySelection,
+} from "../core/plugin-data";
+import { publishedReconcileBlocksAutomaticApply, type DurableOutboxEntry } from "../core/durable-outbox";
+import { localConcurrentRecordBlocksAutomaticWork } from "../core/local-concurrent-resolution";
 import { SyncDashboardModal } from "./sync-dashboard-modal";
 import { buildRedactedDiagnosticBundle } from "../core/diagnostic-bundle";
 import { diagnosticCategory } from "../core/diagnostics";
 import { repositoryHealthLabel, type OperationalStatus, type PathDecisionRecord } from "../core/operational-status";
+import { applyVerifiedRepositoryRouteChange } from "../core/repository-reconfigure";
+
+type PersistedPreferences = Pick<S3SyncSettings,
+  | "autoSync"
+  | "syncOnStartup"
+  | "syncOnEvents"
+  | "remotePolling"
+  | "pollIntervalMinutes"
+  | "debounceSeconds"
+  | "ignoredPatterns"
+  | "configSyncEnabled"
+  | "configProfile"> & { dashboardExpanded?: boolean };
+
+type ConnectionSettingsPatch = Partial<Pick<S3SyncSettings, "endpoint" | "region" | "bucket" | "prefix" | "forcePathStyle">>;
 
 interface PersistedPluginData {
   schemaVersion?: 2;
+  connection?: Partial<{
+    endpoint: string;
+    region: string;
+    bucket: string;
+    normalizedPrefix: string;
+    forcePathStyle: boolean;
+    credentials: CredentialStorage;
+  }>;
+  preferences?: Partial<PersistedPreferences>;
   settings?: Partial<S3SyncSettings>;
   repositorySelection?: PersistedRepositorySelection & { prefix: string };
-  preferences?: { dashboardExpanded?: boolean };
   // 仅用于从旧版本一次性迁移，v2 不再写入该字段。
   syncData?: Partial<S3SyncData>;
 }
@@ -166,6 +198,93 @@ export default class S3SyncPlugin extends Plugin {
     await this.savePluginData();
   }
 
+  async updateConnectionSettings(patch: ConnectionSettingsPatch): Promise<void> {
+    const candidateSettings = { ...this.settings, ...patch };
+    const state = this.data.v1;
+    if (!state) {
+      this.settings = candidateSettings;
+      await this.savePluginData();
+      return;
+    }
+
+    const requestedPrefix = patch.prefix === undefined
+      ? state.locator.normalizedPrefix
+      : resolveEffectivePrefix(candidateSettings.prefix, this.app.vault.getName());
+    if (candidateSettings.bucket !== state.locator.bucket || requestedPrefix !== state.locator.normalizedPrefix) {
+      this.stopSchedulingAndFlush();
+      await this.causalStatePersistence;
+      this.settings = { ...candidateSettings, autoSync: false };
+      this.data.v1ReattachRequired = true;
+      this.updateOperationalStatus({
+        repositoryIdentityValid: false,
+        recoveryRequired: true,
+        lastError: { category: "repository-identity", message: "Bucket 或 Prefix 已变化；需要非破坏性重新接入。" },
+      });
+      await this.savePluginData();
+      return;
+    }
+
+    const routeChanged = candidateSettings.endpoint !== state.locator.endpoint
+      || candidateSettings.region !== state.locator.region
+      || candidateSettings.forcePathStyle !== state.locator.forcePathStyle;
+    if (!routeChanged) {
+      this.settings = candidateSettings;
+      await this.savePluginData();
+      return;
+    }
+
+    const allowLoopbackHttp = candidateSettings.endpoint.startsWith("http://127.0.0.1")
+      || candidateSettings.endpoint.startsWith("http://localhost");
+    const candidateLocator = createRepositoryLocator({
+      endpoint: candidateSettings.endpoint,
+      region: candidateSettings.region,
+      bucket: candidateSettings.bucket,
+      forcePathStyle: candidateSettings.forcePathStyle,
+      prefix: state.locator.normalizedPrefix,
+    }, allowLoopbackHttp);
+    const candidateService = new V1RepositoryService(candidateSettings, state.locator.normalizedPrefix);
+    const store = await this.v1DurableStore(state);
+    const updated = await applyVerifiedRepositoryRouteChange({
+      current: {
+        repositoryId: state.repositoryId,
+        descriptorHash: state.descriptorHash,
+        repositoryFingerprint: state.repositoryFingerprint,
+        locator: state.locator,
+        writerFrontiers: state.writerFrontiers,
+      },
+      candidateLocator,
+      coordinator: {
+        stopAndFlush: async () => {
+          this.stopSchedulingAndFlush();
+          await this.causalStatePersistence;
+        },
+      },
+      verifier: {
+        verifyDescriptor: async () => candidateService.assertDescriptorBinding(
+          state.repositoryId,
+          state.descriptorHash,
+          { configDir: state.configDir, historicalConfigDirs: state.historicalConfigDirs },
+        ),
+        verifyCommitAnchor: async (_locator, repositoryId, descriptorHash, anchor) => {
+          await candidateService.verifyFrontierAnchor(repositoryId, descriptorHash, anchor);
+        },
+      },
+      persistAtomically: async (binding) => {
+        const rebound = await rebindVerifiedRepositoryRouteStateTransaction(store, binding.locator);
+        this.data.v1DurableOutbox = clonePayload<DurableOutboxEntry[]>(
+          (rebound.payload as Record<string, StateJsonValue>).durableOutbox,
+          [],
+        );
+      },
+    });
+    this.settings = candidateSettings;
+    this.data.v1 = { ...state, locator: updated.locator, repositoryFingerprint: updated.repositoryFingerprint };
+    this.v1DurableState = { fingerprint: updated.repositoryFingerprint, store };
+    this.data.v1ReattachRequired = false;
+    this.updateOperationalStatus({ repositoryIdentityValid: true, lastError: undefined });
+    await this.savePluginData();
+  }
+
   async saveSyncData(): Promise<void> {
     await this.savePluginData();
     this.updateStatus();
@@ -191,7 +310,10 @@ export default class S3SyncPlugin extends Plugin {
   }
 
   getEffectivePrefix(): string {
-    return resolveEffectivePrefix(this.settings.prefix, this.app.vault.getName());
+    return effectivePersistedRepositoryPrefix(
+      this.data.v1?.prefix,
+      resolveEffectivePrefix(this.settings.prefix, this.app.vault.getName()),
+    );
   }
 
   getOperationalStatus(): OperationalStatus {
@@ -318,7 +440,10 @@ export default class S3SyncPlugin extends Plugin {
           repositories[0].configDir,
           repositories[0].historicalConfigDirs,
         );
-        this.data.v1 = existing?.repositoryFingerprint === binding.repositoryFingerprint
+        if (existing && existing.repositoryFingerprint !== binding.repositoryFingerprint) {
+          throw new Error("发现的仓库与当前绑定不同；请先停止当前仓库并执行非破坏性重新接入");
+        }
+        this.data.v1 = existing
           ? { ...existing, ...binding, prefix, writerFrontiers: existing.writerFrontiers ?? {} }
           : {
             ...binding,
@@ -358,6 +483,7 @@ export default class S3SyncPlugin extends Plugin {
 
   private async createV1Repository(): Promise<void> {
     try {
+      if (this.data.v1) throw new Error("已有仓库绑定；创建新仓库前必须先执行非破坏性重新接入");
       const result = await new V1RepositoryService(this.settings, this.getEffectivePrefix()).createRepository(
         crypto.randomUUID(),
         this.app.vault.configDir,
@@ -389,6 +515,23 @@ export default class S3SyncPlugin extends Plugin {
       const prefix = this.getEffectivePrefix();
       const repositories = await new V1RepositoryService(this.settings, prefix).discover();
       if (repositories.length !== 1) throw new Error(`expected exactly one repository, found ${repositories.length}`);
+      if (this.data.v1) {
+        const candidate = createPersistedRepositoryBinding(
+          this.currentV1Locator(prefix),
+          repositories[0].repositoryId,
+          repositories[0].descriptorHash,
+          repositories[0].configDir,
+          repositories[0].historicalConfigDirs,
+        );
+        if (candidate.repositoryFingerprint !== this.data.v1.repositoryFingerprint) {
+          this.stopSchedulingAndFlush();
+          await this.causalStatePersistence;
+          throw new Error("不能用新仓库覆盖当前因果状态；请执行非破坏性重新接入");
+        }
+        await this.assertV1RepositoryBinding(this.data.v1);
+        new Notice(`S3 Sync v1 repository already selected: ${repositories[0].repositoryId}`);
+        return;
+      }
       this.data.v1 = {
         ...createPersistedRepositoryBinding(
           this.currentV1Locator(prefix),
@@ -420,6 +563,13 @@ export default class S3SyncPlugin extends Plugin {
       await this.assertV1RepositoryBinding(state);
       const file = this.app.workspace.getActiveFile();
       if (!file) throw new Error("no active file to publish");
+      const registerKey = `vault:${file.path}`;
+      if (localConcurrentRecordBlocksAutomaticWork(this.data.v1LocalConcurrentRecords[file.path])) {
+        throw new Error("LocalConcurrentRecord must be resolved before publishing this path");
+      }
+      if (publishedReconcileBlocksAutomaticApply(this.data.v1PublishedReconciles, registerKey)) {
+        throw new Error("published Mutation still requires local reconciliation");
+      }
       const dirtyIntent = this.data.v1DirtyIntents[file.path];
       const vaultEvent = latestVaultEvent(this.data.v1VaultEvents, file.path);
       const capture = await captureStableVaultFile(this.app.vault, file.path);
@@ -500,7 +650,13 @@ export default class S3SyncPlugin extends Plugin {
       let skipped = 0;
       let conflicts = 0;
       for (const remote of files) {
+        const registerKey = `vault:${remote.path}`;
         if (!mayApplyRemoteWithEditorIntent(this.data.v1DirtyIntents[remote.path]) || latestVaultEvent(this.data.v1VaultEvents, remote.path)) {
+          skipped += 1;
+          continue;
+        }
+        if (localConcurrentRecordBlocksAutomaticWork(this.data.v1LocalConcurrentRecords[remote.path])
+          || publishedReconcileBlocksAutomaticApply(this.data.v1PublishedReconciles, registerKey)) {
           skipped += 1;
           continue;
         }
@@ -889,12 +1045,26 @@ export default class S3SyncPlugin extends Plugin {
 
   private async loadPluginData(): Promise<void> {
     const persisted = (await this.loadData()) as PersistedPluginData | null;
+    const credentials = persisted?.connection?.credentials;
+    const connectionSettings: Partial<S3SyncSettings> = {};
+    if (typeof persisted?.connection?.endpoint === "string") connectionSettings.endpoint = persisted.connection.endpoint;
+    if (typeof persisted?.connection?.region === "string") connectionSettings.region = persisted.connection.region;
+    if (typeof persisted?.connection?.bucket === "string") connectionSettings.bucket = persisted.connection.bucket;
+    if (typeof persisted?.connection?.normalizedPrefix === "string") connectionSettings.prefix = persisted.connection.normalizedPrefix;
+    if (typeof persisted?.connection?.forcePathStyle === "boolean") connectionSettings.forcePathStyle = persisted.connection.forcePathStyle;
+    if (credentials?.kind === "plaintext") {
+      connectionSettings.accessKeyId = credentials.accessKeyId;
+      connectionSettings.secretAccessKey = credentials.secretAccessKey;
+    }
     this.settings = {
       ...DEFAULT_SETTINGS,
       ...(persisted?.settings ?? {}),
+      ...connectionSettings,
+      ...(persisted?.preferences ?? {}),
       configProfile: {
         ...DEFAULT_SETTINGS.configProfile,
         ...(persisted?.settings?.configProfile ?? {}),
+        ...(persisted?.preferences?.configProfile ?? {}),
       },
     };
 
@@ -995,6 +1165,33 @@ export default class S3SyncPlugin extends Plugin {
         lastError: { category: "repository-identity", message: this.errorMessage(error) },
       };
     }
+    if (!this.data.v1) {
+      try {
+        const residual = await scanResidualRepositoryStateRoots(this.app.vault.adapter, this.app.vault.configDir);
+        if (residual.ownedRepositoryIds.length > 0 || residual.refusedRoots.length > 0) {
+          this.data.v1ReattachRequired = true;
+          this.data.v1OperationalStatus = {
+            ...this.data.v1OperationalStatus,
+            repositoryIdentityValid: false,
+            recoveryRequired: true,
+            lastError: {
+              category: "repository-identity",
+              message: residual.ownedRepositoryIds.length > 0
+                ? `检测到遗留仓库状态：${residual.ownedRepositoryIds.join(", ")}；需要重新接入。`
+                : "检测到无法验证所有权的本地状态根；已停止自动接入。",
+            },
+          };
+        }
+      } catch (error) {
+        this.data.v1ReattachRequired = true;
+        this.data.v1OperationalStatus = {
+          ...this.data.v1OperationalStatus,
+          repositoryIdentityValid: false,
+          recoveryRequired: true,
+          lastError: { category: "local-path", message: this.errorMessage(error) },
+        };
+      }
+    }
   }
 
   private async savePluginData(): Promise<void> {
@@ -1002,7 +1199,18 @@ export default class S3SyncPlugin extends Plugin {
     const state = this.data.v1;
     const envelope: PersistedPluginData = {
       schemaVersion: 2,
-      settings: this.settings,
+      connection: {
+        endpoint: this.settings.endpoint,
+        region: this.settings.region,
+        bucket: this.settings.bucket,
+        normalizedPrefix: this.settings.prefix,
+        forcePathStyle: this.settings.forcePathStyle,
+        credentials: {
+          kind: "plaintext",
+          accessKeyId: this.settings.accessKeyId,
+          secretAccessKey: this.settings.secretAccessKey,
+        },
+      },
       ...(state ? {
         repositorySelection: {
           prefix: state.prefix,
@@ -1014,7 +1222,17 @@ export default class S3SyncPlugin extends Plugin {
           historicalConfigDirs: [...state.historicalConfigDirs],
         },
       } : {}),
-      preferences: {},
+      preferences: {
+        autoSync: this.settings.autoSync,
+        syncOnStartup: this.settings.syncOnStartup,
+        syncOnEvents: this.settings.syncOnEvents,
+        remotePolling: this.settings.remotePolling,
+        pollIntervalMinutes: this.settings.pollIntervalMinutes,
+        debounceSeconds: this.settings.debounceSeconds,
+        ignoredPatterns: this.settings.ignoredPatterns,
+        configSyncEnabled: this.settings.configSyncEnabled,
+        configProfile: this.settings.configProfile,
+      },
     };
     assertPluginDataContainsNoOperationalState(envelope);
     await this.saveData(envelope);

@@ -265,52 +265,52 @@
 
 ### 状态存储
 
-- [ ] `data.json` 只保存连接设置、凭证或平台 secret provider 引用和 UI 偏好；无 secret provider 时明确提示本地明文风险。
-- [ ] 在实际 configDir 下建立固定 `.obsidian-s3-sync-local/<repositoryId>/` 状态根，全部暂存、Journal 和非冲突恢复文件都只能位于其下。
+- [x] `data.json` 只保存连接设置、凭证或平台 secret provider 引用和 UI 偏好；无 secret provider 时明确提示本地明文风险。
+- [x] 在实际 configDir 下建立固定 `.obsidian-s3-sync-local/<repositoryId>/` 状态根，全部暂存、Journal 和非冲突恢复文件都只能位于其下。
 - [x] 实现 schema 版本、state generation、校验和、双副本和单写入队列。
 - [x] 一个状态事务可原子更新 dirtyIntent、projection、writer sequence 和 Outbox 引用。
 - [x] 实现 RepositoryLocator、descriptor Hash 和每个 writer frontier branch-tip integrity anchors 持久化。
 - [x] 实现 ingested frontier、稀疏 seen commits、observedHeads、projectedHeads、projectedValue 和 pending apply。
-- [ ] 持久化 LocalConcurrentRecord、对应暂存引用和用户选择/合并状态；未解决时阻止该路径发布与远端应用。
-- [ ] 持久化每个已发布 Mutation 的 Version ID、暂存引用和 PublishedReconcile；该状态未解决前阻止相关寄存器远端应用。
-- [ ] 设置切换仓库时先停止协调器；旧仓库 Outbox 不得发送到新仓库。
-- [ ] endpoint/region/path-style 受控变更先停协调器并用候选连接对 descriptor 和全部 branch-tip anchors 执行 GET/Key/正文 Hash 重验，再原子更新 Locator；Bucket/Prefix/repositoryId/descriptor 变化进入重新接入，凭证轮换不重建因果状态。
+- [x] 持久化 LocalConcurrentRecord、对应暂存引用和用户选择/合并状态；未解决时阻止该路径发布与远端应用。
+- [x] 持久化每个已发布 Mutation 的 Version ID、暂存引用和 PublishedReconcile；该状态未解决前阻止相关寄存器远端应用。
+- [x] 设置切换仓库时先停止协调器；旧仓库 Outbox 不得发送到新仓库。
+- [x] endpoint/region/path-style 受控变更先停协调器并用候选连接对 descriptor 和全部 branch-tip anchors 执行 GET/Key/正文 Hash 重验，再原子更新 Locator；Bucket/Prefix/repositoryId/descriptor 变化进入重新接入，凭证轮换不重建因果状态。
 
 ### 本地内容暂存
 
 - [x] put 字节以 SHA-256 存入不可变本地暂存，写后重算 Hash。
-- [ ] 引用计数或可达性只用于暂存缓存清理，不能删除仍被 DirtyRecord、LocalConcurrentRecord、Outbox、PublishedReconcile、冲突草稿或 Journal 引用的内容；v1 的恢复文件即使解除引用也不自动删除。
-- [ ] 恢复记录持久化来源、路径、最近稳定 Hash/size 和 post-capture edit 标记；恢复文件只能由用户查看当前状态后显式清理。
+- [x] 引用计数或可达性只用于暂存缓存清理，不能删除仍被 DirtyRecord、LocalConcurrentRecord、Outbox、PublishedReconcile、冲突草稿或 Journal 引用的内容；v1 的恢复文件即使解除引用也不自动删除。
+- [x] 恢复记录持久化来源、路径、最近稳定 Hash/size 和 post-capture edit 标记；恢复文件只能由用户查看当前状态后显式清理。
 - [x] 大文件暂存采用流式 I/O，并在空间不足前给出预估和明确错误。
-- [ ] 插件更新不能自动删除状态根；卸载后的重新安装必须检测遗留状态或进入重新接入。
+- [x] 插件更新不能自动删除状态根；卸载后的重新安装必须检测遗留状态或进入重新接入。
 
 ### Outbox 状态机
 
-- [ ] 创建 Outbox 时冻结 Blob 引用、Tree/Chunk/Commit 规范字节和 Commit Hash。
-- [ ] sequence、previousCommitHash、Outbox 和捕获 generation 在一个状态事务中持久化。
-- [ ] 每个 writer 只允许一个 publishing Outbox；其余 FIFO 排队。
-- [ ] 已分配 sequence 不允许跳过、复用或替换 Commit 内容。
-- [ ] 重启后继续同一 Commit；不生成语义相同但 ID 不同的替代提交。
-- [ ] Commit 发布确认后先事务性把本机 Commit 纳入 verified frontier/observedHeads、推进 writer 链并创建逐 Mutation PublishedReconcile，不能仅凭 generation 未变清理 DirtyRecord。
-- [ ] Vault 重新稳定 Hash/确认缺失、Config 重新完整构建 Tree 后，只有结果等于发布值且无新 dirtyIntent 才更新 projection 并清理。
-- [ ] 结果不同则事务性创建/保留下一 generation 并只继承 published Version ID；结果 unknown 则保持 reconcile 状态和暂存引用。
-- [ ] 后续 generation 在前一 Outbox 冻结时即持久化 localPredecessorVersion；发布确认不得再重算或替换它。
-- [ ] 没有 projectedHeads 的冻结根 put 被本地删除时仍先发布原 put；delete Outbox 等待其验证发布，且 parents 精确等于该 put 的单一 Version ID，绝不抵消两代或生成根墓碑。
-- [ ] writer 分叉后旧身份停止冻结新 Commit；可验证的既有 Outbox 按原 FIFO/字节排空后换新 writerId，无法验证的链进入 recovery-required，绝不改写或自动复制冻结提交。
+- [x] 创建 Outbox 时冻结 Blob 引用、Tree/Chunk/Commit 规范字节和 Commit Hash。
+- [x] sequence、previousCommitHash、Outbox 和捕获 generation 在一个状态事务中持久化。
+- [x] 每个 writer 只允许一个 publishing Outbox；其余 FIFO 排队。
+- [x] 已分配 sequence 不允许跳过、复用或替换 Commit 内容。
+- [x] 重启后继续同一 Commit；不生成语义相同但 ID 不同的替代提交。
+- [x] Commit 发布确认后先事务性把本机 Commit 纳入 verified frontier/observedHeads、推进 writer 链并创建逐 Mutation PublishedReconcile，不能仅凭 generation 未变清理 DirtyRecord。
+- [x] Vault 重新稳定 Hash/确认缺失、Config 重新完整构建 Tree 后，只有结果等于发布值且无新 dirtyIntent 才更新 projection 并清理。
+- [x] 结果不同则事务性创建/保留下一 generation 并只继承 published Version ID；结果 unknown 则保持 reconcile 状态和暂存引用。
+- [x] 后续 generation 在前一 Outbox 冻结时即持久化 localPredecessorVersion；发布确认不得再重算或替换它。
+- [x] 没有 projectedHeads 的冻结根 put 被本地删除时仍先发布原 put；delete Outbox 等待其验证发布，且 parents 精确等于该 put 的单一 Version ID，绝不抵消两代或生成根墓碑。
+- [x] writer 分叉后旧身份停止冻结新 Commit；可验证的既有 Outbox 按原 FIFO/字节排空后换新 writerId，无法验证的链进入 recovery-required，绝不改写或自动复制冻结提交。
 
 ### 状态丢失与恢复测试
 
-- [ ] 在每个状态落盘点终止进程，重启后继续或安全停止。
-- [ ] Outbox 冻结后活动文件修改、删除，仍可发布冻结字节。
-- [ ] 本地新建 put 冻结后删除并重启：put 仍按原字节发布，delete 发布前始终等待该 put，最终远端头是以该 put 为唯一 parent 的墓碑。
-- [ ] Outbox 冻结后出现新远端头且活动文件再次编辑时，下一 generation 的 parents 只含已冻结 localPredecessorVersion；重启结果相同。
-- [ ] 外部改写发生在稳定读取后、事件入队前时，发布后 Hash 守卫发现差异并创建后续 generation，不把活动字节错误标记为已投影。
-- [ ] 发布后本地读取失败或 config Tree 无法完整重建时保持 PublishedReconcile，重启不清 dirty、不重复发布旧 generation。
-- [ ] 当前与备份状态文件均损坏时，不自动清空或推断本地删除。
-- [ ] 有本地内容的状态丢失进入非破坏性接入；空本地才允许纯远端重建。
-- [ ] 错误仓库指纹、repositoryId、anchor、旧 schema 和重复 writer sequence 均有明确处理。
-- [ ] writer fork 前已冻结一个或多个 Outbox 时，只发布原字节并在排空后轮换身份；任一项不可验证时保持全部暂存且不跳 sequence。
-- [ ] Vault 改名不改变已持久化 Prefix 或 repositoryId。
+- [x] 在每个状态落盘点终止进程，重启后继续或安全停止。
+- [x] Outbox 冻结后活动文件修改、删除，仍可发布冻结字节。
+- [x] 本地新建 put 冻结后删除并重启：put 仍按原字节发布，delete 发布前始终等待该 put，最终远端头是以该 put 为唯一 parent 的墓碑。
+- [x] Outbox 冻结后出现新远端头且活动文件再次编辑时，下一 generation 的 parents 只含已冻结 localPredecessorVersion；重启结果相同。
+- [x] 外部改写发生在稳定读取后、事件入队前时，发布后 Hash 守卫发现差异并创建后续 generation，不把活动字节错误标记为已投影。
+- [x] 发布后本地读取失败或 config Tree 无法完整重建时保持 PublishedReconcile，重启不清 dirty、不重复发布旧 generation。
+- [x] 当前与备份状态文件均损坏时，不自动清空或推断本地删除。
+- [x] 有本地内容的状态丢失进入非破坏性接入；空本地才允许纯远端重建。
+- [x] 错误仓库指纹、repositoryId、anchor、旧 schema 和重复 writer sequence 均有明确处理。
+- [x] writer fork 前已冻结一个或多个 Outbox 时，只发布原字节并在排空后轮换身份；任一项不可验证时保持全部暂存且不跳 sequence。
+- [x] Vault 改名不改变已持久化 Prefix 或 repositoryId。
 
 验收门：任意重启都不会遗失已冻结待提交字节、复用 writer sequence 或把旧仓库状态用于新仓库。
 

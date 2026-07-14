@@ -75,6 +75,7 @@ export function requestRecoveryCleanup(
   record: RecoveryRecord,
   confirmation: { explicit: true; reviewedHash: string; reviewedSize: number },
 ): RecoveryRecord {
+  if (confirmation.explicit !== true) throw new Error("recovery cleanup requires explicit confirmation");
   assertHash(confirmation.reviewedHash);
   assertSize(confirmation.reviewedSize);
   if (confirmation.reviewedHash !== record.lastStableHash || confirmation.reviewedSize !== record.lastStableSize) {

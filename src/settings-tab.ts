@@ -1,13 +1,23 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting } from "obsidian";
+import type { S3SyncSettings } from "./types";
+import { plaintextCredentialWarning } from "../core/plugin-data";
 import type S3SyncPlugin from "./main";
 
 export class S3SyncSettingTab extends PluginSettingTab {
   private readonly plugin: S3SyncPlugin;
   private showAdvanced = false;
+  private connectionDraft: Pick<S3SyncSettings, "endpoint" | "region" | "bucket" | "prefix" | "forcePathStyle">;
 
   constructor(app: App, plugin: S3SyncPlugin) {
     super(app, plugin);
     this.plugin = plugin;
+    this.connectionDraft = {
+      endpoint: plugin.settings.endpoint,
+      region: plugin.settings.region,
+      bucket: plugin.settings.bucket,
+      prefix: plugin.settings.prefix,
+      forcePathStyle: plugin.settings.forcePathStyle,
+    };
   }
 
   display(): void {
@@ -17,14 +27,21 @@ export class S3SyncSettingTab extends PluginSettingTab {
     containerEl.createEl("h2", { text: "S3 Sync 设置" });
 
     new Setting(containerEl)
+      .setName("凭证存储")
+      .setDesc(plaintextCredentialWarning({
+        kind: "plaintext",
+        accessKeyId: this.plugin.settings.accessKeyId,
+        secretAccessKey: this.plugin.settings.secretAccessKey,
+      })!);
+
+    new Setting(containerEl)
       .setName("Endpoint")
       .setDesc("S3 Compatible Storage 地址，例如 https://s3.example.com。")
       .addText((text) => text
         .setPlaceholder("https://s3.example.com")
-        .setValue(this.plugin.settings.endpoint)
+        .setValue(this.connectionDraft.endpoint)
         .onChange(async (value) => {
-          this.plugin.settings.endpoint = value.trim();
-          await this.plugin.saveSettings();
+          this.connectionDraft.endpoint = value.trim();
         }));
 
     new Setting(containerEl)
@@ -32,20 +49,32 @@ export class S3SyncSettingTab extends PluginSettingTab {
       .setDesc("多数 S3 兼容服务可使用 us-east-1。")
       .addText((text) => text
         .setPlaceholder("us-east-1")
-        .setValue(this.plugin.settings.region)
+        .setValue(this.connectionDraft.region)
         .onChange(async (value) => {
-          this.plugin.settings.region = value.trim() || "us-east-1";
-          await this.plugin.saveSettings();
+          this.connectionDraft.region = value.trim() || "us-east-1";
         }));
 
     new Setting(containerEl)
       .setName("Bucket")
       .addText((text) => text
         .setPlaceholder("my-vault")
-        .setValue(this.plugin.settings.bucket)
+        .setValue(this.connectionDraft.bucket)
         .onChange(async (value) => {
-          this.plugin.settings.bucket = value.trim();
-          await this.plugin.saveSettings();
+          this.connectionDraft.bucket = value.trim();
+        }));
+
+    new Setting(containerEl)
+      .setName("应用连接设置")
+      .setDesc("已绑定仓库时，路由变化会先停止协调器并重新验证 descriptor 与全部 branch-tip anchors。")
+      .addButton((button) => button
+        .setButtonText("验证并应用")
+        .onClick(async () => {
+          try {
+            await this.plugin.updateConnectionSettings({ ...this.connectionDraft });
+            new Notice("S3 Sync：连接设置已应用。");
+          } catch (error) {
+            new Notice(`S3 Sync：连接设置未应用：${error instanceof Error ? error.message : String(error)}`);
+          }
         }));
 
     new Setting(containerEl)
@@ -110,21 +139,19 @@ export class S3SyncSettingTab extends PluginSettingTab {
       .setDesc("默认留空即可。只有多个 Vault 同名且共用同一个 Bucket 时，才需要手动指定。")
       .addText((text) => text
         .setPlaceholder("留空自动生成")
-        .setValue(this.plugin.settings.prefix)
+        .setValue(this.connectionDraft.prefix)
         .onChange(async (value) => {
-          this.plugin.settings.prefix = value.trim();
-          advancedSetting.setDesc(`当前实际 Prefix：${this.plugin.getEffectivePrefix()}`);
-          await this.plugin.saveSettings();
+          this.connectionDraft.prefix = value.trim();
+          advancedSetting.setDesc(`待应用 Prefix：${this.connectionDraft.prefix || "按已确认仓库或 Vault 名称决定"}`);
         }));
 
     new Setting(containerEl)
       .setName("Path-style")
       .setDesc("MinIO、R2 和不少兼容服务通常需要开启。")
       .addToggle((toggle) => toggle
-        .setValue(this.plugin.settings.forcePathStyle)
+        .setValue(this.connectionDraft.forcePathStyle)
         .onChange(async (value) => {
-          this.plugin.settings.forcePathStyle = value;
-          await this.plugin.saveSettings();
+          this.connectionDraft.forcePathStyle = value;
         }));
 
     new Setting(containerEl)

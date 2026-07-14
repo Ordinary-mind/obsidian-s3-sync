@@ -5,7 +5,7 @@ import type { RepositoryLocator } from "../core/locator";
 import type { WriterFrontiers } from "../core/commit-frontier";
 import type { CommitFrontierAnchor } from "../core/commit-frontier";
 import type { ConfigProfile } from "../core/types";
-import type { LocalConcurrentRecord } from "../core/dirty-record";
+import type { PersistedLocalConcurrentRecord } from "../core/local-concurrent-resolution";
 import type { DurableOutboxEntry, DurablePublishedReconcile } from "../core/durable-outbox";
 import type { RecoveryRecord } from "../core/recovery-record";
 import type { OperationalStatus } from "../core/operational-status";
@@ -63,7 +63,7 @@ export interface S3SyncData {
   v1SparseSeenCommits: Record<string, CommitFrontierAnchor>;
   v1ObservedRegisters: Record<string, { heads: string[]; pending: string[]; invalid: string[]; disposition: "resolved" | "concurrent" | "pending" | "invalid"; valueHash?: string | null }>;
   v1PendingApply: Record<string, { targetHeads: string[]; targetValueHash: string | null }>;
-  v1LocalConcurrentRecords: Record<string, LocalConcurrentRecord>;
+  v1LocalConcurrentRecords: Record<string, PersistedLocalConcurrentRecord>;
   v1PublishedReconciles: DurablePublishedReconcile[];
   v1DurableOutbox: DurableOutboxEntry[];
   v1RecoveryRecords: Record<string, RecoveryRecord>;
