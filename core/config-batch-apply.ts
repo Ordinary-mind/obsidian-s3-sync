@@ -21,10 +21,12 @@ export interface ConfigBatchPlan {
   id: string;
   repositoryFingerprint: string;
   targetHeads: string[];
+  projectedHeads: string[];
   projectedTreeHash: string | null;
   targetTreeHash: string;
   operations: ConfigBatchOperation[];
   diff: ConfigDiffEntry[];
+  newPluginIds: string[];
 }
 
 export interface ConfigBatchConfirmation {
@@ -32,6 +34,7 @@ export interface ConfigBatchConfirmation {
   acceptPluginCode: boolean;
   acceptSensitiveData: boolean;
   acceptLoadedPluginChanges: boolean;
+  acceptNewPlugins: boolean;
 }
 
 export type ConfigBatchJournalState =
@@ -87,7 +90,9 @@ export type ConfigBatchResult =
 export function configBatchPlanHash(plan: ConfigBatchPlan): string {
   const normalized = {
     ...plan,
-    targetHeads: [...new Set(plan.targetHeads)].sort(),
+    targetHeads: [...new Set(plan.targetHeads)].sort(compareUtf8),
+    projectedHeads: [...new Set(plan.projectedHeads)].sort(compareUtf8),
+    newPluginIds: [...new Set(plan.newPluginIds)].sort(compareUtf8),
     operations: plan.operations.map((operation) => ({
       ...operation,
       target: operation.target.kind === "put"
@@ -114,26 +119,26 @@ export class SafeConfigBatchApplicator {
     const planHash = configBatchPlanHash(plan);
     if (!confirmationMatches(plan, planHash, confirmation)) return { status: "confirmation-required" };
     const guard = await this.state.guard();
-    if (!remoteGuardMatches(plan, guard)) return { status: "stale-plan" };
+    if (!repositoryGuardMatches(plan, guard)) return { status: "stale-plan" };
     if (guard.currentTreeHash === plan.targetTreeHash && !guard.hasDirtyIntent) {
       const journal: ConfigBatchJournal = { plan: copyPlan(plan), planHash, state: "accounted", nextOperation: plan.operations.length, snapshotRefs: {}, displacedAfterRefs: [] };
       await this.state.accountProjection(plan.targetHeads, plan.targetTreeHash);
       await this.state.persistJournal(journal);
       return { status: "adopted-without-write", journal };
     }
-    if (localApplyMode(this.files.capabilities) === "conservative") return { status: "conservative-only" };
     if (guard.hasDirtyIntent || guard.currentTreeHash !== plan.projectedTreeHash) {
-      await this.state.markConfigDirtyIntent(plan.targetHeads, plan.projectedTreeHash);
+      if (!guard.hasDirtyIntent) await this.state.markConfigDirtyIntent(plan.projectedHeads, plan.projectedTreeHash);
       return { status: "local-change" };
     }
     for (const operation of plan.operations) {
       const observation = await this.files.observe(operation.path);
       if (observation.kind === "unknown" || !matchesExpected(observation, operation.expected)) {
-        await this.state.markConfigDirtyIntent(plan.targetHeads, plan.projectedTreeHash);
+        await this.state.markConfigDirtyIntent(plan.projectedHeads, plan.projectedTreeHash);
         return { status: "local-change" };
       }
       if (operation.target.kind === "put") await this.options.verifyStaged(operation.target);
     }
+    if (localApplyMode(this.files.capabilities) === "conservative") return { status: "conservative-only" };
 
     let journal: ConfigBatchJournal = {
       plan: { ...copyPlan(plan), operations: orderConfigOperations(plan.operations) },
@@ -257,7 +262,7 @@ export class SafeConfigBatchApplicator {
       const restored = await this.files.observe(operation.path);
       if (restored.kind === "unknown" || !matchesExpected(restored, operation.expected)) return this.requireRecovery(rolling);
     }
-    await this.state.markConfigDirtyIntent(rolling.plan.targetHeads, rolling.plan.projectedTreeHash);
+    await this.state.markConfigDirtyIntent(rolling.plan.projectedHeads, rolling.plan.projectedTreeHash);
     return { status: "rolled-back", journal: rolling };
   }
 
@@ -276,14 +281,15 @@ export function orderConfigOperations(operations: readonly ConfigBatchOperation[
     const leftDepth = left.path.split("/").length; const rightDepth = right.path.split("/").length;
     if (left.target.kind === "delete" && right.target.kind === "delete" && leftDepth !== rightDepth) return rightDepth - leftDepth;
     if (left.target.kind === "put" && right.target.kind === "put" && leftDepth !== rightDepth) return leftDepth - rightDepth;
-    return left.path < right.path ? -1 : left.path > right.path ? 1 : 0;
+    return compareUtf8(left.path, right.path);
   });
 }
 
 function operationPriority(operation: ConfigBatchOperation): number {
-  if (operation.path === "community-plugins.json") return 3;
-  if (/^plugins\/[^/]+\//.test(operation.path) && operation.path !== `plugins/${operation.pluginId ?? ""}/data.json`) return 0;
-  return operation.target.kind === "stop-managing" ? 2 : 1;
+  if (operation.path === "community-plugins.json") return 4;
+  if (operation.target.kind === "delete") return 0;
+  if (/^plugins\/[^/]+\//.test(operation.path) && !/^plugins\/[^/]+\/data\.json$/.test(operation.path)) return 1;
+  return operation.target.kind === "stop-managing" ? 3 : 2;
 }
 
 function confirmationMatches(plan: ConfigBatchPlan, hash: string, confirmation: ConfigBatchConfirmation): boolean {
@@ -291,15 +297,20 @@ function confirmationMatches(plan: ConfigBatchPlan, hash: string, confirmation: 
   if (plan.diff.some((entry) => entry.codeChange) && !confirmation.acceptPluginCode) return false;
   if (plan.diff.some((entry) => entry.sensitive) && !confirmation.acceptSensitiveData) return false;
   if (plan.operations.some((operation) => operation.loadedPlugin && operation.target.kind !== "stop-managing") && !confirmation.acceptLoadedPluginChanges) return false;
+  if (plan.newPluginIds.length > 0 && !confirmation.acceptNewPlugins) return false;
   return true;
 }
 
 function remoteGuardMatches(plan: ConfigBatchPlan, guard: ConfigBatchGuard, allowIntermediateTree = false): boolean {
-  return guard.repositoryFingerprint === plan.repositoryFingerprint
-    && sameSet(guard.observedHeads, plan.targetHeads)
-    && guard.projectedTreeHash === plan.projectedTreeHash
+  return repositoryGuardMatches(plan, guard)
     && !guard.hasDirtyIntent
     && (allowIntermediateTree || guard.currentTreeHash === plan.projectedTreeHash || guard.currentTreeHash === plan.targetTreeHash);
+}
+
+function repositoryGuardMatches(plan: ConfigBatchPlan, guard: ConfigBatchGuard): boolean {
+  return guard.repositoryFingerprint === plan.repositoryFingerprint
+    && sameSet(guard.observedHeads, plan.targetHeads)
+    && guard.projectedTreeHash === plan.projectedTreeHash;
 }
 
 function matchesExpected(observation: Exclude<LocalFileObservation, { kind: "unknown" }>, expected: ConfigBatchOperation["expected"]): boolean {
@@ -320,6 +331,23 @@ function sameSet(left: readonly string[], right: readonly string[]): boolean {
 function validatePlan(plan: ConfigBatchPlan): void {
   if (plan.id.length === 0 || plan.repositoryFingerprint.length === 0 || !/^[0-9a-f]{64}$/.test(plan.targetTreeHash)) throw new Error("Config batch plan identity is invalid");
   if (new Set(plan.operations.map((operation) => operation.path)).size !== plan.operations.length) throw new Error("Config batch plan contains duplicate paths");
+  if (new Set(plan.targetHeads).size !== plan.targetHeads.length || new Set(plan.projectedHeads).size !== plan.projectedHeads.length) {
+    throw new Error("Config batch plan contains duplicate heads");
+  }
+  if (new Set(plan.newPluginIds).size !== plan.newPluginIds.length || plan.newPluginIds.some((id) => id.length === 0)) {
+    throw new Error("Config batch plan contains invalid new plugin IDs");
+  }
 }
 
 function copyPlan(plan: ConfigBatchPlan): ConfigBatchPlan { return structuredClone(plan); }
+
+function compareUtf8(left: string, right: string): number {
+  const encoder = new TextEncoder();
+  const leftBytes = encoder.encode(left);
+  const rightBytes = encoder.encode(right);
+  const length = Math.min(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < length; index += 1) {
+    if (leftBytes[index] !== rightBytes[index]) return leftBytes[index] - rightBytes[index];
+  }
+  return leftBytes.length - rightBytes.length;
+}

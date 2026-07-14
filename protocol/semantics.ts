@@ -439,7 +439,8 @@ function isItemCoveredByProfile(path: string, profile: ConfigTreeForProfile["pro
   if (!pluginMatch) return false;
   const [, pluginId, relativePath] = pluginMatch;
   const dataPath = relativePath === "data.json";
-  const packageCovered = profile.pluginPackages.includes(pluginId) && !dataPath;
+  const packageDataPath = defaultCaseFold151(normalizeNfc151(relativePath)) === "data.json";
+  const packageCovered = profile.pluginPackages.includes(pluginId) && !packageDataPath;
   const dataCovered = profile.pluginData.includes(pluginId) && dataPath;
   return packageCovered !== dataCovered;
 }
@@ -539,16 +540,18 @@ export function validateConfigTreeExcludedPaths(
   historicalConfigDirs: string[],
   items: Array<{ path: string }>,
 ): ConfigTreeExcludedPathViolation[] {
-  const historical = historicalConfigDirs.map((root) => defaultCaseFold151(normalizeNfc151(root)));
   const localExcluded = [".obsidian-s3-sync-local", "plugins/obsidian-s3-sync"].map((root) =>
     defaultCaseFold151(normalizeNfc151(root)),
   );
   const current = defaultCaseFold151(normalizeNfc151(currentConfigDir));
+  const nestedHistorical = historicalConfigDirs
+    .map((root) => defaultCaseFold151(normalizeNfc151(root)))
+    .filter((root) => root.startsWith(`${current}/`))
+    .map((root) => root.slice(current.length + 1));
   for (const item of items) {
     const itemKey = defaultCaseFold151(normalizeNfc151(item.path));
-    const vaultPath = current.length === 0 ? itemKey : `${current}/${itemKey}`;
     if (
-      historical.some((root) => vaultPath === root || vaultPath.startsWith(`${root}/`)) ||
+      nestedHistorical.some((root) => itemKey === root || itemKey.startsWith(`${root}/`)) ||
       localExcluded.some((root) => itemKey === root || itemKey.startsWith(`${root}/`))
     ) {
       return ["config-item-in-excluded-root"];

@@ -17,10 +17,15 @@ export async function captureStableConfigScan(input: {
   scan: () => Promise<ConfigScanObservation>;
   quietWindow: () => Promise<void>;
 }): Promise<StableConfigScanResult> {
-  const first = await input.scan();
+  let first: ConfigScanObservation;
+  try { first = await input.scan(); }
+  catch { return { status: "retry", reason: "unknown" }; }
   if (first.status !== "complete") return { status: "retry", reason: "unknown" };
-  await input.quietWindow();
-  const second = await input.scan();
+  try { await input.quietWindow(); }
+  catch { return { status: "retry", reason: "unknown" }; }
+  let second: ConfigScanObservation;
+  try { second = await input.scan(); }
+  catch { return { status: "retry", reason: "unknown" }; }
   if (second.status !== "complete") return { status: "retry", reason: "unknown" };
   if (first.scopeRevision !== second.scopeRevision) return { status: "retry", reason: "scope-changed" };
   if (!sameLogicalItems(first.items, second.items)) return { status: "retry", reason: "content-changed" };

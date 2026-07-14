@@ -5,10 +5,10 @@ export interface PluginManifestInfo {
   isDesktopOnly?: boolean;
 }
 
-export function isPortablePluginCompatible(manifest: PluginManifestInfo, expectedId: string, targetAppVersion: string, isDesktop: boolean): boolean {
-  if (manifest.id !== expectedId || manifest.isDesktopOnly === true && !isDesktop) return false;
-  if (!isPlainSemver(manifest.version) || !isPlainSemver(targetAppVersion)) return false;
-  return manifest.minAppVersion === undefined || (isPlainSemver(manifest.minAppVersion) && comparePlainVersion(manifest.minAppVersion, targetAppVersion) <= 0);
+export function isPortablePluginCompatible(manifest: PluginManifestInfo, expectedId: string, targetAppVersion: string): boolean {
+  if (manifest.id !== expectedId || manifest.isDesktopOnly === true) return false;
+  if (!isPlainSemver(manifest.version) || !isPlainSemver(targetAppVersion) || manifest.minAppVersion === undefined) return false;
+  return isPlainSemver(manifest.minAppVersion) && comparePlainVersion(manifest.minAppVersion, targetAppVersion) <= 0;
 }
 
 function isPlainSemver(value: string): boolean { return /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(value); }

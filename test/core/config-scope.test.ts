@@ -22,4 +22,20 @@ describe("actual configDir portable scope", () => {
   it("handles community enablement structurally instead of as a raw base file", () => {
     expect(classifyConfigVaultPath({ actualConfigDir: "settings", historicalConfigDirs: [], vaultPath: "settings/community-plugins.json", profile })).toBe("community-enable-list");
   });
+
+  it("keeps device-local plugin packages, data, and core state outside the portable item set", () => {
+    const plugins = { ...profile, portablePluginIds: ["portable"], pluginPackages: ["portable"] };
+    expect(portableConfigPaths({
+      actualConfigDir: "settings",
+      historicalConfigDirs: [],
+      profile: plugins,
+      vaultPaths: [
+        "settings/plugins/portable/manifest.json",
+        "settings/plugins/portable/data.json",
+        "settings/plugins/device-only/main.js",
+        "settings/plugins/device-only/data.json",
+        "settings/core-plugins.json",
+      ],
+    })).toEqual(["plugins/portable/manifest.json"]);
+  });
 });

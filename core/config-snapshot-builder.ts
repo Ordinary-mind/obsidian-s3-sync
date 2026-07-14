@@ -1,16 +1,18 @@
 import { canonicalizeProtocolJson } from "../protocol/json";
 import { sha256Hex } from "../protocol/hash";
-import { configItemCoverageSources, validateConfigProfile } from "./config-profile";
+import { configItemCoverageSources, hasPackageManifestAnchor, validateConfigProfile } from "./config-profile";
+import { validatePortablePluginManifests } from "./config-compatibility";
 import type { ConfigScanItem, StableConfigScanResult } from "./config-scan";
-import { vaultPathCaseFoldKey } from "./path";
+import { validatePortablePluginId, vaultPathCaseFoldKey } from "./path";
 import type { ConfigProfile } from "./types";
+import type { ProtocolConfigTree } from "./config-tree";
 
 export type ManagedConfigItem =
   | { path: string; kind: "put"; hash: string; size: number; stagedRef: string }
   | { path: string; kind: "delete" };
 
 export type ConfigSnapshotBuildResult =
-  | { status: "built"; items: ManagedConfigItem[]; logicalHash: string }
+  | { status: "built"; profile: ConfigProfile; enabledCommunityPlugins: string[]; items: ManagedConfigItem[]; logicalHash: string }
   | { status: "retry"; reason: "scan-incomplete" | "missing-not-confirmed" | "invalid-profile" | "invalid-shape"; paths?: string[] };
 
 export function buildManagedConfigSnapshot(input: {
@@ -18,12 +20,28 @@ export function buildManagedConfigSnapshot(input: {
   scan: StableConfigScanResult;
   previousItems: readonly ManagedConfigItem[];
   confirmedAbsentPaths: ReadonlySet<string>;
+  enabledCommunityPlugins?: readonly string[];
+  portablePluginManifestBytes?: ReadonlyMap<string, Uint8Array>;
   syncPluginId?: string;
 }): ConfigSnapshotBuildResult {
   if (input.scan.status !== "captured") return { status: "retry", reason: "scan-incomplete" };
   if (validateConfigProfile(input.profile, input.syncPluginId).length > 0) return { status: "retry", reason: "invalid-profile" };
-  const current = uniqueScanItems(input.scan.items);
-  const previous = uniqueManagedItems(input.previousItems);
+  if (input.profile.portablePluginIds.length > 0
+    && validatePortablePluginManifests(input.profile, input.portablePluginManifestBytes ?? new Map()).length > 0) {
+    return { status: "retry", reason: "invalid-profile" };
+  }
+  const enabledCommunityPlugins = [...(input.enabledCommunityPlugins ?? [])];
+  if (!validateEnabledCommunityPlugins(enabledCommunityPlugins, input.profile, input.syncPluginId ?? "obsidian-s3-sync")) {
+    return { status: "retry", reason: "invalid-profile" };
+  }
+  let current: Map<string, ConfigScanItem>;
+  let previous: Map<string, ManagedConfigItem>;
+  try {
+    current = uniqueScanItems(input.scan.items);
+    previous = uniqueManagedItems(input.previousItems);
+  } catch {
+    return { status: "retry", reason: "invalid-shape" };
+  }
   const next = new Map<string, ManagedConfigItem>();
 
   for (const item of current.values()) {
@@ -45,11 +63,40 @@ export function buildManagedConfigSnapshot(input: {
   }
   if (unconfirmed.length > 0) return { status: "retry", reason: "missing-not-confirmed", paths: unconfirmed.sort(compareUtf8) };
   const items = [...next.values()].sort((left, right) => compareUtf8(left.path, right.path));
-  if (hasIllegalPutShape(items)) return { status: "retry", reason: "invalid-shape" };
+  try {
+    if (hasIllegalPutShape(items)) return { status: "retry", reason: "invalid-shape" };
+  } catch {
+    return { status: "retry", reason: "invalid-shape" };
+  }
+  if (!hasPackageManifestAnchor(items, input.profile)) return { status: "retry", reason: "invalid-profile" };
   const hashInput = items.map((item) => item.kind === "put"
     ? { path: item.path, kind: item.kind, hash: item.hash, size: item.size }
     : { path: item.path, kind: item.kind });
-  return { status: "built", items, logicalHash: sha256Hex(new TextEncoder().encode(canonicalizeProtocolJson(hashInput))) };
+  const profile = structuredClone(input.profile);
+  const logicalHash = sha256Hex(new TextEncoder().encode(canonicalizeProtocolJson({
+    profile: { schema: 1, ...profile },
+    enabledCommunityPlugins,
+    items: hashInput,
+  })));
+  return { status: "built", profile, enabledCommunityPlugins, items, logicalHash };
+}
+
+export function materializeProtocolConfigTree(
+  snapshot: Extract<ConfigSnapshotBuildResult, { status: "built" }>,
+  repositoryId: string,
+  descriptorHash: string,
+): ProtocolConfigTree {
+  if (!snapshot.profile.minimumTargetAppVersion) throw new Error("ConfigProfile minimumTargetAppVersion is required");
+  return {
+    protocol: 1,
+    repositoryId,
+    descriptorHash,
+    profile: { schema: 1, ...structuredClone(snapshot.profile), minimumTargetAppVersion: snapshot.profile.minimumTargetAppVersion },
+    enabledCommunityPlugins: [...snapshot.enabledCommunityPlugins],
+    items: snapshot.items.map((item) => item.kind === "put"
+      ? { path: item.path, kind: item.kind, blobHash: item.hash, size: item.size }
+      : { path: item.path, kind: item.kind }),
+  };
 }
 
 export function configProfileTransition(input: {
@@ -96,6 +143,22 @@ function hasIllegalPutShape(items: readonly ManagedConfigItem[]): boolean {
   }
   const paths = puts.map((item) => item.path).sort(compareUtf8);
   return paths.some((path, index) => paths.slice(index + 1).some((other) => other.startsWith(`${path}/`)));
+}
+
+function validateEnabledCommunityPlugins(values: readonly string[], profile: ConfigProfile, syncPluginId: string): boolean {
+  if (values.length > 100_000) return false;
+  const portable = new Set(profile.portablePluginIds);
+  const aliases = new Set<string>();
+  const syncAlias = vaultPathCaseFoldKey(syncPluginId);
+  for (let index = 0; index < values.length; index += 1) {
+    const id = values[index];
+    if (!portable.has(id) || validatePortablePluginId(id).length > 0) return false;
+    const alias = vaultPathCaseFoldKey(id);
+    if (alias === syncAlias || aliases.has(alias)) return false;
+    aliases.add(alias);
+    if (index > 0 && compareUtf8(values[index - 1], id) >= 0) return false;
+  }
+  return true;
 }
 
 function compareUtf8(left: string, right: string): number {

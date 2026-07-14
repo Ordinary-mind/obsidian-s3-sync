@@ -18,7 +18,7 @@ describe("bounded plugin manifest", () => {
 
   it("compares arbitrarily large decimal components without Number precision", () => {
     expect(comparePlainVersion("9007199254740993.0.0", "9007199254740992.999.999")).toBe(1);
-    expect(isPortablePluginCompatible({ id: "p", version: "1.0.0", minAppVersion: "9007199254740993.0.0" }, "p", "9007199254740992.999.999", true)).toBe(false);
+    expect(isPortablePluginCompatible({ id: "p", version: "1.0.0", minAppVersion: "9007199254740993.0.0" }, "p", "9007199254740992.999.999")).toBe(false);
   });
 });
 

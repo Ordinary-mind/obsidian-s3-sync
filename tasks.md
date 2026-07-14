@@ -482,79 +482,79 @@
 
 ### ConfigTree 构建
 
-- [ ] 从实际 `vault.configDir` 构建 config 相对路径。
-- [ ] 实现 ConfigProfile：baseFiles、themes、snippets、minimumTargetAppVersion、portablePluginIds、pluginPackages、pluginData。
-- [ ] baseFiles 默认值严格采用设计基线的三个文件；`community-plugins.json`、`core-plugins.json` 和 `workspace*.json` 不能作为 raw baseFiles 加入。
-- [ ] ConfigTree 保存完整受管理 put/delete，不以“扫描没看到”隐式删除。
-- [ ] profile 仍覆盖且没有新 put 时，后继 Tree 必须继续携带已有 delete item；丢弃 delete 只能作为显式停止管理，不能由扫描重建顺手消失。
-- [ ] 两次配置扫描都必须完整、无 unknown 且 scopeRevision 相同；projected put 缺失经防抖直接复查后才可生成 config delete。
-- [ ] 拒绝不被 ConfigProfile 覆盖的 item、保留路径 item 和重复 config path；仅拒绝 put-put 大小写别名或严格前缀碰撞，允许由 delete/put 表达的合法形状变换。
-- [ ] 按精确冻结映射验证覆盖：base 根文件、themes/snippets 严格后代、package 严格后代且排除根 data.json、pluginData 精确 data.json；每个 item 恰有一个覆盖来源。
-- [ ] profile 范围内的本地额外文件构成不同本地 Tree；保留、显式删除和停止管理产生三种不同解决结果。
-- [ ] profile 变更是显式操作；移出 profile 表示停止管理并保留本地。
-- [ ] 配置安静窗口后连续两次逻辑扫描相同才接受。
-- [ ] 第二次扫描的确切 put 字节直接进入内容暂存。
-- [ ] Obsidian 反复重写相同字节不产生新 Tree Hash。
+- [x] 从实际 `vault.configDir` 构建 config 相对路径。
+- [x] 实现 ConfigProfile：baseFiles、themes、snippets、minimumTargetAppVersion、portablePluginIds、pluginPackages、pluginData。
+- [x] baseFiles 默认值严格采用设计基线的三个文件；`community-plugins.json`、`core-plugins.json` 和 `workspace*.json` 不能作为 raw baseFiles 加入。
+- [x] ConfigTree 保存完整受管理 put/delete，不以“扫描没看到”隐式删除。
+- [x] profile 仍覆盖且没有新 put 时，后继 Tree 必须继续携带已有 delete item；丢弃 delete 只能作为显式停止管理，不能由扫描重建顺手消失。
+- [x] 两次配置扫描都必须完整、无 unknown 且 scopeRevision 相同；projected put 缺失经防抖直接复查后才可生成 config delete。
+- [x] 拒绝不被 ConfigProfile 覆盖的 item、保留路径 item 和重复 config path；仅拒绝 put-put 大小写别名或严格前缀碰撞，允许由 delete/put 表达的合法形状变换。
+- [x] 按精确冻结映射验证覆盖：base 根文件、themes/snippets 严格后代、package 严格后代且排除根 data.json、pluginData 精确 data.json；每个 item 恰有一个覆盖来源。
+- [x] profile 范围内的本地额外文件构成不同本地 Tree；保留、显式删除和停止管理产生三种不同解决结果。
+- [x] profile 变更是显式操作；移出 profile 表示停止管理并保留本地。
+- [x] 配置安静窗口后连续两次逻辑扫描相同才接受。
+- [x] 第二次扫描的确切 put 字节直接进入内容暂存。
+- [x] Obsidian 反复重写相同字节不产生新 Tree Hash。
 
 ### 插件包与启用状态
 
-- [ ] 社区插件包按目录级单元管理，包含额外静态资源，不假定只有三个文件；包扫描永久排除 case-fold 后的 data.json。
-- [ ] `data.json` 始终独立逐插件 opt-in，并显示启发式敏感信息警告。
-- [ ] `community-plugins.json` 转换为结构化启用 ID；远端表示不包含本同步插件。
-- [ ] community-plugins.json 读取/解析/ID 校验失败使整次扫描 unknown；仅 confirmed-absent 表示空启用集合。
-- [ ] community-plugins.json 输入及合并输出使用 4 MiB/100,000 ID 上限；非法 UTF-8、BOM、重复/case-fold alias、错型和超限均为 unknown，不截断。
-- [ ] `pluginPackages`、`pluginData`、`enabledCommunityPlugins` 必须是 portablePluginIds 子集，四个数组都排除本同步插件。
-- [ ] 插件 ID 必须按冻结的 1..255 UTF-8 bytes、非法字符、尾点/空格和 Windows 设备名集合验证，并保持 NFC、case-fold 唯一；版本严格解析为三段十进制并逐段数值比较，不使用 locale 或字符串比较。
-- [ ] 应用启用列表时，以远端便携子集替换本地便携子集，并合并本地未管理 ID 与本同步插件 ID。
-- [ ] 本地未管理 ID/目录与 portable ID 出现 case-fold alias 时阻断启用列表及 package/data 的整棵 Tree 应用并显示结构冲突，不静默去重。
-- [ ] 读取插件 manifest ID、版本、minAppVersion 和 isDesktopOnly；缺失/非法、ID 不一致、desktop-only 或高于 minimumTargetAppVersion 的插件不得进入 portablePluginIds。
-- [ ] manifest.json 使用 256 KiB、depth 16、string 4 KiB 的有界重复 Key 感知解析器；未知字段允许，已知字段错型或超限使 manifest 非法。
-- [ ] 有 package put、或受管 package ID 被要求启用时强制存在并验证 manifest.json put；未同步 package 的启用项/pluginData put 在目标设备无兼容本地包时整棵 Tree incompatible，不部分写入或记 projection。
-- [ ] 设备本地插件的启用 ID、包和 data 不参与 Tree Hash，远端省略它们不产生 pending、删除或“未完整应用”。
-- [ ] 当前设备版本低于 minimumTargetAppVersion 时整棵 Tree 标为 incompatible，不部分应用。
-- [ ] 插件 JS、CSS 和新增插件显示高风险确认，不自动启用未知插件。
+- [x] 社区插件包按目录级单元管理，包含额外静态资源，不假定只有三个文件；包扫描永久排除 case-fold 后的 data.json。
+- [x] `data.json` 始终独立逐插件 opt-in，并显示启发式敏感信息警告。
+- [x] `community-plugins.json` 转换为结构化启用 ID；远端表示不包含本同步插件。
+- [x] community-plugins.json 读取/解析/ID 校验失败使整次扫描 unknown；仅 confirmed-absent 表示空启用集合。
+- [x] community-plugins.json 输入及合并输出使用 4 MiB/100,000 ID 上限；非法 UTF-8、BOM、重复/case-fold alias、错型和超限均为 unknown，不截断。
+- [x] `pluginPackages`、`pluginData`、`enabledCommunityPlugins` 必须是 portablePluginIds 子集，四个数组都排除本同步插件。
+- [x] 插件 ID 必须按冻结的 1..255 UTF-8 bytes、非法字符、尾点/空格和 Windows 设备名集合验证，并保持 NFC、case-fold 唯一；版本严格解析为三段十进制并逐段数值比较，不使用 locale 或字符串比较。
+- [x] 应用启用列表时，以远端便携子集替换本地便携子集，并合并本地未管理 ID 与本同步插件 ID。
+- [x] 本地未管理 ID/目录与 portable ID 出现 case-fold alias 时阻断启用列表及 package/data 的整棵 Tree 应用并显示结构冲突，不静默去重。
+- [x] 读取插件 manifest ID、版本、minAppVersion 和 isDesktopOnly；缺失/非法、ID 不一致、desktop-only 或高于 minimumTargetAppVersion 的插件不得进入 portablePluginIds。
+- [x] manifest.json 使用 256 KiB、depth 16、string 4 KiB 的有界重复 Key 感知解析器；未知字段允许，已知字段错型或超限使 manifest 非法。
+- [x] 有 package put、或受管 package ID 被要求启用时强制存在并验证 manifest.json put；未同步 package 的启用项/pluginData put 在目标设备无兼容本地包时整棵 Tree incompatible，不部分写入或记 projection。
+- [x] 设备本地插件的启用 ID、包和 data 不参与 Tree Hash，远端省略它们不产生 pending、删除或“未完整应用”。
+- [x] 当前设备版本低于 minimumTargetAppVersion 时整棵 Tree 标为 incompatible，不部分应用。
+- [x] 插件 JS、CSS 和新增插件显示高风险确认，不自动启用未知插件。
 
 ### 快照归并与发布
 
-- [ ] 一个 Config Commit 只发布一个完整 ConfigTree 引用。
-- [ ] 配置 dirtyIntent/basisHeads 绑定 projected ConfigTree 头，不采用新 observedHeads。
-- [ ] 同 Tree Hash 采用，异 Tree Hash 并发形成快照级冲突。
-- [ ] 提供纯函数配置树 diff 和 merge builder；合并结果发布 parents=全部操作时头。
-- [ ] 配置头超过 parent 上限时使用与 Vault 相同的安全归约链。
-- [ ] 首次本地/远端配置不同使用本地根快照形成冲突，不自动覆盖。
+- [x] 一个 Config Commit 只发布一个完整 ConfigTree 引用。
+- [x] 配置 dirtyIntent/basisHeads 绑定 projected ConfigTree 头，不采用新 observedHeads。
+- [x] 同 Tree Hash 采用，异 Tree Hash 并发形成快照级冲突。
+- [x] 提供纯函数配置树 diff 和 merge builder；合并结果发布 parents=全部操作时头。
+- [x] 配置头超过 parent 上限时使用与 Vault 相同的安全归约链。
+- [x] 首次本地/远端配置不同使用本地根快照形成冲突，不自动覆盖。
 
 ### 批量应用
 
-- [ ] 所有 ConfigTree/Blob 先完整下载、校验和暂存。
-- [ ] 生成新增、修改、删除、停止管理、代码变化和敏感项差异。
-- [ ] 用户确认前不写正式配置。
-- [ ] 破坏性计划要求当前完整逻辑 Tree 等于 projected Tree；不同则固定配置 dirtyIntent。当前 Tree 已等于远端且无 dirtyIntent 时只做无写入采用。
-- [ ] 写入前重新验证全部本地前像；任一路径变化使整批计划失效。
-- [ ] 写入前重新验证配置 observedHeads 和 RepositoryLocator；任一变化使整批计划失效。
-- [ ] 创建完整恢复快照和批量 ApplyJournal。
-- [ ] 插件包先于启用列表写入；已加载插件要求停用或明确接受风险。
-- [ ] 每个配置文件继续执行安全前像守卫；中途失败时回滚已写项目。
-- [ ] 回滚逐文件验证本批次后像；并发改写时保持活动路径原样并停止该 Journal group，旧前像留在恢复区，不为恢复批次而移走新编辑。
-- [ ] 配置 delete/put 形状变换按 Journal group 排序；计划外子项形成不同本地 Tree，不被当作空目录清理。
-- [ ] 中断后整批续做或回滚；回滚不完整时保持 recovery-required 并停用配置发布/应用。
-- [ ] 重载后重建逻辑 ConfigTree 验证实际结果；完整成功前不更新配置 projectedHeads。
+- [x] 所有 ConfigTree/Blob 先完整下载、校验和暂存。
+- [x] 生成新增、修改、删除、停止管理、代码变化和敏感项差异。
+- [x] 用户确认前不写正式配置。
+- [x] 破坏性计划要求当前完整逻辑 Tree 等于 projected Tree；不同则固定配置 dirtyIntent。当前 Tree 已等于远端且无 dirtyIntent 时只做无写入采用。
+- [x] 写入前重新验证全部本地前像；任一路径变化使整批计划失效。
+- [x] 写入前重新验证配置 observedHeads 和 RepositoryLocator；任一变化使整批计划失效。
+- [x] 创建完整恢复快照和批量 ApplyJournal。
+- [x] 插件包先于启用列表写入；已加载插件要求停用或明确接受风险。
+- [x] 每个配置文件继续执行安全前像守卫；中途失败时回滚已写项目。
+- [x] 回滚逐文件验证本批次后像；并发改写时保持活动路径原样并停止该 Journal group，旧前像留在恢复区，不为恢复批次而移走新编辑。
+- [x] 配置 delete/put 形状变换按 Journal group 排序；计划外子项形成不同本地 Tree，不被当作空目录清理。
+- [x] 中断后整批续做或回滚；回滚不完整时保持 recovery-required 并停用配置发布/应用。
+- [x] 重载后重建逻辑 ConfigTree 验证实际结果；完整成功前不更新配置 projectedHeads。
 
 ### 测试
 
-- [ ] 两个并发 ConfigTree 不按文件静默混合。
-- [ ] 插件包额外资源完整传输，data.json 默认缺席。
-- [ ] profile 移除路径不会删除接收端文件。
-- [ ] 远端 Tree 省略本地额外文件时不会把它删除或错误标记为已采用远端快照。
-- [ ] 已建立基线后的显式 config delete 能传播并恢复。
-- [ ] 根 ConfigTree 含 delete 被拒绝；非根 delete 缺父时保持 pending，全部直接父都未管理逐字节相同 path 时隔离，至少一个直接父已管理时可传播。
-- [ ] 配置枚举/读取失败、扫描取消、范围变化和瞬时缺失都不生成 config delete 或可发布候选 Tree。
-- [ ] 扫描期间写入、预览后变化和多文件应用崩溃均安全。
-- [ ] 自定义 configDir、同步插件自保护、版本下限和 desktop-only 永不进入 portable Tree 测试。
-- [ ] historicalConfigDir 位于 current 内/外/祖先三种关系都按冻结通道规则排除；descriptor 外本机历史根阻止接入而不是单机悄悄忽略。
-- [ ] 设备本地插件的启用、包或 data 变化不改变便携 Tree Hash，也不造成永久 pending config 状态。
-- [ ] 桌面或移动端改写 `core-plugins.json` 不改变便携 Tree Hash、不产生 DirtyRecord 或 pending config。
-- [ ] 批量失败后回滚期间发生本地编辑时，新字节保持可达且 projectedHeads 不前进。
-- [ ] 合法但未确认的远端插件代码不会落入自动加载路径。
+- [x] 两个并发 ConfigTree 不按文件静默混合。
+- [x] 插件包额外资源完整传输，data.json 默认缺席。
+- [x] profile 移除路径不会删除接收端文件。
+- [x] 远端 Tree 省略本地额外文件时不会把它删除或错误标记为已采用远端快照。
+- [x] 已建立基线后的显式 config delete 能传播并恢复。
+- [x] 根 ConfigTree 含 delete 被拒绝；非根 delete 缺父时保持 pending，全部直接父都未管理逐字节相同 path 时隔离，至少一个直接父已管理时可传播。
+- [x] 配置枚举/读取失败、扫描取消、范围变化和瞬时缺失都不生成 config delete 或可发布候选 Tree。
+- [x] 扫描期间写入、预览后变化和多文件应用崩溃均安全。
+- [x] 自定义 configDir、同步插件自保护、版本下限和 desktop-only 永不进入 portable Tree 测试。
+- [x] historicalConfigDir 位于 current 内/外/祖先三种关系都按冻结通道规则排除；descriptor 外本机历史根阻止接入而不是单机悄悄忽略。
+- [x] 设备本地插件的启用、包或 data 变化不改变便携 Tree Hash，也不造成永久 pending config 状态。
+- [x] 桌面或移动端改写 `core-plugins.json` 不改变便携 Tree Hash、不产生 DirtyRecord 或 pending config。
+- [x] 批量失败后回滚期间发生本地编辑时，新字节保持可达且 projectedHeads 不前进。
+- [x] 合法但未确认的远端插件代码不会落入自动加载路径。
 
 验收门：配置以完整树为并发单位，可预览、可恢复、默认不执行远端代码或静默覆盖本地配置。
 

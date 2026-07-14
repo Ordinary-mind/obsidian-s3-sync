@@ -493,6 +493,16 @@ describe("v1 protocol semantic envelope", () => {
         items: [{ path: "snippets/disabled.css", kind: "put" }],
       }),
     ).toContain("config-item-not-profiled");
+    expect(
+      validateConfigTreeProfile({
+        ...tree,
+        profile: { ...tree.profile, pluginData: [] },
+        items: [
+          { path: "plugins/example-plugin/DATA.JSON", kind: "put" },
+          { path: "plugins/example-plugin/manifest.json", kind: "put" },
+        ],
+      }),
+    ).toContain("config-item-not-profiled");
   });
 
 
@@ -559,6 +569,12 @@ describe("v1 protocol semantic envelope", () => {
         { path: "Themes-Old/active.css" },
       ]),
     ).toEqual(["config-item-in-excluded-root"]);
+    expect(
+      validateConfigTreeExcludedPaths("settings/current", ["settings"], [{ path: "app.json" }]),
+    ).toEqual([]);
+    expect(
+      validateConfigTreeExcludedPaths("settings/current", ["old-settings"], [{ path: "app.json" }]),
+    ).toEqual([]);
     expect(
       validateConfigTreeExcludedPaths(".obsidian", [], [{ path: "plugins/obsidian-s3-sync/main.js" }]),
     ).toEqual(["config-item-in-excluded-root"]);

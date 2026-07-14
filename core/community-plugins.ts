@@ -5,6 +5,25 @@ import type { ConfigProfile } from "./types";
 const communityPluginsMaximumBytes = 4 * 1024 * 1024;
 const communityPluginsMaximumIds = 100_000;
 
+export type CommunityPluginFileObservation =
+  | { kind: "present"; bytes: Uint8Array }
+  | { kind: "confirmed-absent" }
+  | { kind: "unknown"; reason: string };
+
+export type CommunityPluginIdsObservation =
+  | { status: "complete"; ids: string[] }
+  | { status: "unknown"; reason: string };
+
+export function observeCommunityPluginIds(observation: CommunityPluginFileObservation): CommunityPluginIdsObservation {
+  if (observation.kind === "unknown") return { status: "unknown", reason: observation.reason };
+  if (observation.kind === "confirmed-absent") return { status: "complete", ids: [] };
+  try {
+    return { status: "complete", ids: parseCommunityPluginIds(observation.bytes) };
+  } catch (error) {
+    return { status: "unknown", reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export function parseCommunityPluginIds(bytes: Uint8Array): string[] {
   const value = parseBoundedJson(bytes, communityPluginsMaximumBytes, "array");
   if (!Array.isArray(value) || value.length > communityPluginsMaximumIds || value.some((id) => typeof id !== "string")) {
@@ -37,6 +56,8 @@ export function mergePortableEnabledPluginIds(input: {
   localPluginDirectories?: readonly string[];
   syncPluginId: string;
 }): string[] {
+  encodeCommunityPluginIds(input.remotePortableEnabled);
+  encodeCommunityPluginIds(input.localEnabled);
   const portableAliases = new Map(input.portablePluginIds.map((id) => [vaultPathCaseFoldKey(id), id]));
   const remote = new Set(input.remotePortableEnabled);
   if ([...remote].some((id) => !input.portablePluginIds.includes(id))) throw new Error("remote enabled plugin is not portable");
@@ -45,7 +66,9 @@ export function mergePortableEnabledPluginIds(input: {
     if (portable && portable !== id) throw new Error("local plugin aliases a portable plugin ID");
   }
   const unmanaged = input.localEnabled.filter((id) => !portableAliases.has(vaultPathCaseFoldKey(id)));
-  return [...new Set([...unmanaged, ...remote, input.syncPluginId])].sort(compareUtf8);
+  const merged = [...new Set([...unmanaged, ...remote, input.syncPluginId])].sort(compareUtf8);
+  encodeCommunityPluginIds(merged);
+  return merged;
 }
 
 export function encodeCommunityPluginIds(ids: readonly string[]): Uint8Array {

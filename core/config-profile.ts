@@ -1,5 +1,5 @@
 import type { ConfigProfile } from "./types";
-import { validatePortablePluginId, vaultPathCaseFoldKey } from "./path";
+import { normalizeVaultPath, validatePortablePluginId, vaultPathCaseFoldKey } from "./path";
 
 export const DEFAULT_CONFIG_BASE_FILES = ["app.json", "appearance.json", "hotkeys.json"] as const;
 
@@ -19,10 +19,14 @@ export function validateConfigProfile(profile: ConfigProfile, syncPluginId = "ob
   const violations: string[] = [];
   const forbiddenBaseNames = ["community-plugins.json", "core-plugins.json", "plugins", "themes", "snippets", ".obsidian-s3-sync-local"];
   const baseAliases = new Set<string>();
+  if (profile.baseFiles.length > 100_000 || !isUtf8SortedUnique(profile.baseFiles)) violations.push("base-files-not-canonical");
   for (const baseFile of profile.baseFiles) {
     if (baseFile.includes("/") || baseFile.length === 0) violations.push("base-file-not-root-file");
     let folded: string;
-    try { folded = vaultPathCaseFoldKey(baseFile); } catch { violations.push("invalid-base-file"); continue; }
+    try {
+      if (normalizeVaultPath(baseFile) !== baseFile) throw new Error("base file is not NFC");
+      folded = vaultPathCaseFoldKey(baseFile);
+    } catch { violations.push("invalid-base-file"); continue; }
     if (baseAliases.has(folded)) violations.push("base-file-alias");
     baseAliases.add(folded);
     if (forbiddenBaseNames.some((name) => vaultPathCaseFoldKey(name) === folded)
@@ -74,6 +78,7 @@ export function isPortablePluginIdAllowed(pluginId: string, syncPluginId: string
 function validatePluginIdArray(values: readonly string[], syncPluginId: string, name: string, violations: string[]): Set<string> {
   const aliases = new Set<string>();
   const exact = new Set<string>();
+  if (values.length > 100_000 || !isUtf8SortedUnique(values)) violations.push(`${name}-plugins-not-canonical`);
   for (const id of values) {
     if (!isPortablePluginIdAllowed(id, syncPluginId)) {
       violations.push(`${name}-plugin-id-invalid`);
@@ -90,4 +95,22 @@ function validatePluginIdArray(values: readonly string[], syncPluginId: string, 
 
 function isPlainThreePartVersion(value: string): boolean {
   return /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(value);
+}
+
+function isUtf8SortedUnique(values: readonly string[]): boolean {
+  for (let index = 1; index < values.length; index += 1) {
+    if (compareUtf8(values[index - 1], values[index]) >= 0) return false;
+  }
+  return true;
+}
+
+function compareUtf8(left: string, right: string): number {
+  const encoder = new TextEncoder();
+  const leftBytes = encoder.encode(left);
+  const rightBytes = encoder.encode(right);
+  const length = Math.min(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < length; index += 1) {
+    if (leftBytes[index] !== rightBytes[index]) return leftBytes[index] - rightBytes[index];
+  }
+  return leftBytes.length - rightBytes.length;
 }

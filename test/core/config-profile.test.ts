@@ -28,5 +28,7 @@ describe("ConfigTree profile coverage", () => {
     expect(validateConfigProfile({ ...createDefaultConfigProfile("1.8.0"), baseFiles: ["community-plugins.json"] })).toContain("forbidden-base-file");
     expect(validateConfigProfile({ ...createDefaultConfigProfile("1.8.0"), baseFiles: ["core-plugins.json"] })).toContain("forbidden-base-file");
     expect(validateConfigProfile({ ...createDefaultConfigProfile("1.8.0"), baseFiles: ["workspace-mobile.json"] })).toContain("forbidden-base-file");
+    expect(validateConfigProfile({ ...createDefaultConfigProfile("1.8.0"), baseFiles: ["hotkeys.json", "app.json"] })).toContain("base-files-not-canonical");
+    expect(validateConfigProfile({ ...createDefaultConfigProfile("1.8.0"), portablePluginIds: ["z", "a"] })).toContain("portable-plugins-not-canonical");
   });
 });

@@ -55,6 +55,7 @@ class MemoryConfigState implements ConfigBatchStateStore {
   journals: ConfigBatchJournal[] = [];
   accounted = 0;
   dirty = 0;
+  dirtyBases: Array<{ heads: string[]; treeHash: string | null }> = [];
   recoveryRequired = 0;
   crashWhen?: (journal: ConfigBatchJournal) => boolean;
   constructor(plan: ConfigBatchPlan) {
@@ -66,7 +67,10 @@ class MemoryConfigState implements ConfigBatchStateStore {
     this.journals.push(structuredClone(journal));
   }
   async accountProjection() { this.accounted += 1; }
-  async markConfigDirtyIntent() { this.dirty += 1; }
+  async markConfigDirtyIntent(heads: readonly string[], treeHash: string | null) {
+    this.dirty += 1;
+    this.dirtyBases.push({ heads: [...heads], treeHash });
+  }
   async markRecoveryRequired() { this.recoveryRequired += 1; }
 }
 
@@ -124,6 +128,38 @@ describe("safe ConfigTree batch apply", () => {
     expect(state.accounted).toBe(0);
   });
 
+  it("captures local divergence against projected heads without absorbing target heads", async () => {
+    const plan = batchPlan();
+    const files = seededFiles();
+    const state = new MemoryConfigState(plan);
+    state.guardValue.currentTreeHash = "c".repeat(64);
+    const result = await applicator(files, state, plan.targetTreeHash).apply(plan, confirmation(plan));
+    expect(result.status).toBe("local-change");
+    expect(state.dirtyBases).toEqual([{ heads: ["projected-head"], treeHash: plan.projectedTreeHash }]);
+    expect(files.log).toEqual([]);
+  });
+
+  it("requires explicit trust for a new plugin before touching formal config", async () => {
+    const plan = { ...batchPlan(), newPluginIds: ["new-plugin"] };
+    const files = seededFiles();
+    const state = new MemoryConfigState(plan);
+    const result = await applicator(files, state, plan.targetTreeHash).apply(plan, { ...confirmation(plan), acceptNewPlugins: false });
+    expect(result.status).toBe("confirmation-required");
+    expect(files.log).toEqual([]);
+    expect(state.accounted).toBe(0);
+  });
+
+  it("verifies every staged put before persisting a Journal or writing formal config", async () => {
+    const plan = batchPlan();
+    const files = seededFiles();
+    files.staged.delete("staged/community-plugins.json");
+    const state = new MemoryConfigState(plan);
+    await expect(applicator(files, state, plan.targetTreeHash).apply(plan, confirmation(plan))).rejects.toThrow("stage mismatch");
+    expect(files.log).toEqual([]);
+    expect(state.journals).toEqual([]);
+    expect(state.accounted).toBe(0);
+  });
+
   it("continues the same batch safely after a crash between an item after-image and Journal progress", async () => {
     const plan = batchPlan();
     const files = seededFiles();
@@ -139,15 +175,17 @@ describe("safe ConfigTree batch apply", () => {
     expect(text(files.active.get("community-plugins.json")!)).toBe("new-enabled");
   });
 
-  it("orders deep deletes before shallow deletes and shallow puts before deep puts", () => {
+  it("orders all deep deletes before shallow puts in both shape-change directions", () => {
     const base = operation("a", "x", "y");
     const ordered = orderConfigOperations([
       { ...base, path: "x", target: { kind: "delete" } },
       { ...base, path: "x/y", target: { kind: "delete" } },
       { ...base, path: "z/y", target: base.target },
       { ...base, path: "z", target: base.target },
+      { ...base, path: "reverse/child", target: { kind: "delete" } },
+      { ...base, path: "reverse", target: base.target },
     ]);
-    expect(ordered.map((item) => item.path)).toEqual(["x/y", "x", "z", "z/y"]);
+    expect(ordered.map((item) => item.path)).toEqual(["reverse/child", "x/y", "x", "reverse", "z", "z/y"]);
   });
 
   it("never writes formal config through an unverified conservative adapter", async () => {
@@ -171,10 +209,12 @@ function batchPlan(): ConfigBatchPlan {
     id: "batch",
     repositoryFingerprint: "fingerprint",
     targetHeads: ["config-head"],
+    projectedHeads: ["projected-head"],
     projectedTreeHash: "a".repeat(64),
     targetTreeHash: "b".repeat(64),
     operations,
     diff: [{ path: "plugins/p/main.js", kind: "modify", codeChange: true, sensitive: false }],
+    newPluginIds: [],
   };
 }
 
@@ -208,7 +248,15 @@ function applicator(files: MemoryConfigFiles, state: MemoryConfigState, rebuiltH
   });
 }
 
-function confirmation(plan: ConfigBatchPlan) { return { planHash: configBatchPlanHash(plan), acceptPluginCode: true, acceptSensitiveData: true, acceptLoadedPluginChanges: true }; }
+function confirmation(plan: ConfigBatchPlan) {
+  return {
+    planHash: configBatchPlanHash(plan),
+    acceptPluginCode: true,
+    acceptSensitiveData: true,
+    acceptLoadedPluginChanges: true,
+    acceptNewPlugins: true,
+  };
+}
 function observation(value: Uint8Array | undefined): LocalFileObservation { return value ? { kind: "present", hash: hashBytes(value), size: value.byteLength } : { kind: "absent" }; }
 function bytes(value: string): Uint8Array { return new TextEncoder().encode(value); }
 function text(value: Uint8Array): string { return new TextDecoder().decode(value); }

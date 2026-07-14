@@ -24,6 +24,10 @@ describe("stable Config channel scans", () => {
     ]) {
       await expect(captureStableConfigScan({ scan: async () => scans.shift()!, quietWindow: async () => {} })).resolves.toMatchObject({ status: "retry" });
     }
+    await expect(captureStableConfigScan({ scan: async () => { throw new Error("read failed"); }, quietWindow: async () => {} }))
+      .resolves.toEqual({ status: "retry", reason: "unknown" });
+    await expect(captureStableConfigScan({ scan: async () => complete("scope", "a"), quietWindow: async () => { throw new Error("cancelled"); } }))
+      .resolves.toEqual({ status: "retry", reason: "unknown" });
   });
 
   it("rechecks local Tree, observed heads, and RepositoryLocator before apply", () => {
