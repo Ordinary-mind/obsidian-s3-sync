@@ -3,6 +3,7 @@ import { canonicalizeProtocolJson } from "../protocol/json";
 import { descriptorKey } from "../protocol/keys";
 import { verifyRepositoryDescriptor, verifyRepositoryDescriptorAtKey } from "../protocol/validation";
 import { readObjectBytes, type ObjectStore } from "./object-store";
+import { validateRepositoryDirectories } from "./repository-wizard";
 
 const encoder = new TextEncoder();
 
@@ -23,11 +24,12 @@ export async function createRepositoryDescriptor(
   store: ObjectStore,
   input: RepositoryBootstrapInput,
 ): Promise<RepositoryBootstrapResult> {
+  const directories = validateRepositoryDirectories(input.configDir, input.historicalConfigDirs);
   const descriptor = {
     protocol: 1,
     repositoryId: input.repositoryId,
-    configDir: input.configDir,
-    historicalConfigDirs: [...input.historicalConfigDirs],
+    configDir: directories.configDir,
+    historicalConfigDirs: directories.historicalConfigDirs,
     hashAlgorithm: "sha256",
     canonicalJson: "RFC8785",
   };
@@ -50,8 +52,8 @@ export async function readRepositoryDescriptorAnchor(
   const key = descriptorKey(prefix, repositoryId);
   const bytes = await readObjectBytes(store, key, { maximumBytes: 4 * 1024, expectedHash: descriptorHash });
   const verified = verifyRepositoryDescriptorAtKey(prefix, key, bytes);
-  return {
-    configDir: verified.descriptor.configDir as string,
-    historicalConfigDirs: [...verified.descriptor.historicalConfigDirs as string[]],
-  };
+  return validateRepositoryDirectories(
+    verified.descriptor.configDir as string,
+    verified.descriptor.historicalConfigDirs as string[],
+  );
 }

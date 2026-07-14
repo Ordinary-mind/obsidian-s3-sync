@@ -19,6 +19,44 @@ describe("deterministic multi-client simulator", () => {
     expect(sim.registerHeads("b", "vault", "note.md")).toEqual(sim.registerHeads("a", "vault", "note.md"));
   });
 
+  it("converges independent offline edits after both devices reconnect", () => {
+    const sim = clients("a", "b");
+    sim.edit("a", "a.md", put("from-a"));
+    sim.freeze("a", "vault", "a.md");
+    sim.publishNext("a");
+    sim.edit("b", "b.md", put("from-b"));
+    sim.freeze("b", "vault", "b.md");
+    sim.publishNext("b");
+    sim.pull("a", { order: "reverse", duplicate: 2 });
+    sim.pull("b", { order: "forward", duplicate: 2 });
+    expect(sim.registerHeads("a", "vault", "a.md")).toEqual(sim.registerHeads("b", "vault", "a.md"));
+    expect(sim.registerHeads("a", "vault", "b.md")).toEqual(sim.registerHeads("b", "vault", "b.md"));
+    expect(sim.conflicts("a")).toEqual([]);
+    expect(sim.conflicts("b")).toEqual([]);
+  });
+
+  it("preserves rename versus modify as a delete conflict plus an independent new path", () => {
+    const sim = clients("a", "b", "c");
+    sim.edit("a", "old.md", put("base"));
+    sim.freeze("a", "vault", "old.md");
+    sim.publishNext("a");
+    for (const client of ["a", "b", "c"]) sim.pull(client);
+
+    sim.rename("a", "old.md", "new.md", put("base"));
+    sim.freeze("a", "vault", "old.md");
+    sim.publishNext("a");
+    sim.freeze("a", "vault", "new.md");
+    sim.publishNext("a");
+    sim.edit("b", "old.md", put("modified"));
+    sim.freeze("b", "vault", "old.md");
+    sim.publishNext("b");
+
+    for (const client of ["a", "b", "c"]) sim.pull(client, { order: "reverse", duplicate: 3 });
+    expect(sim.registerHeads("c", "vault", "old.md")).toHaveLength(2);
+    expect(sim.registerHeads("c", "vault", "new.md")).toHaveLength(1);
+    expect(sim.conflicts("c")).toContain("vault:old.md");
+  });
+
   it("replays frozen bytes across restart and links the next generation only to its exact local predecessor", () => {
     const sim = clients("a");
     sim.edit("a", "note.md", put("first"));

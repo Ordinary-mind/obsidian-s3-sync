@@ -17,6 +17,10 @@ export class ConservativeLocalFileAdapter implements LocalFileAdapter {
       renameToRecovery: false,
       noClobberInstall: false,
       recoveryObservation: false,
+      accessMethod: "conservative-port",
+      renameAtomicity: "unsupported",
+      overwritePolicy: "unsupported",
+      occupiedFileBehavior: "unknown",
     };
   }
 
@@ -28,4 +32,5 @@ export class ConservativeLocalFileAdapter implements LocalFileAdapter {
   materializeConservativeCandidate(stagedRef: string, candidateRef: string): Promise<void> {
     return this.port.writeCandidateNoClobber(stagedRef, candidateRef);
   }
+  async removeEmptyDirectoryNoFollow(_path: string): Promise<"unknown"> { return "unknown"; }
 }

@@ -1,3 +1,5 @@
+import type { ContentStagingAdapter } from "./content-staging";
+
 export type LocalFileObservation =
   | { kind: "present"; hash: string; size: number }
   | { kind: "absent" }
@@ -10,7 +12,13 @@ export interface LocalFileCapabilities {
   noClobberInstall: boolean;
   recoveryObservation: boolean;
   eventsObservable: boolean;
+  accessMethod: "node-fs" | "obsidian-vault-api" | "obsidian-adapter" | "conservative-port";
+  renameAtomicity: "atomic" | "link-unlink" | "unsupported";
+  overwritePolicy: "no-clobber" | "unsupported";
+  occupiedFileBehavior: "preserve-and-error" | "unknown";
 }
+
+export type EmptyDirectoryRemoval = "removed" | "absent" | "not-directory" | "not-empty" | "unknown";
 
 export interface LocalFileAdapter {
   readonly capabilities: LocalFileCapabilities;
@@ -20,12 +28,19 @@ export interface LocalFileAdapter {
   installStagedNoClobber(stagedRef: string, path: string): Promise<boolean>;
   restoreRecoveryNoClobber(recoveryRef: string, path: string): Promise<boolean>;
   materializeConservativeCandidate(stagedRef: string, candidateRef: string): Promise<void>;
+  removeEmptyDirectoryNoFollow(path: string): Promise<EmptyDirectoryRemoval>;
 }
 
-export function canPerformDestructiveApply(capabilities: Pick<LocalFileCapabilities, "renameToRecovery" | "noClobberInstall" | "recoveryObservation">): boolean {
-  return capabilities.renameToRecovery && capabilities.noClobberInstall && capabilities.recoveryObservation;
+export interface LocalApplyAdapterContract {
+  files: LocalFileAdapter;
+  staging: ContentStagingAdapter;
 }
 
-export function localApplyMode(capabilities: Pick<LocalFileCapabilities, "renameToRecovery" | "noClobberInstall" | "recoveryObservation">): "destructive" | "conservative" {
+export function canPerformDestructiveApply(capabilities: Pick<LocalFileCapabilities, "renameToRecovery" | "noClobberInstall" | "recoveryObservation" | "eventsObservable" | "overwritePolicy">): boolean {
+  return capabilities.renameToRecovery && capabilities.noClobberInstall && capabilities.recoveryObservation
+    && capabilities.eventsObservable && capabilities.overwritePolicy === "no-clobber";
+}
+
+export function localApplyMode(capabilities: Pick<LocalFileCapabilities, "renameToRecovery" | "noClobberInstall" | "recoveryObservation" | "eventsObservable" | "overwritePolicy">): "destructive" | "conservative" {
   return canPerformDestructiveApply(capabilities) ? "destructive" : "conservative";
 }

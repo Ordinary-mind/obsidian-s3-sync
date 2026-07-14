@@ -45,6 +45,46 @@ describe("repository bootstrap", () => {
       configDir: "/invalid",
       historicalConfigDirs: [],
     })).rejects.toThrow();
+    await expect(createRepositoryDescriptor(store, {
+      prefix: "",
+      repositoryId: "123e4567-e89b-42d3-a456-426614174000",
+      configDir: ".obsidian",
+      historicalConfigDirs: [".s3-sync-conflicts/legacy"],
+    })).rejects.toThrow("conflict root");
     expect(writes).toBe(0);
+  });
+
+  it("canonicalizes directory history and makes concurrent creation idempotent per repositoryId", async () => {
+    const objects = new Map<string, Uint8Array>();
+    const store = {
+      list: async () => ({ keys: [...objects.keys()] }),
+      head: async (key: string) => ({ size: objects.get(key)?.byteLength ?? 0 }),
+      getStream: async (key: string) => objectBodyFromBytes(objects.get(key) ?? new Uint8Array()),
+      putImmutable: async (key: string, bytes: Uint8Array) => {
+        await Promise.resolve();
+        const current = objects.get(key);
+        if (current && (current.byteLength !== bytes.byteLength || !current.every((value, index) => value === bytes[index]))) {
+          throw new Error("immutable collision");
+        }
+        objects.set(key, new Uint8Array(bytes));
+      },
+    };
+    const base = {
+      prefix: "vault-a",
+      configDir: ".obsidian",
+      historicalConfigDirs: [".old", ".legacy"],
+    };
+    const repositoryId = "123e4567-e89b-42d3-a456-426614174000";
+    const same = await Promise.all([
+      createRepositoryDescriptor(store, { ...base, repositoryId }),
+      createRepositoryDescriptor(store, { ...base, repositoryId }),
+    ]);
+    expect(same[0]).toEqual(same[1]);
+    expect(JSON.parse(new TextDecoder().decode(objects.get(same[0].key))).historicalConfigDirs).toEqual([".legacy", ".old"]);
+
+    const otherId = "123e4567-e89b-42d3-a456-426614174001";
+    const other = await createRepositoryDescriptor(store, { ...base, repositoryId: otherId });
+    expect(other.key).not.toBe(same[0].key);
+    expect(objects.size).toBe(2);
   });
 });

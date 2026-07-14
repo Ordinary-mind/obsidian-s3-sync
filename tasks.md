@@ -320,44 +320,44 @@
 
 ### LocalFileAdapter 契约
 
-- [ ] 定义 present/absent/unknown 读取、流式暂存、rename-to-recovery、no-clobber install 和恢复接口。
-- [ ] 为桌面和移动适配器记录 rename、覆盖、文件占用和原子性能力。
-- [ ] 不能证明字节保留语义的平台进入明确保守模式：不覆盖/delete 正式路径，只允许无写入采用或把远端候选物化到排除区供用户处理；恢复复制不能冒充 no-clobber。
-- [ ] Vault 普通文件与 configDir 文件使用各自合适的 Obsidian API/adapter 路径，并保持事件可观察。
+- [x] 定义 present/absent/unknown 读取、流式暂存、rename-to-recovery、no-clobber install 和恢复接口。
+- [x] 为桌面和移动适配器记录 rename、覆盖、文件占用和原子性能力。
+- [x] 不能证明字节保留语义的平台进入明确保守模式：不覆盖/delete 正式路径，只允许无写入采用或把远端候选物化到排除区供用户处理；恢复复制不能冒充 no-clobber。
+- [x] Vault 普通文件与 configDir 文件使用各自合适的 Obsidian API/adapter 路径，并保持事件可观察。
 
 ### ApplyJournal 状态机
 
-- [ ] ApplyPlan 绑定 targetHeads、targetValue、expectedLocalValue、projection generation 和 dirty generation。
-- [ ] 破坏性 ApplyPlan 只允许 expectedLocalValue 等于持久化 projectedValue；不同则先按旧 projectedHeads 固定本地变化。仅“本地已等于唯一远端目标且无 dirtyIntent”可无写入采用。
-- [ ] 执行前校验 RepositoryLocator 和 targetHeads 仍等于当前 verified observedHeads；已知新头使计划失效并重建，不把旧计划继续落盘。
-- [ ] 本地值已等于目标 put Hash 或双方均 absent 时不重写文件，只事务性采用目标全部等价头。
-- [ ] 下载到暂存区并验证 size/Hash，正式路径不接触未验证内容。
-- [ ] 每个破坏性 I/O 前先持久化 ApplyJournal。
-- [ ] 应用前检查 dirtyIntent、DirtyRecord、LocalConcurrentRecord 和 generation。
-- [ ] 目标存在时先 rename 到唯一恢复文件，再 Hash 被移走字节。
-- [ ] 观察恢复路径；rename 后旧文件句柄继续写入使 Hash/size 改变时更新 post-capture edit 恢复记录，文件不得自动清理。
-- [ ] 前像不匹配时不安装远端内容；恢复或保留双方并创建 DirtyRecord。
-- [ ] 安装使用 no-clobber 语义；目标重新出现时取消应用并保留双方。
-- [ ] delete 只移入恢复区，不直接 unlink。
-- [ ] 安装后重读正式路径并验证目标后像，此时尚不得更新 projectedHeads/projectedValue。
-- [ ] projection 记账前再次验证目标后像、RepositoryLocator、targetHeads、projection/dirty generation 和非本插件 dirtyIntent；delete 必须重读为 confirmed-absent，unknown 不得成功。
-- [ ] 写入静音标记绑定 operationId 和预期结果，不能按固定时间或盲目吞下下一事件。
-- [ ] 一个路径失败保持 pending apply，其他路径按策略继续。
-- [ ] 对 delete/put 文件-目录形状变换建立 Journal group：阻挡项深到浅移入恢复区、put 浅到深 no-clobber 安装；计划外子项或 dirty 路径使整组停止。
+- [x] ApplyPlan 绑定 targetHeads、targetValue、expectedLocalValue、projection generation 和 dirty generation。
+- [x] 破坏性 ApplyPlan 只允许 expectedLocalValue 等于持久化 projectedValue；不同则先按旧 projectedHeads 固定本地变化。仅“本地已等于唯一远端目标且无 dirtyIntent”可无写入采用。
+- [x] 执行前校验 RepositoryLocator 和 targetHeads 仍等于当前 verified observedHeads；已知新头使计划失效并重建，不把旧计划继续落盘。
+- [x] 本地值已等于目标 put Hash 或双方均 absent 时不重写文件，只事务性采用目标全部等价头。
+- [x] 下载到暂存区并验证 size/Hash，正式路径不接触未验证内容。
+- [x] 每个破坏性 I/O 前先持久化 ApplyJournal。
+- [x] 应用前检查 dirtyIntent、DirtyRecord、LocalConcurrentRecord 和 generation。
+- [x] 目标存在时先 rename 到唯一恢复文件，再 Hash 被移走字节。
+- [x] 观察恢复路径；rename 后旧文件句柄继续写入使 Hash/size 改变时更新 post-capture edit 恢复记录，文件不得自动清理。
+- [x] 前像不匹配时不安装远端内容；恢复或保留双方并创建 DirtyRecord。
+- [x] 安装使用 no-clobber 语义；目标重新出现时取消应用并保留双方。
+- [x] delete 只移入恢复区，不直接 unlink。
+- [x] 安装后重读正式路径并验证目标后像，此时尚不得更新 projectedHeads/projectedValue。
+- [x] projection 记账前再次验证目标后像、RepositoryLocator、targetHeads、projection/dirty generation 和非本插件 dirtyIntent；delete 必须重读为 confirmed-absent，unknown 不得成功。
+- [x] 写入静音标记绑定 operationId 和预期结果，不能按固定时间或盲目吞下下一事件。
+- [x] 一个路径失败保持 pending apply，其他路径按策略继续。
+- [x] 对 delete/put 文件-目录形状变换建立 Journal group：阻挡项深到浅移入恢复区、put 浅到深 no-clobber 安装；计划外子项或 dirty 路径使整组停止。
 
 ### 测试
 
-- [ ] 在下载、Journal、前像读取、目标移出、恢复 Hash、安装、后验 Hash 和记账各阶段注入崩溃。
-- [ ] 在上述每个阶段注入 editor-change、Vault 事件和外部文件写入。
-- [ ] 目标在 no-clobber install 前重新出现时不被覆盖。
-- [ ] POSIX 旧句柄在 rename 后继续写恢复文件时，新字节保持可达、被标记 post-capture edit，且不阻止对正式目标执行独立的后像/记账守卫。
-- [ ] 本地值在计划生成前已偏离 projectedValue 时不得被当作“已验证前像”覆盖；即使 Vault 事件晚到也必须生成本地 DirtyRecord。
-- [ ] 安装后到 projection 记账前注入 editor-change/外部写入时，不误标 projectedHeads，不清除新 dirtyIntent。
-- [ ] 删除竞态中所有本地字节都在正式路径或恢复区可达。
-- [ ] 远端应用事件与紧随其后的用户编辑不会被同一个静音标记吞掉。
-- [ ] 磁盘不足、权限错误、文件占用和父目录创建失败可恢复。
-- [ ] Windows、macOS、Linux 和移动适配器分别运行声明能力的契约测试。
-- [ ] `delete foo + put foo/bar` 及反向变换在每个 I/O 边界崩溃或并发写入时都保留全部字节。
+- [x] 在下载、Journal、前像读取、目标移出、恢复 Hash、安装、后验 Hash 和记账各阶段注入崩溃。
+- [x] 在上述每个阶段注入 editor-change、Vault 事件和外部文件写入。
+- [x] 目标在 no-clobber install 前重新出现时不被覆盖。
+- [x] POSIX 旧句柄在 rename 后继续写恢复文件时，新字节保持可达、被标记 post-capture edit，且不阻止对正式目标执行独立的后像/记账守卫。
+- [x] 本地值在计划生成前已偏离 projectedValue 时不得被当作“已验证前像”覆盖；即使 Vault 事件晚到也必须生成本地 DirtyRecord。
+- [x] 安装后到 projection 记账前注入 editor-change/外部写入时，不误标 projectedHeads，不清除新 dirtyIntent。
+- [x] 删除竞态中所有本地字节都在正式路径或恢复区可达。
+- [x] 远端应用事件与紧随其后的用户编辑不会被同一个静音标记吞掉。
+- [x] 磁盘不足、权限错误、文件占用和父目录创建失败可恢复。
+- [x] Windows、macOS、Linux 和移动适配器分别运行声明能力的契约测试。
+- [x] `delete foo + put foo/bar` 及反向变换在每个 I/O 边界崩溃或并发写入时都保留全部字节。
 
 验收门：任何注入点都不能丢弃本地字节；无法满足该条件的平台不会启用破坏性自动应用。
 
@@ -367,31 +367,31 @@
 
 ### 状态机
 
-- [ ] 实现单轮流程：恢复 -> 校验仓库 -> 拉取/验证 -> 持久归并 -> Vault 应用 -> 本地检测 -> 再拉取 -> 冻结 Outbox -> 发布 -> 验证。
-- [ ] ingested frontier、observedHeads、pending apply 和 projectedHeads 使用独立状态。
-- [ ] 远端 Commit 可先入库；本地应用失败仍保留 pending。
-- [ ] 实现单进程全局协调锁和路径级锁。
-- [ ] 能检测同 Vault 多实例时进入只读；远端 writer fork 作为最终安全网。
-- [ ] 同步中产生的新事件进入下一 generation，不递归启动协调器。
-- [ ] 路径冲突和路径错误只阻塞相关路径。
+- [x] 实现单轮流程：恢复 -> 校验仓库 -> 拉取/验证 -> 持久归并 -> Vault 应用 -> 本地检测 -> 再拉取 -> 冻结 Outbox -> 发布 -> 验证。
+- [x] ingested frontier、observedHeads、pending apply 和 projectedHeads 使用独立状态。
+- [x] 远端 Commit 可先入库；本地应用失败仍保留 pending。
+- [x] 实现单进程全局协调锁和路径级锁。
+- [x] 能检测同 Vault 多实例时进入只读；远端 writer fork 作为最终安全网。
+- [x] 同步中产生的新事件进入下一 generation，不递归启动协调器。
+- [x] 路径冲突和路径错误只阻塞相关路径。
 
 ### 调度
 
-- [ ] 实现手动“立即同步”和只读“仅预览”。
-- [ ] 实现可开关的启动同步、事件同步和远端轮询。
-- [ ] 实现启动对账和低频完整内容审计。
-- [ ] 预览计划执行前必须重验远端头和本地前像。
-- [ ] unload/挂起停止新任务、取消请求并保留所有持久队列。
-- [ ] 认证错误停止自动重试；网络/限流/5xx 指数退避。
+- [x] 实现手动“立即同步”和只读“仅预览”。
+- [x] 实现可开关的启动同步、事件同步和远端轮询。
+- [x] 实现启动对账和低频完整内容审计。
+- [x] 预览计划执行前必须重验远端头和本地前像。
+- [x] unload/挂起停止新任务、取消请求并保留所有持久队列。
+- [x] 认证错误停止自动重试；网络/限流/5xx 指数退避。
 
 ### 测试
 
-- [ ] 断网编辑后重连、快速连续保存、轮询失败和手动同步同时触发。
-- [ ] editor-change 在远端拉取与本地 autosave 之间发生。
-- [ ] 两设备不同文件、同文件、修改/delete 和 rename/modify 并发。
-- [ ] List 晚到后只形成冲突，不把新头加入旧 DirtyRecord 的 parents。
-- [ ] 一个 Commit 的一个路径应用失败，其他路径收敛且失败路径重启后继续。
-- [ ] 预览后本地或远端变化使原计划失效。
+- [x] 断网编辑后重连、快速连续保存、轮询失败和手动同步同时触发。
+- [x] editor-change 在远端拉取与本地 autosave 之间发生。
+- [x] 两设备不同文件、同文件、修改/delete 和 rename/modify 并发。
+- [x] List 晚到后只形成冲突，不把新头加入旧 DirtyRecord 的 parents。
+- [x] 一个 Commit 的一个路径应用失败，其他路径收敛且失败路径重启后继续。
+- [x] 预览后本地或远端变化使原计划失效。
 
 验收门：压力运行中所有状态可解释，客户端最终头集合一致且没有未解释的数据丢失。
 
@@ -401,50 +401,50 @@
 
 ### 仓库向导
 
-- [ ] 测试正常同步所需 S3 能力，不把 DeleteObject 当作必需。
-- [ ] 向导收集并确认 endpoint、region、forcePathStyle、Bucket 和 Prefix；生产拒绝非 HTTPS、URL base path/userinfo/query/fragment，凭证与 Locator 分开保存。
-- [ ] 列出 Prefix 下 repositoryId；零个时可新建，一个时确认加入，多个时必须选择。
-- [ ] 创建者生成 repositoryId 并写固定 format.json；加入者只读验证 descriptorHash，不写全局 current/latest 指针，也不补写暂时不可见的 descriptor。
-- [ ] 创建时把实际规范 configDir 和全部已知 historicalConfigDirs 写入 format.json；加入设备 current 不一致或本机有 descriptor 外历史根时只提供调整/新 repositoryId 并集迁移，不允许继续。
-- [ ] current/history configDir 与固定 Vault 根 `.s3-sync-conflicts` 按 case-fold 比较存在相同/祖先/后代关系时拒绝创建或加入。
-- [ ] 校验 current/history 的 case-fold、祖先和后代关系，并按设计冻结的通道规则生成同一排除集合；history 位于 current 内时 ConfigTree 不能覆盖该子树。
-- [ ] 扫描既有状态根和冲突根的所有权；任何未认领同名路径先阻断向导，不自动迁移或删除，恢复文件只能位于已认领状态根内。
-- [ ] 从可验证的旧状态/插件所有权 metadata 恢复 historicalConfigDirs 候选并让用户确认；状态丢失时不能假定“没有本机历史根”。
-- [ ] Prefix 首次确认后持久化，Vault 改名不重算。
-- [ ] 发现旧 manifest 时只提供迁移说明，不原地升级。
-- [ ] 向导完成前关闭自动同步，并持久化检查点。
+- [x] 测试正常同步所需 S3 能力，不把 DeleteObject 当作必需。
+- [x] 向导收集并确认 endpoint、region、forcePathStyle、Bucket 和 Prefix；生产拒绝非 HTTPS、URL base path/userinfo/query/fragment，凭证与 Locator 分开保存。
+- [x] 列出 Prefix 下 repositoryId；零个时可新建，一个时确认加入，多个时必须选择。
+- [x] 创建者生成 repositoryId 并写固定 format.json；加入者只读验证 descriptorHash，不写全局 current/latest 指针，也不补写暂时不可见的 descriptor。
+- [x] 创建时把实际规范 configDir 和全部已知 historicalConfigDirs 写入 format.json；加入设备 current 不一致或本机有 descriptor 外历史根时只提供调整/新 repositoryId 并集迁移，不允许继续。
+- [x] current/history configDir 与固定 Vault 根 `.s3-sync-conflicts` 按 case-fold 比较存在相同/祖先/后代关系时拒绝创建或加入。
+- [x] 校验 current/history 的 case-fold、祖先和后代关系，并按设计冻结的通道规则生成同一排除集合；history 位于 current 内时 ConfigTree 不能覆盖该子树。
+- [x] 扫描既有状态根和冲突根的所有权；任何未认领同名路径先阻断向导，不自动迁移或删除，恢复文件只能位于已认领状态根内。
+- [x] 从可验证的旧状态/插件所有权 metadata 恢复 historicalConfigDirs 候选并让用户确认；状态丢失时不能假定“没有本机历史根”。
+- [x] Prefix 首次确认后持久化，Vault 改名不重算。
+- [x] 发现旧 manifest 时只提供迁移说明，不原地升级。
+- [x] 向导完成前关闭自动同步，并持久化检查点。
 
 ### Vault 接入语义
 
-- [ ] 实现远端空/非空 × 本地空/非空四种组合。
-- [ ] local-only 发布 `parents=[]` 根 put。
-- [ ] remote-only 安全投影，不把本地缺失发布为 delete。
-- [ ] 相同 Hash 采用当时全部等价远端头。
-- [ ] 同路径不同内容发布本地根 put，形成首次冲突。
-- [ ] 远端墓碑 + 本地文件形成 put/delete 首次冲突。
-- [ ] 远端已有冲突时继承全部头；本地匹配某头不重复发布，不匹配任何头才经确认增加本地根。
-- [ ] 本地匹配冲突中的某个语义值时采用该值全部等价头为 projectedHeads，但冲突仍未解决且 UI 不标记胜者。
-- [ ] 多 Chunk bootstrap 的所有 Blob/Chunk 完成后由一个 Commit 发布。
-- [ ] 发布前再拉取只用于提示并发；不得改变首次本地根的空 parents。
-- [ ] “以远端克隆已有本地”先把本地内容移入恢复区并二次确认。
-- [ ] “以本地覆盖远端”替换为新 repositoryId/新世代。
+- [x] 实现远端空/非空 × 本地空/非空四种组合。
+- [x] local-only 发布 `parents=[]` 根 put。
+- [x] remote-only 安全投影，不把本地缺失发布为 delete。
+- [x] 相同 Hash 采用当时全部等价远端头。
+- [x] 同路径不同内容发布本地根 put，形成首次冲突。
+- [x] 远端墓碑 + 本地文件形成 put/delete 首次冲突。
+- [x] 远端已有冲突时继承全部头；本地匹配某头不重复发布，不匹配任何头才经确认增加本地根。
+- [x] 本地匹配冲突中的某个语义值时采用该值全部等价头为 projectedHeads，但冲突仍未解决且 UI 不标记胜者。
+- [x] 多 Chunk bootstrap 的所有 Blob/Chunk 完成后由一个 Commit 发布。
+- [x] 发布前再拉取只用于提示并发；不得改变首次本地根的空 parents。
+- [x] “以远端克隆已有本地”先把本地内容移入恢复区并二次确认。
+- [x] “以本地覆盖远端”替换为新 repositoryId/新世代。
 
 ### 状态丢失重新接入
 
-- [ ] 本地状态损坏但 Vault 非空时自动进入已有内容接入，不执行普通 pull/apply。
-- [ ] 本地缺失不生成 tombstone，本地内容不继承当前 observedHeads。
-- [ ] 用户确认新 projection 前不发布、覆盖或删除。
+- [x] 本地状态损坏但 Vault 非空时自动进入已有内容接入，不执行普通 pull/apply。
+- [x] 本地缺失不生成 tombstone，本地内容不继承当前 observedHeads。
+- [x] 用户确认新 projection 前不发布、覆盖或删除。
 
 ### 测试矩阵
 
-- [ ] 远端空 + 本地空。
-- [ ] 远端空 + 本地有内容。
-- [ ] 远端有内容 + 本地空。
-- [ ] 相同路径相同内容、不同内容和双方独有内容。
-- [ ] 远端墓碑 + 首次本地文件。
-- [ ] 远端已有冲突 + 全新客户端。
-- [ ] bootstrap 中断、共享 repositoryId 并发 bootstrap、不同 repositoryId 并发新建。
-- [ ] 状态丢失后本地有修改、有删除和有未完成恢复文件。
+- [x] 远端空 + 本地空。
+- [x] 远端空 + 本地有内容。
+- [x] 远端有内容 + 本地空。
+- [x] 相同路径相同内容、不同内容和双方独有内容。
+- [x] 远端墓碑 + 首次本地文件。
+- [x] 远端已有冲突 + 全新客户端。
+- [x] bootstrap 中断、共享 repositoryId 并发 bootstrap、不同 repositoryId 并发新建。
+- [x] 状态丢失后本地有修改、有删除和有未完成恢复文件。
 
 验收门：所有首次和恢复组合默认不覆盖、不删除已有用户内容，也不伪造共同父版本。
 

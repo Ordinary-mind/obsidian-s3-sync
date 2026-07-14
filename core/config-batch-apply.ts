@@ -2,6 +2,7 @@ import { canonicalizeProtocolJson } from "../protocol/json";
 import { sha256Hex } from "../protocol/hash";
 import type { ConfigDiffEntry } from "./config-diff";
 import type { LocalFileAdapter, LocalFileObservation } from "./local-file";
+import { localApplyMode } from "./local-file";
 
 export type ConfigBatchTarget =
   | { kind: "put"; hash: string; size: number; stagedRef: string }
@@ -81,7 +82,7 @@ export interface ConfigBatchOptions {
 
 export type ConfigBatchResult =
   | { status: "accounted" | "adopted-without-write"; journal: ConfigBatchJournal }
-  | { status: "stale-plan" | "confirmation-required" | "local-change" | "rolled-back" | "recovery-required"; journal?: ConfigBatchJournal };
+  | { status: "stale-plan" | "confirmation-required" | "local-change" | "conservative-only" | "rolled-back" | "recovery-required"; journal?: ConfigBatchJournal };
 
 export function configBatchPlanHash(plan: ConfigBatchPlan): string {
   const normalized = {
@@ -120,6 +121,7 @@ export class SafeConfigBatchApplicator {
       await this.state.persistJournal(journal);
       return { status: "adopted-without-write", journal };
     }
+    if (localApplyMode(this.files.capabilities) === "conservative") return { status: "conservative-only" };
     if (guard.hasDirtyIntent || guard.currentTreeHash !== plan.projectedTreeHash) {
       await this.state.markConfigDirtyIntent(plan.targetHeads, plan.projectedTreeHash);
       return { status: "local-change" };

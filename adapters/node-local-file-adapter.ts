@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { constants, copyFile, link, lstat, mkdir, unlink } from "node:fs/promises";
+import { constants, copyFile, link, lstat, mkdir, rmdir, unlink } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { LocalFileAdapter, LocalFileCapabilities, LocalFileObservation } from "../core/local-file";
 
@@ -12,6 +12,7 @@ export class NodeLocalFileAdapter implements LocalFileAdapter {
     root: string;
     platform: "windows" | "macos" | "linux";
     domain: "vault" | "config";
+    eventsObservable: boolean;
   }) {
     this.root = resolve(input.root);
     this.capabilities = {
@@ -20,7 +21,11 @@ export class NodeLocalFileAdapter implements LocalFileAdapter {
       renameToRecovery: true,
       noClobberInstall: true,
       recoveryObservation: true,
-      eventsObservable: true,
+      eventsObservable: input.eventsObservable,
+      accessMethod: "node-fs",
+      renameAtomicity: "link-unlink",
+      overwritePolicy: "no-clobber",
+      occupiedFileBehavior: "preserve-and-error",
     };
   }
 
@@ -62,6 +67,23 @@ export class NodeLocalFileAdapter implements LocalFileAdapter {
         || sourceObservation.hash !== targetObservation.hash || sourceObservation.size !== targetObservation.size) {
         throw new Error("conservative candidate path already contains different bytes");
       }
+    }
+  }
+
+  async removeEmptyDirectoryNoFollow(path: string): Promise<"removed" | "absent" | "not-directory" | "not-empty" | "unknown"> {
+    const target = this.resolveBelowRoot(path);
+    let stat;
+    try { stat = await lstat(target); }
+    catch (error) { return hasCode(error, "ENOENT") ? "absent" : "unknown"; }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return "not-directory";
+    try {
+      await rmdir(target);
+      return "removed";
+    } catch (error) {
+      if (hasCode(error, "ENOENT")) return "absent";
+      if (hasCode(error, "ENOTEMPTY") || hasCode(error, "EEXIST")) return "not-empty";
+      if (hasCode(error, "ENOTDIR")) return "not-directory";
+      return "unknown";
     }
   }
 

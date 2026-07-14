@@ -1,3 +1,5 @@
+import { canonicalizeProtocolJson } from "../protocol/json";
+
 export interface LocalOnboardingFile {
   path: string;
   hash: string;
@@ -27,6 +29,12 @@ export interface VaultOnboardingPlan {
   localWasEmpty: boolean;
   remoteWasEmpty: boolean;
   requiresConfirmation: boolean;
+}
+
+export interface VaultOnboardingPrePublishReview {
+  initialPlan: VaultOnboardingPlan;
+  plan: VaultOnboardingPlan;
+  remoteChanged: boolean;
 }
 
 export function planVaultOnboarding(
@@ -80,6 +88,20 @@ export function planVaultOnboarding(
   };
 }
 
+export function revalidateVaultOnboardingBeforePublish(
+  frozenLocalFiles: readonly LocalOnboardingFile[],
+  initialRemoteRegisters: readonly RemoteOnboardingRegister[],
+  latestRemoteRegisters: readonly RemoteOnboardingRegister[],
+): VaultOnboardingPrePublishReview {
+  const initialPlan = planVaultOnboarding(frozenLocalFiles, initialRemoteRegisters);
+  const plan = planVaultOnboarding(frozenLocalFiles, latestRemoteRegisters);
+  return {
+    initialPlan,
+    plan,
+    remoteChanged: remoteRegistersSignature(initialRemoteRegisters) !== remoteRegistersSignature(latestRemoteRegisters),
+  };
+}
+
 export type ExistingLocalCloneDecision =
   | { action: "safe-onboarding" }
   | { action: "move-all-to-recovery-and-clone"; requiresSecondConfirmation: true }
@@ -124,4 +146,15 @@ function assertUniqueHeads(heads: readonly RemoteOnboardingHead[]): void {
 
 function copyHeads(heads: readonly RemoteOnboardingHead[]): RemoteOnboardingHead[] {
   return heads.map((head) => ({ ...head })).sort((left, right) => left.versionId < right.versionId ? -1 : left.versionId > right.versionId ? 1 : 0);
+}
+
+function remoteRegistersSignature(registers: readonly RemoteOnboardingRegister[]): string {
+  const unique = uniqueByPath(registers, "remote onboarding");
+  const normalized = [...unique.values()]
+    .map((register) => {
+      assertUniqueHeads(register.heads);
+      return { path: register.path, heads: copyHeads(register.heads) };
+    })
+    .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  return canonicalizeProtocolJson(normalized);
 }

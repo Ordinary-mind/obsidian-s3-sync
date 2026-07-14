@@ -7,7 +7,20 @@ import { hasOutstandingSafetyWork } from "../../core/status";
 
 describe("sync round coordination primitives", () => {
   it("only advances through safe round phases", () => {
-    expect(advanceSyncRound("idle", "recovering")).toBe("recovering");
+    const phases = [
+      "recovering",
+      "verifying-repository",
+      "pulling",
+      "merging",
+      "applying",
+      "scanning",
+      "repulling",
+      "freezing-outbox",
+      "publishing",
+      "verifying-publication",
+      "idle",
+    ] as const;
+    expect(phases.reduce(advanceSyncRound, "idle")).toBe("idle");
     expect(() => advanceSyncRound("idle", "publishing")).toThrow("invalid sync");
   });
   it("keeps valid late dependencies pending while isolating invalid envelopes", () => {

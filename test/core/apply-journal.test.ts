@@ -17,9 +17,11 @@ describe("ApplyJournal safety", () => {
   });
   it("recognizes only matching Journal post-images as its own file event", () => {
     const installed = advanceApplyJournal(journal, "installed");
-    expect(isOwnApplyEvent([journal], "notes/a.md", "target")).toBe(true);
-    expect(isOwnApplyEvent([installed], "notes/a.md", "target")).toBe(true);
-    expect(isOwnApplyEvent([installed], "notes/a.md", "external")).toBe(false);
-    expect(isOwnApplyEvent([{ ...installed, state: "recovery-required" }], "notes/a.md", "target")).toBe(false);
+    expect(isOwnApplyEvent([journal], undefined, "notes/a.md", "target")).toBe(false);
+    expect(isOwnApplyEvent([journal], "other", "notes/a.md", "target")).toBe(false);
+    expect(isOwnApplyEvent([journal], "op", "notes/a.md", "target")).toBe(true);
+    expect(isOwnApplyEvent([installed], "op", "notes/a.md", "target")).toBe(true);
+    expect(isOwnApplyEvent([installed], "op", "notes/a.md", "external")).toBe(false);
+    expect(isOwnApplyEvent([{ ...installed, state: "recovery-required" }], "op", "notes/a.md", "target")).toBe(false);
   });
 });

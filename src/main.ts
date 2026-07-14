@@ -86,7 +86,7 @@ export default class S3SyncPlugin extends Plugin {
   private readonly runtimeContractSessionId = crypto.randomUUID();
   private editorChangeObserved = false;
   private causalStatePersistence = Promise.resolve();
-  private readonly v1ApplyPaths = new Set<string>();
+  private readonly v1ApplyOperations = new Map<string, string>();
   private v1DurableState: { fingerprint: string; store: DurableStateStore<StateJsonValue> } | undefined;
 
   async onload(): Promise<void> {
@@ -776,7 +776,7 @@ export default class S3SyncPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("delete", (file) => {
       if (!(file instanceof TFile)) return;
       const path = normalizePath(file.path);
-      if (isOwnApplyEvent(this.data.v1ApplyJournals, path, undefined)) return;
+      if (isOwnApplyEvent(this.data.v1ApplyJournals, this.v1ApplyOperations.get(path), path, undefined)) return;
       this.recordV1VaultEvent("delete", path);
       this.recordEditorDeleteCandidate(path);
     }));
@@ -785,7 +785,6 @@ export default class S3SyncPlugin extends Plugin {
       const normalizedOldPath = normalizePath(oldPath);
       const newPath = normalizePath(file.path);
       if (!this.isV1ManagedVaultPath(normalizedOldPath) || !this.isV1ManagedVaultPath(newPath)) return;
-      if (this.v1ApplyPaths.has(normalizedOldPath) || this.v1ApplyPaths.has(newPath)) return;
       const transactionId = crypto.randomUUID();
       this.data.v1VaultEvents = recordVaultRename(this.data.v1VaultEvents, {
         transactionId,
@@ -806,7 +805,7 @@ export default class S3SyncPlugin extends Plugin {
   }
 
   private recordV1VaultEvent(kind: "upsert" | "delete", path: string): void {
-    if (!this.data.v1 || !this.isV1ManagedVaultPath(path) || this.v1ApplyPaths.has(path)) return;
+    if (!this.data.v1 || !this.isV1ManagedVaultPath(path)) return;
     this.data.v1VaultEvents = recordVaultEvent(this.data.v1VaultEvents, {
       id: crypto.randomUUID(),
       kind,
@@ -819,10 +818,11 @@ export default class S3SyncPlugin extends Plugin {
   }
 
   private async handleV1UpsertEvent(file: TFile, path: string): Promise<void> {
-    if (!this.data.v1 || !this.isV1ManagedVaultPath(path) || this.v1ApplyPaths.has(path)) return;
+    if (!this.data.v1 || !this.isV1ManagedVaultPath(path)) return;
+    const operationId = this.v1ApplyOperations.get(path);
     const applyJournals = this.data.v1ApplyJournals.map((journal) => ({ ...journal }));
     const capture = await captureStableVaultFile(this.app.vault, file.path);
-    if (capture && isOwnApplyEvent(applyJournals, path, capture.hash)) return;
+    if (capture && isOwnApplyEvent(applyJournals, operationId, path, capture.hash)) return;
     this.recordV1VaultEvent("upsert", path);
     if (capture) this.recordEditorPutCandidate(path, capture.hash);
   }
@@ -873,7 +873,7 @@ export default class S3SyncPlugin extends Plugin {
       this.data.v1ApplyJournals = this.data.v1ApplyJournals.filter((entry) => entry.operationId !== journal.operationId);
       throw error;
     }
-    this.v1ApplyPaths.add(path);
+    this.v1ApplyOperations.set(path, journal.operationId);
     let result: T;
     try {
       result = await operation();
@@ -884,7 +884,7 @@ export default class S3SyncPlugin extends Plugin {
       await this.savePluginData();
       throw error;
     } finally {
-      this.v1ApplyPaths.delete(path);
+      if (this.v1ApplyOperations.get(path) === journal.operationId) this.v1ApplyOperations.delete(path);
     }
     this.data.v1ApplyJournals = this.data.v1ApplyJournals.filter((entry) => entry.operationId !== journal.operationId);
     await this.savePluginData();

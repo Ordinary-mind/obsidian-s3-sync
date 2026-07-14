@@ -4,7 +4,11 @@ import { SafeConfigBatchApplicator, configBatchPlanHash, orderConfigOperations, 
 import type { LocalFileObservation } from "../../core/local-file";
 
 class MemoryConfigFiles implements ConfigBatchFileAdapter {
-  readonly capabilities = { platform: "linux", domain: "config", renameToRecovery: true, noClobberInstall: true, recoveryObservation: true, eventsObservable: true } as const;
+  readonly capabilities = {
+    platform: "linux", domain: "config", renameToRecovery: true, noClobberInstall: true,
+    recoveryObservation: true, eventsObservable: true, accessMethod: "node-fs", renameAtomicity: "link-unlink",
+    overwritePolicy: "no-clobber", occupiedFileBehavior: "preserve-and-error",
+  } as const;
   readonly active = new Map<string, Uint8Array>();
   readonly staged = new Map<string, Uint8Array>();
   readonly recovery = new Map<string, Uint8Array>();
@@ -43,6 +47,7 @@ class MemoryConfigFiles implements ConfigBatchFileAdapter {
     this.active.set(path, new Uint8Array(value)); return true;
   }
   async materializeConservativeCandidate(): Promise<void> { throw new Error("unused"); }
+  async removeEmptyDirectoryNoFollow(): Promise<"absent"> { return "absent"; }
 }
 
 class MemoryConfigState implements ConfigBatchStateStore {
@@ -143,6 +148,17 @@ describe("safe ConfigTree batch apply", () => {
       { ...base, path: "z", target: base.target },
     ]);
     expect(ordered.map((item) => item.path)).toEqual(["x/y", "x", "z", "z/y"]);
+  });
+
+  it("never writes formal config through an unverified conservative adapter", async () => {
+    const plan = batchPlan();
+    const files = seededFiles();
+    Object.assign(files.capabilities, { noClobberInstall: false, overwritePolicy: "unsupported" });
+    const state = new MemoryConfigState(plan);
+    const result = await applicator(files, state, plan.targetTreeHash).apply(plan, confirmation(plan));
+    expect(result.status).toBe("conservative-only");
+    expect(files.log).toEqual([]);
+    expect(state.accounted).toBe(0);
   });
 });
 
