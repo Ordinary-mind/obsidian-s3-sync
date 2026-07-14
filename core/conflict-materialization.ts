@@ -1,6 +1,8 @@
 import { canonicalizeProtocolJson } from "../protocol/json";
-import { conflictId } from "./conflict-id";
+import { isWithinBlobLimit } from "../protocol/limits";
+import { conflictId, conflictLogicalKey } from "./conflict-id";
 import { conflictMetadataPath, conflictVersionCopyPath } from "./conflict-copy";
+import { normalizeRepositoryStateReference } from "./local-state-layout";
 
 export type ConflictCandidate =
   | { kind: "put"; logicalPath: string; versionId: string; blobHash: string; size: number; stagedRef: string; writerId?: string }
@@ -10,6 +12,7 @@ export interface ConflictMaterializationPlan {
   conflictId: string;
   directory: string;
   logicalKeys: string[];
+  logicalPaths: string[];
   heads: string[];
   bodies: Array<{ versionId: string; stagedRef: string; destination: string; blobHash: string; size: number }>;
   metadataPath: string;
@@ -38,12 +41,15 @@ export function buildConflictMaterializationPlan(input: {
   logicalKeys: readonly string[];
   candidates: readonly ConflictCandidate[];
 }): ConflictMaterializationPlan {
-  const logicalKeys = sortUnique(input.logicalKeys);
-  const candidates = [...input.candidates].sort((left, right) => compareUtf8(left.versionId, right.versionId));
-  if (logicalKeys.length === 0 || candidates.length === 0) throw new Error("conflict materialization requires keys and candidates");
+  const logicalPaths = sortUnique(input.logicalKeys.map((path) => conflictLogicalKey(input.channel, path).slice(`${input.channel}:`.length)));
+  const logicalKeys = logicalPaths.map((path) => conflictLogicalKey(input.channel, path));
+  const candidates = input.candidates
+    .map((candidate) => normalizeCandidate(input.channel, candidate))
+    .sort((left, right) => compareUtf8(left.versionId, right.versionId));
+  if (logicalPaths.length === 0 || candidates.length === 0) throw new Error("conflict materialization requires keys and candidates");
   const heads = candidates.map((candidate) => candidate.versionId);
   if (new Set(heads).size !== heads.length) throw new Error("conflict materialization contains duplicate Version IDs");
-  if (candidates.some((candidate) => !logicalKeys.includes(candidate.logicalPath))) throw new Error("conflict candidate is outside logical keys");
+  if (candidates.some((candidate) => !logicalPaths.includes(candidate.logicalPath))) throw new Error("conflict candidate is outside logical keys");
   const id = conflictId(input.repositoryId, input.channel, logicalKeys, heads);
   const directory = `.s3-sync-conflicts/${id}`;
   const bodies = candidates.flatMap((candidate) => candidate.kind === "put" ? [{
@@ -79,6 +85,7 @@ export function buildConflictMaterializationPlan(input: {
     conflictId: id,
     directory,
     logicalKeys,
+    logicalPaths,
     heads,
     bodies,
     metadataPath: conflictMetadataPath(id),
@@ -102,7 +109,46 @@ export function planConflictDraftMigration(
 ): ConflictDraft {
   if (draft.state === "published") throw new Error("published conflict draft cannot migrate");
   if (!/^[0-9a-f]{64}$/.test(nextConflictId)) throw new Error("next conflict ID is invalid");
-  return { ...draft, conflictId: nextConflictId, logicalKeys: sortUnique(nextLogicalKeys) };
+  return { ...draft, conflictId: nextConflictId, logicalKeys: canonicalDraftLogicalKeys(nextLogicalKeys), state: "editing" };
+}
+
+export function createConflictDraft(input: {
+  conflictId: string;
+  logicalKeys: readonly string[];
+  contentRef: string;
+  hash: string;
+  size: number;
+}): ConflictDraft {
+  if (!/^[0-9a-f]{64}$/.test(input.conflictId) || !/^[0-9a-f]{64}$/.test(input.hash)) {
+    throw new Error("conflict draft identity is invalid");
+  }
+  if (!Number.isSafeInteger(input.size) || input.size < 0) throw new Error("conflict draft size is invalid");
+  const contentRef = normalizeRepositoryStateReference(input.contentRef, ["conflict-drafts"]);
+  const logicalKeys = canonicalDraftLogicalKeys(input.logicalKeys);
+  return {
+    conflictId: input.conflictId,
+    logicalKeys,
+    contentRef,
+    hash: input.hash,
+    size: input.size,
+    state: "editing",
+  };
+}
+
+export function freezeConflictDraftForResolution(
+  draft: ConflictDraft,
+  current: Pick<ConflictDraft, "contentRef" | "hash" | "size">,
+): ConflictDraft {
+  if (draft.state !== "editing") throw new Error("conflict draft is not editable");
+  if (draft.contentRef !== current.contentRef || draft.hash !== current.hash || draft.size !== current.size) {
+    throw new Error("conflict draft changed; refresh resolution preview");
+  }
+  return { ...draft, logicalKeys: [...draft.logicalKeys], state: "frozen-for-resolution" };
+}
+
+export function markConflictDraftPublished(draft: ConflictDraft): ConflictDraft {
+  if (draft.state !== "frozen-for-resolution") throw new Error("conflict draft is not frozen for resolution");
+  return { ...draft, logicalKeys: [...draft.logicalKeys], state: "published" };
 }
 
 export function mayPublishOrdinaryConflictPath(draft: ConflictDraft | undefined, conflictActive: boolean): boolean {
@@ -119,6 +165,30 @@ export function mayCleanConflictMaterialization(input: {
 
 function sortUnique(values: readonly string[]): string[] {
   return [...new Set(values)].sort(compareUtf8);
+}
+
+function canonicalDraftLogicalKeys(values: readonly string[]): string[] {
+  const logicalKeys = sortUnique(values);
+  if (logicalKeys.length === 0) throw new Error("conflict draft logical keys are invalid");
+  for (const key of logicalKeys) {
+    if (key === "config:portable") continue;
+    if (!key.startsWith("vault:") || conflictLogicalKey("vault", key.slice("vault:".length)) !== key) {
+      throw new Error("conflict draft logical keys are invalid");
+    }
+  }
+  return logicalKeys;
+}
+
+function normalizeCandidate(channel: "vault" | "config", candidate: ConflictCandidate): ConflictCandidate {
+  const logicalPath = conflictLogicalKey(channel, candidate.logicalPath).slice(`${channel}:`.length);
+  if (candidate.kind === "delete") return { ...candidate, logicalPath };
+  if (!/^[0-9a-f]{64}$/.test(candidate.blobHash)) throw new Error("conflict candidate Blob Hash is invalid");
+  if (!isWithinBlobLimit(candidate.size)) throw new Error("conflict candidate Blob size is invalid");
+  return {
+    ...candidate,
+    logicalPath,
+    stagedRef: normalizeRepositoryStateReference(candidate.stagedRef, ["staged"]),
+  };
 }
 
 function compareUtf8(left: string, right: string): number {

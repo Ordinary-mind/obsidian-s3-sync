@@ -26,6 +26,27 @@ describe("LocalConcurrentRecord resolution", () => {
     expect(() => resolveLocalConcurrentRecord({ record, choice: "delete", confirmedDelete: record.editorValue })).toThrow("confirmed deletion");
   });
 
+  it("supports external, merged, and delete choices while retaining every unselected put", () => {
+    expect(resolveLocalConcurrentRecord({ record, choice: "external" })).toMatchObject({
+      value: record.externalValue,
+      unselectedContentRefs: ["staged/editor"],
+    });
+    const mergedValue = { kind: "put" as const, blob: { hash: "c".repeat(64), size: 2 }, stagedPath: "recovery/merged" };
+    expect(resolveLocalConcurrentRecord({ record, choice: "merged", mergedValue })).toMatchObject({
+      value: mergedValue,
+      unselectedContentRefs: ["staged/editor", "staged/external"],
+    });
+    const confirmedDelete = {
+      kind: "delete" as const,
+      evidence: { path: "a.md", scopeRevision: "scope-2", confirmedAt: 3 },
+    };
+    expect(resolveLocalConcurrentRecord({ record, choice: "delete", confirmedDelete })).toMatchObject({
+      value: confirmedDelete,
+      parents: ["old-projected"],
+      unselectedContentRefs: ["staged/editor", "staged/external"],
+    });
+  });
+
   it("persists the user's selection and blocks automatic work until it is published", () => {
     const selected = selectLocalConcurrentRecordResolution({ record, choice: "editor" });
     expect(selected.selection).toMatchObject({ choice: "editor", state: "selected", parents: ["old-projected"] });
