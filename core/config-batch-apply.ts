@@ -1,8 +1,10 @@
 import { canonicalizeProtocolJson } from "../protocol/json";
 import { sha256Hex } from "../protocol/hash";
+import { DiagnosticError } from "./diagnostics";
 import type { ConfigDiffEntry } from "./config-diff";
 import type { LocalFileAdapter, LocalFileObservation } from "./local-file";
 import { localApplyMode } from "./local-file";
+import { compareUtf8 } from "../protocol/utf8";
 
 export type ConfigBatchTarget =
   | { kind: "put"; hash: string; size: number; stagedRef: string }
@@ -86,7 +88,11 @@ export interface ConfigBatchOptions {
 
 export type ConfigBatchResult =
   | { status: "accounted" | "adopted-without-write"; journal: ConfigBatchJournal }
-  | { status: "stale-plan" | "confirmation-required" | "local-change" | "conservative-only" | "rolled-back" | "recovery-required"; journal?: ConfigBatchJournal };
+  | {
+    status: "stale-plan" | "confirmation-required" | "local-change" | "conservative-only" | "rolled-back" | "recovery-required";
+    journal?: ConfigBatchJournal;
+    error?: unknown;
+  };
 
 export function configBatchPlanHash(plan: ConfigBatchPlan): string {
   const normalized = {
@@ -152,7 +158,7 @@ export class SafeConfigBatchApplicator {
     };
     await this.state.persistJournal(journal);
     try { journal = await this.captureCompleteSnapshot(journal); }
-    catch { return this.rollback(journal); }
+    catch (error) { return this.rollback(journal, configBatchError("CONFIG_BATCH_SNAPSHOT_FAILED", "config recovery snapshot capture failed", error)); }
     return this.continueApply(journal);
   }
 
@@ -160,10 +166,12 @@ export class SafeConfigBatchApplicator {
     if (journal.state === "accounted") return { status: "accounted", journal };
     if (journal.state === "recovery-required") return { status: "recovery-required", journal };
     if (action === "rollback") return this.rollback(journal);
-    if (!remoteGuardMatches(journal.plan, await this.state.guard(), true)) return this.requireRecovery(journal);
+    if (!remoteGuardMatches(journal.plan, await this.state.guard(), true)) {
+      return this.requireRecovery(journal, configBatchError("CONFIG_BATCH_REMOTE_GUARD_CHANGED", "remote ConfigTree guard changed before recovery"));
+    }
     let snapshotReady = journal;
     try { snapshotReady = journal.state === "prepared" ? await this.captureCompleteSnapshot(journal) : journal; }
-    catch { return this.rollback(journal); }
+    catch (error) { return this.rollback(journal, configBatchError("CONFIG_BATCH_RECOVERY_SNAPSHOT_FAILED", "config recovery snapshot capture failed", error)); }
     return this.continueApply(snapshotReady);
   }
 
@@ -192,17 +200,23 @@ export class SafeConfigBatchApplicator {
     let current: ConfigBatchJournal = { ...journal, state: "applying" };
     await this.state.persistJournal(current);
     for (let index = current.nextOperation; index < current.plan.operations.length; index += 1) {
-      if (!remoteGuardMatches(current.plan, await this.state.guard(), true)) return this.rollback(current);
+      if (!remoteGuardMatches(current.plan, await this.state.guard(), true)) {
+        return this.rollback(current, configBatchError("CONFIG_BATCH_REMOTE_GUARD_CHANGED", "remote ConfigTree guard changed during apply"));
+      }
       try { await this.applyOperation(current.plan, current.plan.operations[index]); }
-      catch { return this.rollback(current); }
+      catch (error) { return this.rollback(current, configBatchError("CONFIG_BATCH_OPERATION_FAILED", "config file operation failed", error)); }
       current = { ...current, nextOperation: index + 1 };
       await this.state.persistJournal(current);
     }
     current = { ...current, state: "verifying" };
     await this.state.persistJournal(current);
-    if (!remoteGuardMatches(current.plan, await this.state.guard(), true)) return this.requireRecovery(current);
+    if (!remoteGuardMatches(current.plan, await this.state.guard(), true)) {
+      return this.requireRecovery(current, configBatchError("CONFIG_BATCH_REMOTE_GUARD_CHANGED", "remote ConfigTree guard changed before projection accounting"));
+    }
     const actualTreeHash = await this.options.rebuildCurrentTreeHash();
-    if (actualTreeHash !== current.plan.targetTreeHash) return this.rollback(current);
+    if (actualTreeHash !== current.plan.targetTreeHash) {
+      return this.rollback(current, configBatchError("CONFIG_BATCH_AFTER_IMAGE_MISMATCH", "applied config tree does not match the confirmed target"));
+    }
     await this.state.accountProjection(current.plan.targetHeads, current.plan.targetTreeHash);
     const accounted = { ...current, state: "accounted" as const };
     await this.state.persistJournal(accounted);
@@ -238,7 +252,7 @@ export class SafeConfigBatchApplicator {
     if (after.kind === "unknown" || !matchesTarget(after, operation.target)) throw new Error("config operation after-image mismatch");
   }
 
-  private async rollback(journal: ConfigBatchJournal): Promise<ConfigBatchResult> {
+  private async rollback(journal: ConfigBatchJournal, failure?: unknown): Promise<ConfigBatchResult> {
     let rolling = { ...journal, state: "rolling-back" as const };
     await this.state.persistJournal(rolling);
     const operations = rolling.plan.operations.slice(0, Math.min(rolling.nextOperation + 1, rolling.plan.operations.length)).reverse();
@@ -254,13 +268,17 @@ export class SafeConfigBatchApplicator {
       if (active.kind === "unknown" && operation.expected.kind === "present" && operation.target.kind === "delete"
         && await this.files.inspectNodeNoFollow(operation.path) === "folder") {
         const removed = await this.files.removeEmptyDirectoryNoFollow(operation.path);
-        if (removed !== "removed" && removed !== "absent") return this.requireRecovery(rolling);
+        if (removed !== "removed" && removed !== "absent") {
+          return this.requireRecovery(rolling, configBatchError("CONFIG_BATCH_ROLLBACK_DIRECTORY_BLOCKED", "rollback could not remove an empty replacement directory", failure));
+        }
         active = await this.files.observe(operation.path);
       }
 
       if (active.kind !== "unknown" && matchesExpected(active, operation.expected)) continue;
       const partiallyMoved = active.kind === "absent" && operation.expected.kind === "present" && expectedRecovery.kind === "present";
-      if (active.kind === "unknown" || (!matchesTarget(active, operation.target) && !partiallyMoved)) return this.requireRecovery(rolling);
+      if (active.kind === "unknown" || (!matchesTarget(active, operation.target) && !partiallyMoved)) {
+        return this.requireRecovery(rolling, configBatchError("CONFIG_BATCH_ROLLBACK_CONCURRENT_CHANGE", "rollback found a concurrent local config change", failure));
+      }
       if (active.kind === "present") {
         const afterRef = this.options.displacedAfterRef(rolling.plan, operation.path);
         await this.files.moveToRecovery(operation.path, afterRef);
@@ -269,23 +287,35 @@ export class SafeConfigBatchApplicator {
       }
       if (operation.expected.kind === "present") {
         if (expectedRecovery.kind !== "present" || expectedRecovery.hash !== operation.expected.hash || expectedRecovery.size !== operation.expected.size) {
-          return this.requireRecovery(rolling);
+          return this.requireRecovery(rolling, configBatchError("CONFIG_BATCH_ROLLBACK_SNAPSHOT_MISMATCH", "rollback recovery snapshot does not match the required before-image", failure));
         }
         const ref = before.kind === "present" ? beforeRef : snapshotRef as string;
-        if (!(await this.files.restoreRecoveryNoClobber(ref, operation.path))) return this.requireRecovery(rolling);
+        if (!(await this.files.restoreRecoveryNoClobber(ref, operation.path))) {
+          return this.requireRecovery(rolling, configBatchError("CONFIG_BATCH_ROLLBACK_RESTORE_REFUSED", "rollback refused to overwrite a concurrent local path", failure));
+        }
       }
       const restored = await this.files.observe(operation.path);
-      if (restored.kind === "unknown" || !matchesExpected(restored, operation.expected)) return this.requireRecovery(rolling);
+      if (restored.kind === "unknown" || !matchesExpected(restored, operation.expected)) {
+        return this.requireRecovery(rolling, configBatchError("CONFIG_BATCH_ROLLBACK_VERIFY_FAILED", "rollback before-image verification failed", failure));
+      }
     }
     await this.state.markConfigDirtyIntent(rolling.plan.projectedHeads, rolling.plan.projectedTreeHash);
-    return { status: "rolled-back", journal: rolling };
+    return {
+      status: "rolled-back",
+      journal: rolling,
+      error: failure ?? configBatchError("CONFIG_BATCH_ROLLED_BACK", "config apply was rolled back before projection accounting"),
+    };
   }
 
-  private async requireRecovery(journal: ConfigBatchJournal): Promise<ConfigBatchResult> {
+  private async requireRecovery(journal: ConfigBatchJournal, error?: unknown): Promise<ConfigBatchResult> {
     const failed = { ...journal, state: "recovery-required" as const };
     await this.state.persistJournal(failed);
     await this.state.markRecoveryRequired(failed);
-    return { status: "recovery-required", journal: failed };
+    return {
+      status: "recovery-required",
+      journal: failed,
+      error: error ?? configBatchError("CONFIG_BATCH_RECOVERY_REQUIRED", "config rollback requires manual recovery"),
+    };
   }
 
   private async matchesPlanBeforeImage(
@@ -385,13 +415,6 @@ function validatePlan(plan: ConfigBatchPlan): void {
 
 function copyPlan(plan: ConfigBatchPlan): ConfigBatchPlan { return structuredClone(plan); }
 
-function compareUtf8(left: string, right: string): number {
-  const encoder = new TextEncoder();
-  const leftBytes = encoder.encode(left);
-  const rightBytes = encoder.encode(right);
-  const length = Math.min(leftBytes.length, rightBytes.length);
-  for (let index = 0; index < length; index += 1) {
-    if (leftBytes[index] !== rightBytes[index]) return leftBytes[index] - rightBytes[index];
-  }
-  return leftBytes.length - rightBytes.length;
+function configBatchError(code: string, message: string, cause?: unknown): DiagnosticError {
+  return new DiagnosticError(code, "local-path", message, cause);
 }

@@ -1,3 +1,5 @@
+import { compareUtf8 } from "../protocol/utf8";
+
 export interface VerifiedRegisterObservation {
   key: string;
   heads: string[];
@@ -21,7 +23,7 @@ export function mergeVerifiedRegisterObservations(
 } {
   const observedRegisters: Record<string, VerifiedRegisterObservation> = {};
   const pendingApply: Record<string, PendingApplyState> = {};
-  for (const observation of [...observations].sort((left, right) => left.key.localeCompare(right.key))) {
+  for (const observation of [...observations].sort((left, right) => compareUtf8(left.key, right.key))) {
     observedRegisters[observation.key] = {
       ...observation,
       heads: [...observation.heads],

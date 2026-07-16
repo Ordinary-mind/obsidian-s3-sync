@@ -1,27 +1,64 @@
 # Obsidian S3 Sync
 
-一个面向个人、多设备 Vault 的 S3 Compatible Storage 同步插件项目。
+面向桌面版 Obsidian 的 S3 多设备同步插件。它按原始字节 SHA-256 判断变化，使用不可变对象、提交日志和持久 Outbox，避免按 `mtime` 猜测新旧或用共享 manifest 相互覆盖。
 
-项目目标是：
+当前版本是 `0.1.0` 预发布构建，只支持桌面端。请先在可丢弃 Vault 和专用测试 Prefix 中完成[人工验收](docs/manual-acceptance.md)，不要直接拿唯一一份真实资料试用。
 
-- 使用原始字节 SHA-256 判断真实内容变化，不按 `mtime` 选择新旧。
-- 使用不可变对象和提交日志，避免共享 manifest 的并发覆盖。
-- 离线编辑、删除和多设备并发最多形成显式冲突，不静默丢失数据。
-- 同步普通 Vault 文件，以及经用户确认的主题、社区插件包和配置快照。
-- 支持手动同步、启动同步、事件同步和可关闭的远端轮询。
-- 在失败、重启和状态损坏后提供可解释、可恢复的路径。
+## 用户操作
 
-## 当前状态
+插件只暴露三个命令：
 
-**v1 协议、同步内核、Vault/ConfigTree 产品闭环与发布安全审计已实现**，但仍是不可用于真实数据的预发布版本。发布前还必须完成 Task 16 的真实对象存储和桌面生命周期验收；移动端明确不属于 v1 支持范围。
+- `S3 Sync：同步`：先检查并拉取，再发布所有已记录的本地变化。
+- `S3 Sync：检查并拉取`：只读取远端并安全应用；遇到冲突会自动打开候选窗口。
+- `S3 Sync：状态与检查`：查看状态、预览、完整校验和复制脱敏诊断包。
 
-现有 `src/sync-engine.ts` 和 `src/s3-remote.ts` 是早期 legacy prototype，仍使用共享 `.s3-sync/manifest.json` 和路径直写对象。它们只可作为 Obsidian API、设置页和 UI 参考，不能作为新同步核心继续扩展。
+左侧栏的同步图标等同于“同步”。普通使用不需要分别理解 Push、Pull、Outbox 或仓库选择。
 
-机器可读协议、确定性多客户端模拟、Durable Outbox、Journal 安全应用、冲突处理、配置快照、仓库世代迁移和脱敏诊断均可在无网络的 Node 22 测试环境运行。legacy 同步和“本地重建远端”入口保持禁用；v1 发布/应用仅能经过不可变 Outbox、完整验证与非破坏性接入路径。
+## 连接设置
 
-## v1 协议概览
+填写 Endpoint、Region、Bucket、Access Key ID 和 Secret Access Key，然后点击一次“检测并应用”。Prefix 与 Path-style 位于高级设置。
 
-远端使用独立仓库世代：
+“检测并应用”会依次完成：
+
+1. 严格校验字段；
+2. LIST 当前 Prefix，并要求其中恰好没有仓库或只有一个仓库；
+3. 验证已有仓库身份，或在空范围中自动创建仓库；
+4. 用并发条件 PUT、GET、HEAD 和 LIST 验证对象存储能力；
+5. 全部通过后才保存设置并接入仓库。
+
+失败不会覆盖当前有效设置。错误通知带复制图标，复制内容包含稳定错误码、失败阶段、S3 operation、HTTP status、Request ID 和脱敏 cause 链，不包含凭证、正文、Endpoint、对象 Key 或明文 Vault 路径。
+
+常用配置：
+
+| 服务 | Endpoint | Region | Path-style |
+| --- | --- | --- | --- |
+| 本机 MinIO | `http://127.0.0.1:9000` | `us-east-1` | 开启 |
+| 百度 BOS 广州 | `https://s3.gz.bcebos.com` | `gz` | 开启 |
+| AWS S3 | 对应区域的官方 Endpoint | Bucket 所在区域 | 关闭 |
+
+除 `localhost` 和 `127.0.0.1` 外，Endpoint 必须使用 HTTPS，且只能填写 origin，不能带 Bucket、路径、查询参数或末尾 `/`。
+
+## 配置中心与忽略规则
+
+配置中心始终可用，不再有重复的“配置同步”总开关。默认只管理 `app.json`、`appearance.json` 和 `hotkeys.json`；远端配置只会被验证和预览，发布或应用都需要明确确认。
+
+- “同步的根级配置文件”是配置通道的允许列表，只接受直接位于 Obsidian `configDir` 下的文件名。
+- “Vault 文件忽略规则”是普通笔记/附件通道的排除列表，不控制配置中心。
+- 整个当前及历史 `configDir`、本插件目录、本地状态和冲突目录始终排除，避免重复同步或上传凭证。
+
+主题、CSS snippets、社区插件包和插件 `data.json` 都默认关闭。插件代码与 `data.json` 分别需要风险确认；本插件自身永远不能进入配置快照。
+
+## 数据安全模型
+
+- 远端 Blob、ConfigTree、Change Chunk 和 Commit 都是不可变对象；Commit 最后写入。
+- 每个 Vault 路径是一个多版本寄存器。离线并发保留所有头，不静默选胜者。
+- 本地变化第一次被观察时固定父版本；发布前新看到的远端头不会被错误吸收。
+- 待发布字节先进入磁盘暂存，再和 writer sequence 一起事务性冻结到 durable Outbox。
+- 重启后只重放同一份已验证字节，不生成替代 sequence。
+- 拉取写本地前后都校验本地前像、远端头、编辑 generation 和安装后像；恢复副本不会自动删除。
+- 确认删除以墓碑发布；读取失败、扫描不完整和超出范围不会伪装成删除。
+
+远端物理布局位于：
 
 ```text
 <prefix>/.obsidian-s3-sync/v1/repositories/<repository-id>/
@@ -32,103 +69,60 @@
   commits/<writer-id>/...
 ```
 
-- `repositoryId` 隔离同一 Prefix 下的仓库世代；新一代仓库不会复用旧本地基线。
-- `format.json` 的规范 Hash 绑定本地 Locator 及每个 Tree/Chunk/Commit；descriptor 或 configDir 被替换时停止仓库，不重解释旧提交。
-- Blob、ConfigTree、Change Chunk 和 Commit 都是不可变对象。
-- Commit 最后发布，是一次远端变更可见的唯一边界。
-- Vault 文件按路径维护多版本头；不同内容并发时保留所有版本。
-- 配置作为完整 ConfigTree 版本同步，不把并发快照按文件静默拼接。
-- S3 控制台中的物理布局不是可直接编辑的 Vault 镜像。
+这是对象协议，不是可在 S3 控制台直接编辑的 Vault 镜像。一个 Bucket + Prefix 只能有零或一个仓库；发现多个 descriptor 会直接阻断。`configDir` 身份改变时必须使用新 Prefix。
 
-## 本地安全模型
+## 安装与打包
 
-同步核心严格区分：
-
-- `observedHeads`：已从远端验证到的头。
-- `projectedHeads`：当前本地字节实际代表的远端头。
-- `basisHeads`：本地第一次可观察编辑时从 projectedHeads 固定的父版本。
-
-发布前拉到的新远端头不会替换已经固定的 basisHeads。Outbox 冻结后的后续编辑只继承同路径前一冻结本地版本，不吸收期间拉到的远端头。待发布内容会先进入本地不可变暂存，Outbox 保存可逐字节重放的 Commit；发布确认后还会重新核对本地 Hash/ConfigTree，不能只凭事件 generation 清理 dirty。远端内容只有在当前本地值仍等于已持久化 projection 时才能破坏性落盘；安装后、projection 记账前还会再次校验后像、dirty/generation 和远端头，并始终保留恢复字节与 ApplyJournal。
-
-本地缺失还会区分确认删除、读取失败、扫描未完成和退出同步范围；只有确认删除才能发布墓碑。
-
-v1 不自动删除本地恢复文件。即使外部进程在文件移入恢复区后继续通过旧句柄写入，新 Hash/size 也会作为 post-capture edit 保留并提示；清理必须由用户查看当前恢复记录后显式执行。
-
-大小写别名以及 `foo` 文件与 `foo/bar.md` 这类文件/目录碰撞会作为显式结构冲突保留，任何平台都不会静默选择其中一边。当前和历史配置目录、本插件状态与恢复数据始终排除，避免配置目录切换后泄露旧凭证。
-
-## 配置与插件
-
-配置路径相对于 Obsidian 实际的 `vault.configDir` 处理，不硬编码 `.obsidian`。
-
-同一 repositoryId 的所有设备必须使用相同的规范 `configDir` 和历史配置目录排除集合，这些值写入不可变 `format.json`。目录不一致、出现 descriptor 未记录的本机历史目录或运行中改变时停止原仓库同步，并通过携带历史并集的新 repositoryId 非破坏性迁移，避免任何设备把旧配置目录和凭证当普通 Vault 文件。
-
-- 远端配置自动下载和预览，但不会自动应用。
-- 社区插件包按目录级单元处理，`data.json` 默认排除并逐插件启用。
-- 平台相关的 `core-plugins.json` 不进入 v1 便携配置；未来需要同步时会使用结构化字段，而不是覆盖原始文件。
-- ConfigProfile 明确记录最低目标 Obsidian 版本和便携插件 ID；desktop-only、版本不兼容及未纳入便携集合的插件保持设备本地，不参与 ConfigTree Hash。
-- 应用远端启用列表时只替换便携插件子集，并始终合并回设备本地插件和本同步插件。
-- 本同步插件的代码、凭证、writerId、本地状态、Outbox 和恢复目录永久排除。
-- 平台没有可用密钥存储时，S3 凭证可能以本地插件 data.json 明文保存；本插件不会上传或放入诊断，但其他备份工具仍可能读取。
-- 插件 JavaScript 是可执行代码，必须显示高风险确认；v1 假定 Bucket 和所有写入者可信。
-- v1 没有端到端加密或提交签名；Vault 字节、路径和含密钥的第三方配置都会以应用层明文保存在 S3。
-
-## 仓库连接
-
-首次连接时，向导会持久化规范 endpoint、region、path-style、Bucket、确切 Prefix、repositoryId，以及 format.json 中的 configDir、historicalConfigDirs 和规范 descriptor Hash。凭证只属于本机认证配置，不进入仓库身份或远端协议。
-
-Prefix 可以根据 Vault 名称提出建议，但确认后不会随 Vault 改名自动变化。同一 Prefix 下存在多个 repositoryId 时必须显式选择，不会自动挑选或覆盖。
-
-普通同步只要求 List、Head/Get 和 Put 权限，但 Put 必须支持 `If-None-Match: *` 或等价原子“仅不存在时创建”；不支持的存储只能只读诊断。DeleteObject 不是 v1 正常同步的最低权限；旧世代删除和维护使用独立权限或供应商控制台。
-
-权限模板位于 `docs/s3-policy-minimal.json`、`docs/s3-policy-probe.json` 和 `docs/s3-policy-maintenance.json`。普通设备只使用 minimal；可删除 probe 和旧世代的凭证必须分开授予，并严格替换为对应独立 Prefix/旧 repositoryId。
-
-## 真实 S3 合同测试
-
-真实存储服务验证只用于确认 S3 adapter 的能力，不会同步 Vault，也不会创建或应用 v1 仓库。请使用专用测试 Bucket，或将 IAM 权限限制到 `contract/*` 前缀。测试会创建不可变对象，默认不执行 `DeleteObject`。
-
-不要将 Access Key、Secret Key 或 Session Token 写入 `test/setup-minio-contract.ts`、插件设置、`.env` 或任何提交文件。仅在当前 PowerShell 会话设置环境变量：
+运行：
 
 ```powershell
-$env:S3_ENDPOINT = "https://s3.<region>.amazonaws.com"
-$env:S3_REGION = "<region>"
-$env:S3_BUCKET = "<专用测试桶>"
-$env:S3_ACCESS_KEY_ID = "<AWS access key>"
-$env:S3_SECRET_ACCESS_KEY = "<AWS secret>"
-$env:S3_FORCE_PATH_STYLE = "false"
+npm install
+npm run test:ci
+```
 
-# 仅临时 AWS 凭证需要：
-# $env:S3_SESSION_TOKEN = "<AWS session token>"
+Obsidian 插件目录中只需要下面三个文件，并且必须直接放在该插件目录根部：
 
+```text
+<Vault>/<configDir>/plugins/obsidian-s3-sync/
+  main.js
+  manifest.json
+  styles.css
+```
+
+不需要发布 `dist/`，也不要把源码、测试、`node_modules` 或 `data.json` 打进用户安装包。仓库根目录的 `main.js` 就是构建产物。
+
+## 测试
+
+本地门禁：
+
+```powershell
+npm test
+npm run test:types
+npm run build
+npm run test:ci
+```
+
+对象存储合同：
+
+```powershell
+npm run test:s3-minio
+npm run test:s3-baidu
 npm run test:s3-aws
 ```
 
-标准 AWS endpoint 形如 `https://s3.ap-southeast-1.amazonaws.com`；中国区 endpoint 形如 `https://s3.cn-north-1.amazonaws.com.cn`。测试会验证同 Key 的两个并发条件写恰有一次成功，且后续 `GET`、`HEAD`、`LIST` 读取一致；同时执行下述仓库级恢复合同。
+云端合同测试必须使用专用 Bucket 或唯一 `contract/*` Prefix 和受限临时凭证。不要把任何密钥写入仓库文件。
 
-测试 IAM 最小权限为 Bucket 上的 `s3:ListBucket`，以及 `contract/*` 对象上的 `s3:GetObject` 和 `s3:PutObject`。不要授予 `s3:DeleteObject`。可测试 MinIO 时运行 `npm run test:s3-minio`；它使用 Docker Compose 的本地默认凭证，不需要任何云端密钥。
+## 安全边界
 
-v1 当前声明支持百度云 BOS 与 MinIO。AWS S3 保留为未验证、未声明支持；在通过 `npm run test:s3-aws` 前不得将其列为兼容供应商。未来新增腾讯 COS 或其他 S3 兼容服务时，必须先增加对应的 fail-closed 测试入口并通过同一合同。
+当前协议没有端到端加密和作者签名，假设 Bucket 管理员及所有持有写凭证的设备可信。S3 服务端可读取 Vault 路径、正文和被选择同步的配置。凭证在当前平台会以明文保存在本机插件 `data.json`，但不会上传或进入诊断报告。
 
-百度云 BOS 使用相同的合同，但必须使用专用入口，避免误用 MinIO 默认值或 AWS endpoint：
+普通同步只需要 List、Get/Head 和 Put；不需要 `DeleteObject`。同步不能替代独立备份，确认删除会传播到其他设备。
 
-```powershell
-$env:S3_ENDPOINT = "https://s3.gz.bcebos.com"
-$env:S3_REGION = "gz"
-$env:S3_BUCKET = "<专用测试桶>"
-$env:S3_ACCESS_KEY_ID = "<Baidu access key>"
-$env:S3_SECRET_ACCESS_KEY = "<Baidu secret key>"
-$env:S3_FORCE_PATH_STYLE = "true"
+## 文档
 
-npm run test:s3-baidu
-```
-
-成功输出必须显示对应供应商的 `ObjectStore contract` 与 `repository release acceptance`。仓库级合同会在随机 `contract/release/*` 下执行多 Chunk 续传、第三客户端恢复、世代隔离和 ConfigTree 恢复。MinIO 还会自动开启测试 Bucket Versioning，验证条件重试不产生多余版本；云端若要运行同项检查，需显式设置 `S3_TEST_VERSIONING=1` 并临时授予 Bucket Versioning/ListObjectVersions 权限。请在轮换旧密钥后使用新的受限凭证，且绝不把它们写入仓库文件。
-
-## 设计与实施
-
-- [design.md](design.md)：v1 协议、安全不变量、状态机和验收场景。
-- [tasks.md](tasks.md)：从协议证明、同步内核到配置快照和发布验收的实施顺序。
-- [docs/protocol-compatibility.md](docs/protocol-compatibility.md)：协议、运行时和供应商兼容边界。
-- [docs/release-v1.md](docs/release-v1.md)：旧原型迁移、灾难恢复和发布门禁。
-- [需求.md](需求.md)：项目背景和最初目标。
-
-实施顺序固定为：协议与测试向量 -> 纯 TypeScript 领域核心 -> 本地持久状态和安全应用 -> Vault 产品闭环 -> 配置快照 -> 发布加固。
+- [design.md](design.md)：当前唯一实现的架构与冻结安全场景。
+- [tasks.md](tasks.md)：已完成内容和剩余发布门禁。
+- [docs/manual-acceptance.md](docs/manual-acceptance.md)：逐项人工验收与连接排障。
+- [docs/support-boundaries.md](docs/support-boundaries.md)：协议、运行时和供应商支持边界。
+- [docs/release.md](docs/release.md)：构建、证据和发布清单。
+- [SECURITY.md](SECURITY.md)：信任、明文和权限边界。

@@ -6,7 +6,7 @@ import {
   SimulatedOfflineError,
   simulatedLocalIoBoundaries,
   type SimulatedLocalIoBoundary,
-} from "../../core/deterministic-simulator";
+} from "../support/deterministic-simulator";
 
 const put = (hash: string) => ({ kind: "put" as const, hash, size: 1 });
 

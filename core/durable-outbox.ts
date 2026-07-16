@@ -46,6 +46,16 @@ export interface DurableOutboxEntry {
   mutations: DurableOutboxMutation[];
 }
 
+export interface VerifiedTerminalOutboxProof {
+  outboxId: string;
+  repositoryFingerprint: string;
+  writerId: string;
+  sequence: string;
+  previousCommitHash: string | null;
+  commitHash: string;
+  objects: Array<Pick<DurableOutboxObject, "kind" | "key" | "hash" | "size">>;
+}
+
 export interface DurablePublishedReconcile {
   outboxId: string;
   registerKey: string;
@@ -68,11 +78,42 @@ export interface DurableOutboxReplaySource {
 
 export interface DurableOutboxReplayTarget {
   readonly repositoryFingerprint: string;
+  isRemoteVerified(object: Pick<DurableOutboxObject, "kind" | "key" | "hash" | "size">): Promise<boolean>;
   putImmutable(
     object: Pick<DurableOutboxObject, "kind" | "key" | "hash" | "size">,
     openBody: () => Promise<AsyncIterable<Uint8Array>>,
   ): Promise<void>;
   verifyRemote(object: Pick<DurableOutboxObject, "kind" | "key" | "hash" | "size">): Promise<void>;
+}
+
+export type DurableOutboxReplayStage =
+  | "durable-open"
+  | "begin"
+  | "descriptor"
+  | "frontier"
+  | "staged-verify"
+  | "remote-recovery-check"
+  | "terminal-remote-verify"
+  | "put"
+  | "remote-verify"
+  | "inspect"
+  | "durable-confirm"
+  | "reconcile";
+
+export class DurableOutboxReplayError extends Error {
+  readonly kind = "durable-outbox-replay";
+
+  constructor(readonly outboxStage: DurableOutboxReplayStage, readonly cause: unknown) {
+    super("durable Outbox replay failed");
+    this.name = "DurableOutboxReplayError";
+  }
+}
+
+export function withDurableOutboxReplayStage(
+  stage: DurableOutboxReplayStage,
+  error: unknown,
+): DurableOutboxReplayError {
+  return error instanceof DurableOutboxReplayError ? error : new DurableOutboxReplayError(stage, error);
 }
 
 export async function freezeDurableOutbox(input: {
@@ -150,6 +191,34 @@ export function transitionDurableOutbox(
   return freezeEntry({ ...entry, state: next });
 }
 
+export function confirmRemotelyVerifiedTerminalOutbox(
+  entry: DurableOutboxEntry,
+  proof: VerifiedTerminalOutboxProof,
+): DurableOutboxEntry {
+  // 终止状态只能凭全部远端对象的逐项回读证明直接收敛，不能退回可写状态。
+  if (entry.state !== "integrity-error" && entry.state !== "recovery-required") {
+    throw new Error("remote recovery proof requires a terminal durable Outbox");
+  }
+  if (proof.outboxId !== entry.id
+    || proof.repositoryFingerprint !== entry.repositoryFingerprint
+    || proof.writerId !== entry.writerId
+    || proof.sequence !== entry.sequence
+    || proof.previousCommitHash !== entry.previousCommitHash
+    || proof.commitHash !== entry.commitHash
+    || proof.objects.length !== entry.objects.length) {
+    throw new Error("remote recovery proof does not match the frozen durable Outbox");
+  }
+  for (let index = 0; index < entry.objects.length; index += 1) {
+    const expected = entry.objects[index];
+    const verified = proof.objects[index];
+    if (verified.kind !== expected.kind || verified.key !== expected.key
+      || verified.hash !== expected.hash || verified.size !== expected.size) {
+      throw new Error("remote recovery proof does not cover every frozen durable Outbox object");
+    }
+  }
+  return freezeEntry({ ...entry, state: "published" });
+}
+
 export function markWriterForked(entries: readonly DurableOutboxEntry[], writerId: string): DurableOutboxEntry[] {
   return entries.map((entry) => entry.writerId === writerId && !isTerminal(entry.state)
     ? freezeEntry({ ...entry, writerDisposition: "forked-draining" })
@@ -203,13 +272,33 @@ export async function replayFrozenDurableOutbox(
   source: DurableOutboxReplaySource,
   target: DurableOutboxReplayTarget,
 ): Promise<void> {
-  if (entry.state !== "publishing") throw new Error("durable Outbox must be publishing before replay");
+  if (entry.state !== "publishing" && entry.state !== "integrity-error" && entry.state !== "recovery-required") {
+    throw new Error("durable Outbox must be publishing or in terminal recovery before replay");
+  }
   if (entry.repositoryFingerprint !== target.repositoryFingerprint) throw new Error("durable Outbox belongs to another repository binding");
   assertDurableOutboxQueue([entry]);
   for (const object of entry.objects) {
-    await source.verify(object.contentRef, { hash: object.hash, size: object.size });
-    await target.putImmutable(object, () => source.read(object.contentRef));
-    await target.verifyRemote(object);
+    try {
+      await source.verify(object.contentRef, { hash: object.hash, size: object.size });
+    } catch (stagedError) {
+      try {
+        // 远端对象若已完整落盘，可直接完成崩溃后的本地确认，不再依赖丢失的暂存副本。
+        if (await target.isRemoteVerified(object)) continue;
+      } catch (remoteError) {
+        throw withDurableOutboxReplayStage("remote-recovery-check", remoteError);
+      }
+      throw withDurableOutboxReplayStage("staged-verify", stagedError);
+    }
+    try {
+      await target.putImmutable(object, () => source.read(object.contentRef));
+    } catch (error) {
+      throw withDurableOutboxReplayStage("put", error);
+    }
+    try {
+      await target.verifyRemote(object);
+    } catch (error) {
+      throw withDurableOutboxReplayStage("remote-verify", error);
+    }
   }
 }
 

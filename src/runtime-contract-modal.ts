@@ -1,5 +1,8 @@
 import { Modal, Setting } from "obsidian";
 import type { App } from "obsidian";
+import { logSafeError } from "../core/safe-error";
+import { showCopyableErrorNotice } from "./copyable-notice";
+import { writeClipboardText } from "./clipboard";
 import type { DesktopRuntimeContractResult } from "./runtime-contract";
 
 export class RuntimeContractModal extends Modal {
@@ -9,7 +12,7 @@ export class RuntimeContractModal extends Modal {
 
   onOpen(): void {
     const text = [
-      "S3 Sync v1 runtime contract",
+      "S3 Sync 运行环境合同",
       `configDir available=${this.result.configDirAvailable}`,
       `durable write/read=${this.result.durableWriteReadback}`,
       `durable across plugin reload=${this.result.durableAcrossPluginReload === null ? "pending reload" : this.result.durableAcrossPluginReload}`,
@@ -25,15 +28,22 @@ export class RuntimeContractModal extends Modal {
     ].join("\n");
 
     this.contentEl.empty();
-    this.contentEl.createEl("h2", { text: "S3 Sync v1 runtime contract" });
+    this.contentEl.createEl("h2", { text: "S3 Sync 运行环境合同" });
     this.contentEl.createEl("pre", { text });
     new Setting(this.contentEl)
       .addButton((button) => button
         .setButtonText("Copy result")
+        .setIcon("copy")
         .setCta()
         .onClick(async () => {
-          await navigator.clipboard.writeText(text);
-          button.setButtonText("Copied");
+          try {
+            await writeClipboardText(text);
+            button.setButtonText("Copied");
+            button.setIcon("check");
+          } catch (error) {
+            showCopyableErrorNotice("S3 Sync：运行环境检查结果复制失败", error, "runtime-contract-copy");
+            logSafeError("S3 Sync runtime contract copy failed", error);
+          }
         }));
   }
 

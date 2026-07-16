@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildVaultPutPublishEnvelope } from "../../core/vault-publish-envelope";
+import { buildVaultDeleteControlEnvelope, buildVaultPutPublishEnvelope } from "../../core/vault-publish-envelope";
 import { sha256Hex } from "../../protocol/hash";
 
 describe("Vault put publish envelope", () => {
@@ -9,5 +9,25 @@ describe("Vault put publish envelope", () => {
     expect(envelope.blobs).toHaveLength(1);
     expect(envelope.chunks).toHaveLength(1);
     expect(envelope.commit.key).toContain("/commits/");
+  });
+
+  it("builds a delete envelope without a Blob", () => {
+    const parent = `${"b".repeat(64)}:0:0`;
+    const envelope = buildVaultDeleteControlEnvelope({
+      prefix: "",
+      repositoryId: "123e4567-e89b-42d3-a456-426614174000",
+      descriptorHash: "a".repeat(64),
+      writerId: "123e4567-e89b-42d3-a456-426614174001",
+      sequence: "00000000000000000002",
+      previousCommitHash: "c".repeat(64),
+      createdAt: "2026-07-13T00:00:00.000Z",
+      clientVersion: "0.1.0",
+      path: "notes/a.md",
+      parents: [parent],
+    });
+    expect(envelope.blobs).toEqual([]);
+    expect(JSON.parse(new TextDecoder().decode(envelope.chunks[0].bytes)).mutations).toEqual([
+      { path: "notes/a.md", kind: "delete", parents: [parent] },
+    ]);
   });
 });

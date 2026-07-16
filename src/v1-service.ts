@@ -21,10 +21,21 @@ import { parseVersionId } from "../core/version-id";
 import type { ProtocolConfigTree } from "../core/config-tree";
 import type { CommitKind } from "../core/types";
 import { buildConfigSnapshotPublishEnvelope } from "../core/config-publish-envelope";
-import { replayFrozenDurableOutbox, type DurableOutboxEntry, type DurableOutboxReplaySource } from "../core/durable-outbox";
+import {
+  replayFrozenDurableOutbox,
+  withDurableOutboxReplayStage,
+  type DurableOutboxEntry,
+  type DurableOutboxReplaySource,
+  type VerifiedTerminalOutboxProof,
+} from "../core/durable-outbox";
 import { ObjectStoreError, readObjectBytes, verifyObjectStream } from "../core/object-store";
 import { verifyBlobWithAdvisoryCache, type BlobExistenceCacheEntry } from "../core/blob-existence-cache";
-import { repositoryPerformanceProfiles } from "../core/performance-profile";
+import { repositoryPerformanceProfile } from "../core/performance-profile";
+import {
+  inspectRemoteVaultRegister,
+  listRemoteVaultConflicts,
+  type RemoteVaultRegisterSnapshot,
+} from "../core/remote-vault-conflict";
 import {
   calculateRepositorySpaceStatistics,
   listRepositoryProtocolObjects,
@@ -32,14 +43,9 @@ import {
   type RepositoryRequestCounts,
   type RepositorySpaceStatistics,
 } from "../core/repository-statistics";
-import {
-  executeRepositoryGenerationMigration,
-  writeRepositoryGeneration,
-  type RepositoryGenerationMigrationResult,
-  type RepositoryGenerationTargetBinding,
-} from "../core/repository-generation";
+import { compareUtf8 } from "../protocol/utf8";
 
-const REPOSITORY_TRANSFER_CONCURRENCY = repositoryPerformanceProfiles.desktop.downloadConcurrency;
+const REPOSITORY_TRANSFER_CONCURRENCY = repositoryPerformanceProfile.downloadConcurrency;
 const DEFAULT_REQUEST_PRICING = Object.freeze({ currency: "USD", list: 0.005, get: 0.0004, put: 0.005 });
 
 export interface V1ConfigHead {
@@ -68,7 +74,7 @@ export class V1RepositoryService {
   private readonly objectStore: S3ObjectStore;
   private readonly blobExistenceCache = new Map<string, BlobExistenceCacheEntry>();
 
-  constructor(private readonly settings: S3SyncSettings, prefix = settings.prefix) {
+  constructor(private readonly settings: S3SyncSettings, prefix = settings.prefix, signal?: AbortSignal) {
     this.locator = createRepositoryLocator(
       { endpoint: settings.endpoint, region: settings.region, bucket: settings.bucket, forcePathStyle: settings.forcePathStyle, prefix },
       settings.endpoint.startsWith("http://127.0.0.1") || settings.endpoint.startsWith("http://localhost"),
@@ -81,6 +87,7 @@ export class V1RepositoryService {
       forcePathStyle: this.locator.forcePathStyle,
       credentials: { accessKeyId: this.settings.accessKeyId, secretAccessKey: this.settings.secretAccessKey },
       maximumConcurrency: REPOSITORY_TRANSFER_CONCURRENCY,
+      signal,
     });
   }
   async discover(): Promise<Array<{ key: string; repositoryId: string; descriptorHash: string; configDir: string; historicalConfigDirs: string[] }>> {
@@ -146,14 +153,30 @@ export class V1RepositoryService {
     acceptedCommits: CommitFrontierAnchor[];
     observations: RemoteRegisterObservation[];
   }> {
+    const pulled = await this.inspectVaultRegisterWithAnchors(repositoryId, descriptorHash, path);
+    if (pulled.register.disposition !== "resolved") {
+      throw new Error(`cannot publish ${path}: remote register is ${pulled.register.disposition}`);
+    }
+    const candidate = pulled.register.candidates[0];
+    return {
+      value: candidate?.kind === "put"
+        ? { heads: pulled.register.heads, hash: candidate.hash, size: candidate.size }
+        : undefined,
+      acceptedCommits: pulled.acceptedCommits,
+      observations: pulled.observations,
+    };
+  }
+  async inspectVaultRegisterWithAnchors(repositoryId: string, descriptorHash: string, path: string): Promise<{
+    register: RemoteVaultRegisterSnapshot;
+    acceptedCommits: CommitFrontierAnchor[];
+    observations: RemoteRegisterObservation[];
+  }> {
     const pulled = await this.pullAllCommitsWithAnchors(repositoryId, descriptorHash);
-    const repository = pulled.repository;
-    const state = repository.register(repositoryId, "vault", path);
-    if (state.disposition !== "resolved") throw new Error(`cannot publish ${path}: remote register is ${state.disposition}`);
-    const observations = registerObservations(repository, repositoryId);
-    if (state.heads.length === 0) return { value: undefined, acceptedCommits: pulled.acceptedCommits, observations };
-    const version = repository.version(state.heads[0]);
-    return { value: version?.blob ? { heads: state.heads, hash: version.blob.hash, size: version.blob.size } : undefined, acceptedCommits: pulled.acceptedCommits, observations };
+    return {
+      register: inspectRemoteVaultRegister(pulled.repository, repositoryId, path),
+      acceptedCommits: pulled.acceptedCommits,
+      observations: registerObservations(pulled.repository, repositoryId),
+    };
   }
   async listResolvedVaultPuts(repositoryId: string, descriptorHash: string): Promise<Array<{ path: string; hash: string; size: number; bytes: Uint8Array; heads: string[] }>> {
     const listed = await this.listResolvedVaultPutsWithDiagnostics(repositoryId, descriptorHash);
@@ -167,6 +190,7 @@ export class V1RepositoryService {
     files: Array<{ path: string; hash: string; size: number; heads: string[] }>;
     blocked: Array<{ path: string; heads: string[]; reason: unknown }>;
     blockedCommitKeys: Array<{ key: string; reason: unknown }>;
+    conflicts: RemoteVaultRegisterSnapshot[];
     acceptedCommits: CommitFrontierAnchor[];
     observations: RemoteRegisterObservation[];
   }> {
@@ -186,9 +210,10 @@ export class V1RepositoryService {
       { concurrency: REPOSITORY_TRANSFER_CONCURRENCY },
     );
     return {
-      files: result.available.sort((left, right) => left.path.localeCompare(right.path)),
-      blocked: result.blocked.sort((left, right) => left.path.localeCompare(right.path)),
+      files: result.available.sort((left, right) => compareUtf8(left.path, right.path)),
+      blocked: result.blocked.sort((left, right) => compareUtf8(left.path, right.path)),
       blockedCommitKeys: pulled.blockedCommitKeys,
+      conflicts: listRemoteVaultConflicts(repository, repositoryId),
       acceptedCommits: pulled.acceptedCommits,
       observations: registerObservations(repository, repositoryId),
     };
@@ -302,11 +327,20 @@ export class V1RepositoryService {
     source: DurableOutboxReplaySource;
     writerFrontiers: WriterFrontiers;
   }): Promise<CommitFrontierAnchor> {
-    await this.requireDescriptor(input.repositoryId, input.descriptorHash);
+    try {
+      await this.requireDescriptor(input.repositoryId, input.descriptorHash);
+    } catch (error) {
+      throw withDurableOutboxReplayStage("descriptor", error);
+    }
     const store = this.store();
-    await verifyWriterFrontiers(store, input.repositoryId, input.descriptorHash, input.writerFrontiers);
+    try {
+      await verifyWriterFrontiers(store, input.repositoryId, input.descriptorHash, input.writerFrontiers);
+    } catch (error) {
+      throw withDurableOutboxReplayStage("frontier", error);
+    }
     await replayFrozenDurableOutbox(input.entry, input.source, {
       repositoryFingerprint: repositoryFingerprint(this.locator, input.repositoryId, input.descriptorHash),
+      isRemoteVerified: async (object) => remoteObjectIsVerified(store, object),
       putImmutable: async (object, openBody) => {
         const publish = async (): Promise<void> => {
           if (store.putImmutableStream) {
@@ -343,6 +377,71 @@ export class V1RepositoryService {
       sequence: input.entry.sequence,
       hash: input.entry.commitHash,
       previousCommitHash: input.entry.previousCommitHash,
+    };
+  }
+  async verifyTerminalDurableOutboxRemoteCopy(input: {
+    repositoryId: string;
+    descriptorHash: string;
+    entry: DurableOutboxEntry;
+    source: DurableOutboxReplaySource;
+    writerFrontiers: WriterFrontiers;
+  }): Promise<{ anchor: CommitFrontierAnchor; proof: VerifiedTerminalOutboxProof }> {
+    if (input.entry.state !== "integrity-error" && input.entry.state !== "recovery-required") {
+      throw new Error("terminal durable Outbox verification requires a terminal entry");
+    }
+    try {
+      if (input.entry.repositoryFingerprint !== repositoryFingerprint(this.locator, input.repositoryId, input.descriptorHash)) {
+        throw new Error("terminal durable Outbox belongs to another repository binding");
+      }
+      await this.requireDescriptor(input.repositoryId, input.descriptorHash);
+    } catch (error) {
+      throw withDurableOutboxReplayStage("descriptor", error);
+    }
+    const store = this.store();
+    try {
+      await verifyWriterFrontiers(store, input.repositoryId, input.descriptorHash, input.writerFrontiers);
+    } catch (error) {
+      throw withDurableOutboxReplayStage("frontier", error);
+    }
+    await replayFrozenDurableOutbox(input.entry, input.source, {
+      repositoryFingerprint: repositoryFingerprint(this.locator, input.repositoryId, input.descriptorHash),
+      isRemoteVerified: async (object) => remoteObjectIsVerified(store, object),
+      putImmutable: async (object, openBody) => {
+        if (store.putImmutableStream) {
+          await store.putImmutableStream(object.key, openBody, { hash: object.hash, size: object.size });
+          return;
+        }
+        await store.putImmutable(object.key, await readReplayBody(await openBody(), object.hash, object.size));
+      },
+      verifyRemote: async (object) => {
+        await verifyObjectStream(store, object.key, { hash: object.hash, size: object.size });
+      },
+    });
+    for (const object of input.entry.objects) {
+      try {
+        await verifyObjectStream(store, object.key, { hash: object.hash, size: object.size });
+      } catch (error) {
+        throw withDurableOutboxReplayStage("terminal-remote-verify", error);
+      }
+    }
+    const commit = input.entry.objects.at(-1)!;
+    return {
+      anchor: {
+        key: commit.key,
+        writerId: input.entry.writerId,
+        sequence: input.entry.sequence,
+        hash: input.entry.commitHash,
+        previousCommitHash: input.entry.previousCommitHash,
+      },
+      proof: {
+        outboxId: input.entry.id,
+        repositoryFingerprint: input.entry.repositoryFingerprint,
+        writerId: input.entry.writerId,
+        sequence: input.entry.sequence,
+        previousCommitHash: input.entry.previousCommitHash,
+        commitHash: input.entry.commitHash,
+        objects: input.entry.objects.map(({ kind, key, hash, size }) => ({ kind, key, hash, size })),
+      },
     };
   }
   async pullCommit(repositoryId: string, descriptorHash: string, commitKey: string, repository = new InMemoryRepositoryCore()): Promise<InMemoryRepositoryCore> {
@@ -432,55 +531,6 @@ export class V1RepositoryService {
       space,
     };
   }
-  async migrateRepositoryGeneration(input: {
-    sourceRepositoryId: string;
-    sourceDescriptorHash: string;
-    sourceConfigDir: string;
-    sourceHistoricalConfigDirs: readonly string[];
-    targetRepositoryId: string;
-    targetConfigDir: string;
-    participantHistoricalConfigDirs: readonly string[];
-    writerId: string;
-    createdAt: string;
-    clientVersion: string;
-    switchDevices: (target: RepositoryGenerationTargetBinding) => Promise<void>;
-    signal?: AbortSignal;
-  }): Promise<RepositoryGenerationMigrationResult> {
-    const audit = (repositoryId: string, descriptorHash: string) => auditRemoteRepository(
-      this.store(),
-      this.prefix,
-      repositoryId,
-      descriptorHash,
-      { signal: input.signal },
-    );
-    return executeRepositoryGenerationMigration({
-      sourceRepositoryId: input.sourceRepositoryId,
-      sourceDescriptorHash: input.sourceDescriptorHash,
-      sourceConfigDir: input.sourceConfigDir,
-      sourceHistoricalConfigDirs: input.sourceHistoricalConfigDirs,
-      targetRepositoryId: input.targetRepositoryId,
-      targetConfigDir: input.targetConfigDir,
-      participantHistoricalConfigDirs: input.participantHistoricalConfigDirs,
-      auditSource: () => audit(input.sourceRepositoryId, input.sourceDescriptorHash),
-      createTargetDescriptor: (target) => createRepositoryDescriptor(this.store(), { prefix: this.prefix, ...target }),
-      writeTarget: async ({ sourceAudit, target }) => {
-        await writeRepositoryGeneration({
-          sourceStore: this.store(),
-          targetStore: this.store(),
-          sourcePrefix: this.prefix,
-          targetPrefix: this.prefix,
-          sourceAudit,
-          target,
-          writerId: input.writerId,
-          createdAt: input.createdAt,
-          clientVersion: input.clientVersion,
-          options: { signal: input.signal },
-        });
-      },
-      auditTarget: (target) => audit(target.repositoryId, target.descriptorHash),
-      switchDevices: input.switchDevices,
-    });
-  }
   performanceMetrics(): S3ObjectStoreMetrics {
     return this.objectStore.metrics();
   }
@@ -518,18 +568,11 @@ function registerObservations(repository: InMemoryRepositoryCore, repositoryId: 
       disposition: state.disposition,
       ...(version ? { valueHash: configValueHash ?? version.blob?.hash ?? null } : {}),
     };
-  }).sort((left, right) => left.key.localeCompare(right.key));
+  }).sort((left, right) => compareUtf8(left.key, right.key));
 }
 
 function configTreeHash(tree: ProtocolConfigTree): string {
   return sha256Hex(new TextEncoder().encode(canonicalizeProtocolJson(tree)));
-}
-
-function compareUtf8(left: string, right: string): number {
-  const encoder = new TextEncoder(); const a = encoder.encode(left); const b = encoder.encode(right);
-  const length = Math.min(a.length, b.length);
-  for (let index = 0; index < length; index += 1) if (a[index] !== b[index]) return a[index] - b[index];
-  return a.length - b.length;
 }
 
 async function readReplayBody(body: AsyncIterable<Uint8Array>, expectedHash: string, expectedSize: number): Promise<Uint8Array> {

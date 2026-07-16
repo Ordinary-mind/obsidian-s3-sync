@@ -1,5 +1,6 @@
 import type { ConfigProfile } from "./types";
 import { normalizeVaultPath, validatePortablePluginId, vaultPathCaseFoldKey } from "./path";
+import { compareUtf8 } from "../protocol/utf8";
 
 export const DEFAULT_CONFIG_BASE_FILES = ["app.json", "appearance.json", "hotkeys.json"] as const;
 
@@ -102,15 +103,4 @@ function isUtf8SortedUnique(values: readonly string[]): boolean {
     if (compareUtf8(values[index - 1], values[index]) >= 0) return false;
   }
   return true;
-}
-
-function compareUtf8(left: string, right: string): number {
-  const encoder = new TextEncoder();
-  const leftBytes = encoder.encode(left);
-  const rightBytes = encoder.encode(right);
-  const length = Math.min(leftBytes.length, rightBytes.length);
-  for (let index = 0; index < length; index += 1) {
-    if (leftBytes[index] !== rightBytes[index]) return leftBytes[index] - rightBytes[index];
-  }
-  return leftBytes.length - rightBytes.length;
 }

@@ -7,7 +7,7 @@ import type { ImmutableObject } from "./immutable-object";
 export function assertBlobSize(size: number, platformMaximumBytes: number = protocolLimits.blobBytes): void {
   if (!Number.isSafeInteger(platformMaximumBytes) || platformMaximumBytes < 0) throw new Error("invalid platform Blob limit");
   if (!Number.isSafeInteger(size) || size < 0 || size > protocolLimits.blobBytes) {
-    throw new Error(`Blob exceeds v1 protocol limit of ${protocolLimits.blobBytes} bytes`);
+    throw new Error(`Blob exceeds the current protocol limit of ${protocolLimits.blobBytes} bytes`);
   }
   if (size > platformMaximumBytes) throw new Error(`Blob exceeds platform limit of ${platformMaximumBytes} bytes`);
 }

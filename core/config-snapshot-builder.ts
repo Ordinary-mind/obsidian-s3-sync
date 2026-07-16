@@ -6,6 +6,7 @@ import type { ConfigScanItem, StableConfigScanResult } from "./config-scan";
 import { validatePortablePluginId, vaultPathCaseFoldKey } from "./path";
 import type { ConfigProfile } from "./types";
 import type { ProtocolConfigTree } from "./config-tree";
+import { compareUtf8 } from "../protocol/utf8";
 
 export type ManagedConfigItem =
   | { path: string; kind: "put"; hash: string; size: number; stagedRef: string }
@@ -159,11 +160,4 @@ function validateEnabledCommunityPlugins(values: readonly string[], profile: Con
     if (index > 0 && compareUtf8(values[index - 1], id) >= 0) return false;
   }
   return true;
-}
-
-function compareUtf8(left: string, right: string): number {
-  const encoder = new TextEncoder(); const a = encoder.encode(left); const b = encoder.encode(right);
-  const length = Math.min(a.length, b.length);
-  for (let index = 0; index < length; index += 1) if (a[index] !== b[index]) return a[index] - b[index];
-  return a.length - b.length;
 }

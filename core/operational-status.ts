@@ -1,6 +1,23 @@
-import type { CoordinatorPhase } from "./sync-coordinator";
 import type { SyncDiagnosticCategory } from "./diagnostics";
 import type { RepositorySpaceStatistics } from "./repository-statistics";
+
+export type CoordinatorPhase =
+  | "idle"
+  | "recovering"
+  | "verifying-repository"
+  | "pulling"
+  | "merging"
+  | "applying"
+  | "scanning"
+  | "repulling"
+  | "freezing-outbox"
+  | "publishing"
+  | "verifying-publication"
+  | "auditing"
+  | "previewing"
+  | "waiting-retry"
+  | "read-only"
+  | "stopped";
 
 export type PathDecisionKind = "same" | "local-put" | "remote-put" | "tombstone" | "conflict" | "ignored" | "unknown";
 
@@ -22,6 +39,27 @@ export interface FullAuditStatus {
 
 export type RepositorySpaceSummary = Omit<RepositorySpaceStatistics, "orphanKeys">;
 
+export type RecoveryBlockerCode =
+  | "repository-state"
+  | "durable-outbox"
+  | "vault-apply"
+  | "config-apply";
+
+export interface RecoveryBlocker {
+  code: RecoveryBlockerCode;
+  source: "repository-state" | "outbox" | "vault-apply-journal" | "config-apply-journal";
+  disposition: "automatic" | "manual";
+  message: string;
+}
+
+export interface OperationalError {
+  category: SyncDiagnosticCategory;
+  message: string;
+  report: string;
+  syncStage?: string;
+  connectionStage?: string;
+}
+
 export function summarizeRepositorySpace(space: RepositorySpaceStatistics): RepositorySpaceSummary {
   const { orphanKeys: _orphanKeys, ...summary } = space;
   return structuredClone(summary);
@@ -41,19 +79,15 @@ export interface OperationalStatus {
   conflicts: number;
   retryAt?: number;
   retryAttempt: number;
-  lastError?: { category: SyncDiagnosticCategory; message: string };
+  lastError?: OperationalError;
   decisions: PathDecisionRecord[];
   audit: FullAuditStatus;
-  recoveryRequired: boolean;
+  recoveryBlockers: RecoveryBlocker[];
   repositoryIdentityValid: boolean;
-  highRiskOperation?: {
-    kind: "clone" | "new-generation";
-    summary: HighRiskOperationSummary;
-  };
 }
 
 export function repositoryHealthLabel(status: OperationalStatus): "healthy" | "working" | "attention" | "diagnostics-only" {
-  if (!status.repositoryIdentityValid || status.recoveryRequired) return "diagnostics-only";
+  if (!status.repositoryIdentityValid || hasManualRecoveryBlocker(status)) return "diagnostics-only";
   if (status.lastError || status.conflicts > 0 || status.commitGaps > 0
     || status.audit.state === "failed" || status.audit.state === "cancelled"
     || status.audit.missingClosure.length > 0) return "attention";
@@ -128,6 +162,8 @@ export function diagnosticCategoryLabel(category: SyncDiagnosticCategory): strin
     "repository-identity": "仓库身份",
     "local-path": "本地路径",
     conflict: "冲突",
+    cancelled: "已取消",
+    internal: "内部错误",
   };
   return labels[category];
 }
@@ -139,9 +175,13 @@ export function auditCoveragePercent(audit: FullAuditStatus): number {
 
 export function mayRunMutatingSync(status: OperationalStatus): boolean {
   return status.repositoryIdentityValid
-    && !status.recoveryRequired
+    && !hasManualRecoveryBlocker(status)
     && status.phase !== "read-only"
     && status.phase !== "stopped";
+}
+
+export function hasManualRecoveryBlocker(status: Pick<OperationalStatus, "recoveryBlockers">): boolean {
+  return status.recoveryBlockers.some((blocker) => blocker.disposition === "manual");
 }
 
 export function operationalStatusBarText(status: OperationalStatus): string {
@@ -197,21 +237,6 @@ export function derivePathDecision(input: {
   if (input.localIntent === "delete") return { path: input.path, decision: "tombstone", reason: "本地删除意图等待删除证据与发布" };
   if (input.localState === "present") return { path: input.path, decision: "local-put", reason: "本地内容尚无远端解析值" };
   return { path: input.path, decision: "same", reason: "本地与远端均无活动值" };
-}
-
-export interface HighRiskOperationSummary {
-  repositoryId: string;
-  normalizedPrefix: string;
-  objectCount: number;
-  totalBytes: number;
-  recoveryLocation: string;
-}
-
-export function assertHighRiskSummaryComplete(summary: HighRiskOperationSummary): void {
-  if (!summary.repositoryId || summary.normalizedPrefix === undefined || !Number.isSafeInteger(summary.objectCount) || summary.objectCount < 0
-    || !Number.isSafeInteger(summary.totalBytes) || summary.totalBytes < 0 || !summary.recoveryLocation) {
-    throw new Error("high-risk operation summary is incomplete");
-  }
 }
 
 export function destructiveRepositoryResetAvailable(): false { return false; }

@@ -13,15 +13,15 @@ describe("config UI state", () => {
   const profile = createDefaultConfigProfile("1.8.0");
 
   it("keeps pending, conflict, incompatibility, and apply failure out of generic network state", () => {
-    expect(deriveConfigRegisterUiState({ enabled: true, repositoryBound: true, remoteDisposition: "pending", pendingVersions: ["p"] }))
+    expect(deriveConfigRegisterUiState({ repositoryBound: true, remoteDisposition: "pending", pendingVersions: ["p"] }))
       .toMatchObject({ status: "pending", pendingVersions: ["p"] });
-    expect(deriveConfigRegisterUiState({ enabled: true, repositoryBound: true, remoteDisposition: "conflict", remoteHeads: ["b", "a"] }))
+    expect(deriveConfigRegisterUiState({ repositoryBound: true, remoteDisposition: "conflict", remoteHeads: ["b", "a"] }))
       .toMatchObject({ status: "conflict", remoteHeads: ["a", "b"] });
-    expect(deriveConfigRegisterUiState({ enabled: true, repositoryBound: true, remoteDisposition: "resolved", compatible: false }))
+    expect(deriveConfigRegisterUiState({ repositoryBound: true, remoteDisposition: "resolved", compatible: false }))
       .toMatchObject({ status: "incompatible" });
-    expect(deriveConfigRegisterUiState({ enabled: true, repositoryBound: true, remoteDisposition: "resolved", applyFailure: "rolled-back" }))
+    expect(deriveConfigRegisterUiState({ repositoryBound: true, remoteDisposition: "resolved", applyFailure: "rolled-back" }))
       .toMatchObject({ status: "apply-failed" });
-    expect(deriveConfigRegisterUiState({ enabled: true, repositoryBound: true, remoteDisposition: "resolved", applyFailure: "recovery-required" }))
+    expect(deriveConfigRegisterUiState({ repositoryBound: true, remoteDisposition: "resolved", applyFailure: "recovery-required" }))
       .toMatchObject({ status: "recovery-required" });
   });
 

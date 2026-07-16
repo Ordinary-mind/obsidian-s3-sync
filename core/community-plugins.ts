@@ -2,6 +2,7 @@ import { canonicalizeProtocolJson, parseBoundedJson } from "../protocol/json";
 import { validatePortablePluginId, vaultPathCaseFoldKey } from "./path";
 import type { ConfigProfile } from "./types";
 import { safeErrorMessage } from "./safe-error";
+import { compareUtf8 } from "../protocol/utf8";
 
 const communityPluginsMaximumBytes = 4 * 1024 * 1024;
 const communityPluginsMaximumIds = 100_000;
@@ -79,12 +80,4 @@ export function encodeCommunityPluginIds(ids: readonly string[]): Uint8Array {
   if (bytes.byteLength > communityPluginsMaximumBytes) throw new Error("community plugin list exceeds 4 MiB");
   parseCommunityPluginIds(bytes);
   return bytes;
-}
-
-function compareUtf8(left: string, right: string): number {
-  const encoder = new TextEncoder();
-  const a = encoder.encode(left); const b = encoder.encode(right);
-  const length = Math.min(a.length, b.length);
-  for (let index = 0; index < length; index += 1) if (a[index] !== b[index]) return a[index] - b[index];
-  return a.length - b.length;
 }

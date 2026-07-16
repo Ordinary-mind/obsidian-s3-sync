@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { createDefaultConfigProfile, hasPackageManifestAnchor, isConfigItemCovered, isPortablePluginIdAllowed, validateConfigProfile } from "../../core/config-profile";
-import { mergeEnabledPortablePlugins } from "../../core/plugin-enable";
 
 const profile = { baseFiles: ["app.json"], syncThemes: true, syncSnippets: false, portablePluginIds: ["plugin"], pluginPackages: ["plugin"], pluginData: ["plugin"] };
 describe("ConfigTree profile coverage", () => {
@@ -11,10 +10,9 @@ describe("ConfigTree profile coverage", () => {
     expect(isConfigItemCovered("plugins/plugin/data.json", profile)).toBe(true);
     expect(isConfigItemCovered("workspace.json", profile)).toBe(false);
   });
-  it("requires a manifest anchor for every synced package and preserves unmanaged enablement", () => {
+  it("requires a manifest anchor for every synced package", () => {
     expect(hasPackageManifestAnchor([{ path: "plugins/plugin/main.js", kind: "put" }], profile)).toBe(false);
     expect(hasPackageManifestAnchor([{ path: "plugins/plugin/main.js", kind: "put" }, { path: "plugins/plugin/manifest.json", kind: "put" }], profile)).toBe(true);
-    expect(mergeEnabledPortablePlugins(["plugin"], ["local"], "obsidian-s3-sync")).toEqual(["local", "obsidian-s3-sync", "plugin"]);
   });
   it("rejects the sync plugin and invalid portable plugin IDs", () => {
     expect(isPortablePluginIdAllowed("other", "obsidian-s3-sync")).toBe(true);

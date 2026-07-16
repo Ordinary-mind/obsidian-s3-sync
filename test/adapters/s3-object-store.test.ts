@@ -86,7 +86,7 @@ describe("v1 S3 ObjectStore adapter contract", () => {
     await Promise.all(Array.from({ length: 5 }, () => store.putImmutable("immutable/key", original)));
     expect(versions).toBe(1);
     await expect(store.putImmutable("immutable/key", new Uint8Array([9, 9, 9])))
-      .rejects.toMatchObject({ kind: "integrity", operation: "put" });
+      .rejects.toMatchObject({ kind: "integrity", operation: "put", details: { stage: "conditional-existing-different" } });
     expect(stored).toEqual(original);
   });
 
@@ -128,6 +128,25 @@ describe("v1 S3 ObjectStore adapter contract", () => {
     const cancelled = new S3ObjectStore({ ...base, client: waitingClient, requestTimeoutMs: 100, maximumAttempts: 1 });
     const request = cancelled.head("key", { signal: controller.signal });
     controller.abort();
+    await expect(request).rejects.toMatchObject({ kind: "cancelled", operation: "head" });
+  });
+
+  it("uses the instance signal to cancel every request by default", async () => {
+    const controller = new AbortController();
+    const waitingClient = { send: (_command: unknown, options?: { abortSignal?: AbortSignal }) => new Promise((_resolve, reject) => {
+      options?.abortSignal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+    }) };
+    const store = new S3ObjectStore({
+      ...base,
+      client: waitingClient,
+      signal: controller.signal,
+      requestTimeoutMs: 100,
+      maximumAttempts: 1,
+    });
+
+    const request = store.head("key");
+    controller.abort();
+
     await expect(request).rejects.toMatchObject({ kind: "cancelled", operation: "head" });
   });
 

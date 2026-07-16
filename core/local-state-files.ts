@@ -1,8 +1,6 @@
 import { assessReservedRoot, createReservedRootMetadata, encodeReservedRootMetadata } from "./reserved-root";
 import { LOCAL_STATE_CONTAINER, localStateRoot } from "./scope";
-import { DurableStateStore, type DurableStateFileAdapter, type StateJsonValue } from "./durable-state";
-import { parseRepositoryDurablePayload } from "./repository-durable-payload";
-import { normalizeVaultPath } from "./path";
+import type { DurableStateFileAdapter } from "./durable-state";
 import {
   REPOSITORY_STATE_AREAS,
   repositoryStateLayout,
@@ -19,7 +17,7 @@ export interface LocalStatePathAdapter {
   mkdir(path: string): Promise<void>;
   read(path: string): Promise<string>;
   write(path: string, source: string): Promise<void>;
-  list?(path: string): Promise<{ files: string[]; folders: string[] }>;
+  rename?(path: string, newPath: string): Promise<void>;
 }
 
 export interface RepositoryStateFiles extends DurableStateFileAdapter {
@@ -27,35 +25,8 @@ export interface RepositoryStateFiles extends DurableStateFileAdapter {
   resolve(reference: string, allowedAreas?: readonly RepositoryStateArea[]): string;
 }
 
-export interface ResidualRepositoryStateScan {
-  ownedRepositoryIds: string[];
-  refusedRoots: string[];
-}
-
-export type ResidualRepositoryStateIssueReason =
-  | "root-refused"
-  | "scan-failed"
-  | "state-missing"
-  | "state-invalid"
-  | "repository-mismatch";
-
-export interface ResidualRepositoryStateIssue {
-  root: string;
-  reason: ResidualRepositoryStateIssueReason;
-}
-
-export interface RecoveredRepositoryDirectories {
-  repositoryId: string;
-  root: string;
-  configDir: string;
-  historicalConfigDirs: string[];
-}
-
-export interface ResidualRepositoryDirectoryRecovery {
-  complete: boolean;
-  recovered: RecoveredRepositoryDirectories[];
-  historicalConfigDirCandidates: string[];
-  issues: ResidualRepositoryStateIssue[];
+export interface ArchivedRepositoryStateCopies {
+  archived: string[];
 }
 
 export async function openRepositoryStateFiles(
@@ -90,100 +61,27 @@ export async function openRepositoryStateFiles(
   };
 }
 
-export async function scanResidualRepositoryStateRoots(
+export async function archiveRepositoryStateCopies(
   adapter: LocalStatePathAdapter,
   configDir: string,
-): Promise<ResidualRepositoryStateScan> {
-  const container = `${configDir.replace(/\/+$/, "")}/${LOCAL_STATE_CONTAINER}`;
-  if (!(await adapter.exists(container))) return { ownedRepositoryIds: [], refusedRoots: [] };
-  if ((await adapter.stat(container))?.type !== "folder") return { ownedRepositoryIds: [], refusedRoots: [container] };
-  if (!adapter.list) throw new Error("local state adapter cannot enumerate residual repository roots");
-
-  const listed = await adapter.list(container);
-  const ownedRepositoryIds: string[] = [];
-  const refusedRoots: string[] = listed.files
-    .map((path) => normalizeListedPath(path, container))
-    .filter((path) => parentPath(path) === container);
-  for (const folder of listed.folders.map((path) => normalizeListedPath(path, container)).filter((path) => parentPath(path) === container).sort()) {
-    const repositoryId = baseName(folder);
-    let expected;
-    try {
-      expected = createReservedRootMetadata("repository-state", repositoryId);
-    } catch {
-      refusedRoots.push(folder);
-      continue;
-    }
-    const metadataPath = `${folder}/${ownerFile}`;
-    const metadata = await readMetadata(adapter, metadataPath);
-    const assessment = assessReservedRoot({ type: "directory", metadata }, expected);
-    if (assessment.decision === "use") ownedRepositoryIds.push(repositoryId);
-    else refusedRoots.push(folder);
+  repositoryId: string,
+  archiveId: string,
+): Promise<ArchivedRepositoryStateCopies> {
+  if (!adapter.rename) throw new Error("local state adapter cannot archive invalid state copies");
+  if (!/^[A-Za-z0-9._-]{1,96}$/.test(archiveId)) throw new Error("invalid local state archive id");
+  const files = await openRepositoryStateFiles(adapter, configDir, repositoryId);
+  const archived: string[] = [];
+  for (const name of ["state-a.json", "state-b.json"] as const) {
+    const source = `${files.layout.root}/${name}`;
+    if (!(await adapter.exists(source))) continue;
+    if ((await adapter.stat(source))?.type !== "file") throw new Error("durable state copy is not a regular file");
+    const target = `${files.layout.recovery}/${archiveId}-${name}`;
+    if (await adapter.exists(target)) throw new Error("local state archive target already exists");
+    await adapter.rename(source, target);
+    archived.push(target);
   }
-  return {
-    ownedRepositoryIds: [...new Set(ownedRepositoryIds)].sort(),
-    refusedRoots: [...new Set(refusedRoots)].sort(),
-  };
-}
-
-export async function recoverResidualRepositoryDirectories(
-  adapter: LocalStatePathAdapter,
-  configDir: string,
-): Promise<ResidualRepositoryDirectoryRecovery> {
-  const normalizedConfigDir = normalizeVaultPath(configDir);
-  const container = `${normalizedConfigDir}/${LOCAL_STATE_CONTAINER}`;
-  let scan: ResidualRepositoryStateScan;
-  try {
-    scan = await scanResidualRepositoryStateRoots(adapter, normalizedConfigDir);
-  } catch {
-    return {
-      complete: false,
-      recovered: [],
-      historicalConfigDirCandidates: [],
-      issues: [{ root: container, reason: "scan-failed" }],
-    };
-  }
-
-  const issues: ResidualRepositoryStateIssue[] = scan.refusedRoots.map((root) => ({ root, reason: "root-refused" }));
-  const recovered: RecoveredRepositoryDirectories[] = [];
-  for (const repositoryId of scan.ownedRepositoryIds) {
-    const root = localStateRoot(normalizedConfigDir, repositoryId);
-    try {
-      const store = new DurableStateStore<StateJsonValue>({
-        read: (name) => readStateCopy(adapter, root, name),
-        write: async () => { throw new Error("residual repository recovery is read-only"); },
-      });
-      const snapshot = await store.load();
-      if (!snapshot) {
-        issues.push({ root, reason: "state-missing" });
-        continue;
-      }
-      const payload = parseRepositoryDurablePayload(snapshot.payload);
-      if (payload.repositoryId !== repositoryId) {
-        issues.push({ root, reason: "repository-mismatch" });
-        continue;
-      }
-      recovered.push({
-        repositoryId,
-        root,
-        configDir: normalizeVaultPath(payload.configDir),
-        historicalConfigDirs: payload.historicalConfigDirs.map(normalizeVaultPath),
-      });
-    } catch {
-      issues.push({ root, reason: "state-invalid" });
-    }
-  }
-
-  const candidates = new Set<string>();
-  for (const entry of recovered) {
-    candidates.add(entry.configDir);
-    for (const historical of entry.historicalConfigDirs) candidates.add(historical);
-  }
-  return {
-    complete: issues.length === 0,
-    recovered: recovered.sort((left, right) => left.repositoryId.localeCompare(right.repositoryId)),
-    historicalConfigDirCandidates: [...candidates].sort(compareUtf8),
-    issues: issues.sort((left, right) => left.root.localeCompare(right.root) || left.reason.localeCompare(right.reason)),
-  };
+  if (archived.length === 0) throw new Error("no local state copies were available to archive");
+  return { archived };
 }
 
 async function ensureDirectory(adapter: LocalStatePathAdapter, path: string): Promise<void> {
@@ -206,41 +104,4 @@ async function assertOwnedRoot(adapter: LocalStatePathAdapter, root: string, rep
 async function readMetadata(adapter: LocalStatePathAdapter, path: string): Promise<Uint8Array | undefined> {
   if (!(await adapter.exists(path)) || (await adapter.stat(path))?.type !== "file") return undefined;
   return new TextEncoder().encode(await adapter.read(path));
-}
-
-async function readStateCopy(
-  adapter: LocalStatePathAdapter,
-  root: string,
-  name: "state-a.json" | "state-b.json",
-): Promise<string | undefined> {
-  const path = `${root}/${name}`;
-  if (!(await adapter.exists(path))) return undefined;
-  if ((await adapter.stat(path))?.type !== "file") throw new Error("durable state copy is not a regular file");
-  return adapter.read(path);
-}
-
-function normalizeListedPath(path: string, container: string): string {
-  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
-  return normalized.includes("/") ? normalized : `${container}/${normalized}`;
-}
-
-function parentPath(path: string): string {
-  const index = path.lastIndexOf("/");
-  return index < 0 ? "" : path.slice(0, index);
-}
-
-function baseName(path: string): string {
-  const index = path.lastIndexOf("/");
-  return index < 0 ? path : path.slice(index + 1);
-}
-
-function compareUtf8(left: string, right: string): number {
-  const encoder = new TextEncoder();
-  const leftBytes = encoder.encode(left);
-  const rightBytes = encoder.encode(right);
-  const length = Math.min(leftBytes.length, rightBytes.length);
-  for (let index = 0; index < length; index += 1) {
-    if (leftBytes[index] !== rightBytes[index]) return leftBytes[index] - rightBytes[index];
-  }
-  return leftBytes.length - rightBytes.length;
 }

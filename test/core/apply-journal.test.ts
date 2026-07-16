@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { advanceApplyJournal, verifyApplyAfterImage } from "../../core/apply-journal";
-import { decideRecovery } from "../../core/recovery";
 import { isOwnApplyEvent } from "../../core/apply-operation";
 
 describe("ApplyJournal safety", () => {
@@ -10,10 +9,6 @@ describe("ApplyJournal safety", () => {
     expect(verifyApplyAfterImage(installed, "target").state).toBe("verified");
     expect(advanceApplyJournal(verifyApplyAfterImage(installed, "target"), "accounted").state).toBe("accounted");
     expect(verifyApplyAfterImage(installed, "wrong").state).toBe("recovery-required");
-  });
-  it("keeps a concurrent active edit instead of moving it during recovery", () => {
-    expect(decideRecovery("new-edit", "before", "before")).toBe("keep-active-and-recover");
-    expect(decideRecovery("before", "before", "before")).toBe("continue-apply");
   });
   it("recognizes only matching Journal post-images as its own file event", () => {
     const installed = advanceApplyJournal(journal, "installed");

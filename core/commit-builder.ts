@@ -6,6 +6,7 @@ import { protocolLimits } from "../protocol/limits";
 import type { ProtocolCommit } from "../protocol/semantics";
 import type { ImmutableObject } from "./immutable-object";
 import type { CommitKind, VaultMutation } from "./types";
+import { compareUtf8 } from "../protocol/utf8";
 
 const encoder = new TextEncoder();
 
@@ -277,11 +278,6 @@ function copyMutation(mutation: VaultMutation): VaultMutation {
     parents: [...mutation.parents].sort(compareUtf8),
     ...(mutation.blob ? { blob: { ...mutation.blob } } : {}),
   };
-}
-
-function compareUtf8(left: string, right: string): number {
-  if (isAscii(left) && isAscii(right)) return left < right ? -1 : left > right ? 1 : 0;
-  return compareBytes(encoder.encode(left), encoder.encode(right));
 }
 
 function isAscii(value: string): boolean {

@@ -1,5 +1,6 @@
 import { conflictId, conflictLogicalKey } from "./conflict-id";
 import { validateRemoteVaultPath } from "./path";
+import { compareUtf8 } from "../protocol/utf8";
 
 export interface StructuralHead {
   path: string;
@@ -81,15 +82,4 @@ export function structuralConflictBlocksPath(conflict: StructuralConflict, path:
 
 function sortUnique(values: readonly string[]): string[] {
   return [...new Set(values)].sort(compareUtf8);
-}
-
-function compareUtf8(left: string, right: string): number {
-  const encoder = new TextEncoder();
-  const leftBytes = encoder.encode(left);
-  const rightBytes = encoder.encode(right);
-  const length = Math.min(leftBytes.length, rightBytes.length);
-  for (let index = 0; index < length; index += 1) {
-    if (leftBytes[index] !== rightBytes[index]) return leftBytes[index] - rightBytes[index];
-  }
-  return leftBytes.length - rightBytes.length;
 }

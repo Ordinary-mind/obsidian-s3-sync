@@ -1,5 +1,6 @@
 import type { ObjectStore, ObjectStoreRequestOptions } from "./object-store";
 import type { RemoteAuditResult } from "./remote-audit";
+import { compareUtf8 } from "../protocol/utf8";
 
 export type RepositoryObjectKind = "blob" | "config-tree" | "change-chunk" | "commit";
 export type RepositoryObjectCategory = "active" | "conflict" | "history" | "orphan";
@@ -154,7 +155,7 @@ export async function listRepositoryProtocolObjects(
     if (token && tokens.has(token)) throw new Error("ObjectStore returned a repeated continuation token");
     if (token) tokens.add(token);
   } while (token);
-  return uniqueObjects(objects).sort((left, right) => left.key.localeCompare(right.key));
+  return uniqueObjects(objects).sort((left, right) => compareUtf8(left.key, right.key));
 }
 
 export function estimateRepositoryRequestCost(

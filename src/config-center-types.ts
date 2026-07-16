@@ -55,6 +55,7 @@ export interface ConfigCenterSnapshot {
   projectedTreeHash: string | null;
   recoveryLocation: string;
   blockedDetails: string[];
+  errorReport?: string;
 }
 
 export interface ConfigApplyPreview {
@@ -81,7 +82,7 @@ export type ConfigApplyTrustConfirmation = ConfigBatchConfirmation;
 
 export function createDefaultConfigSyncState(): PersistedConfigSyncState {
   return {
-    status: "disabled",
+    status: "unbound",
     projectedHeads: [],
     projectedTreeHash: null,
     generation: 0,

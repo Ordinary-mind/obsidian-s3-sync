@@ -35,17 +35,6 @@ export function normalizePrefix(prefix: string): string {
   return trimmed.length > 0 ? `${trimmed}/` : "";
 }
 
-export function resolveEffectivePrefix(prefix: string, vaultName: string): string {
-  const trimmed = prefix.trim();
-  if (trimmed.length > 0) {
-    return trimmed;
-  }
-
-  // Prefix 留空时用 Vault 名称隔离远端数据。S3 Key 支持空格，保留原名更容易在控制台识别。
-  const safeVaultName = (vaultName.trim() || "vault").replace(/^\/+|\/+$/g, "");
-  return `obsidian-s3-sync/${safeVaultName}`;
-}
-
 export function getTFile(vault: Vault, path: string): TFile | null {
   const file: TAbstractFile | null = vault.getAbstractFileByPath(normalizePath(path));
   return file instanceof TFile ? file : null;

@@ -1,5 +1,6 @@
 import { readObjectBytes, type ObjectStore } from "./object-store";
 import { verifyRepositoryDescriptorAtKey } from "../protocol/validation";
+import { compareUtf8 } from "../protocol/utf8";
 
 export interface DiscoveredRepositoryDescriptor {
   key: string;
@@ -59,7 +60,7 @@ export async function discoverRepositoryDescriptorsWithDiagnostics(store: Object
   }
   return {
     repositories,
-    diagnostics: diagnostics.sort((left, right) => left.key.localeCompare(right.key) || left.stage.localeCompare(right.stage)),
+    diagnostics: diagnostics.sort((left, right) => compareUtf8(left.key, right.key) || compareUtf8(left.stage, right.stage)),
   };
 }
 

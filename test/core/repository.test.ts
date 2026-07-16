@@ -1,13 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryRepositoryCore } from "../../core/repository";
-import { InMemoryRepositoryCore as PublicRepositoryCore } from "../../core";
-import { configRegisterVersion, vaultRegisterVersion } from "../../core/register-version";
-import { buildResolutionMutation } from "../../core/resolution-builder";
+import { configRegisterVersion, vaultRegisterVersion } from "../support/register-version";
 
-describe("v1 in-memory repository core", () => {
-  it("exports the usable core facade from one entry point", () => {
-    expect(PublicRepositoryCore).toBe(InMemoryRepositoryCore);
-  });
+describe("in-memory repository model", () => {
   it("ingests out-of-order versions and exposes pending, heads and conflicts by register", () => {
     const repository = new InMemoryRepositoryCore();
     repository.ingest({ repositoryId: "repo", channel: "vault", logicalKey: "notes/a.md", versionId: "child", parents: ["root"] });
@@ -17,7 +12,6 @@ describe("v1 in-memory repository core", () => {
     expect(repository.register("repo", "vault", "notes/a.md")).toMatchObject({ heads: ["child", "peer"], disposition: "concurrent" });
     repository.ingest({ repositoryId: "repo", channel: "config", logicalKey: "portable", versionId: "tree", parents: [], configTree: { items: [] } });
     expect(repository.allRegisters("repo").get("config:portable")?.heads).toEqual(["tree"]);
-    expect(repository.beginResolution("repo", "vault", "notes/a.md", "merged").parents).toEqual(["child", "peer"]);
     const restored = new InMemoryRepositoryCore();
     restored.restoreVersions(repository.snapshotVersions());
     expect(restored.register("repo", "vault", "notes/a.md").heads).toEqual(["child", "peer"]);
@@ -48,7 +42,7 @@ describe("v1 in-memory repository core", () => {
     }
   });
 
-  it("keeps concurrent ConfigTrees separate and expires a stale resolution", () => {
+  it("keeps concurrent ConfigTrees separate", () => {
     const repository = new InMemoryRepositoryCore();
     const tree = (path: string) => ({ items: [{ path, kind: "put" as const }] });
     const root = configRegisterVersion("repo", "root", { key: "portable", kind: "snapshot", treeHash: "a".repeat(64), parents: [] }, tree("app.json"));
@@ -58,8 +52,7 @@ describe("v1 in-memory repository core", () => {
     repository.ingest(first);
     repository.ingest(second);
     expect(repository.register("repo", "config", "portable")).toMatchObject({ heads: ["first", "second"], disposition: "concurrent" });
-    const intent = repository.beginResolution("repo", "config", "portable", "d".repeat(64));
     repository.ingest(configRegisterVersion("repo", "later", { key: "portable", kind: "snapshot", treeHash: "e".repeat(64), parents: ["root"] }, tree("themes/later.css")));
-    expect(() => buildResolutionMutation(intent, repository.register("repo", "config", "portable").heads)).toThrow("conflict set changed");
+    expect(repository.register("repo", "config", "portable").heads).toEqual(["first", "later", "second"]);
   });
 });

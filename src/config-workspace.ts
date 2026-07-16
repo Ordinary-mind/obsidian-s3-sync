@@ -15,6 +15,7 @@ import type { PluginManifestInfo } from "../core/plugin-compatibility";
 import type { ConfigProfile } from "../core/types";
 import type { V1ConfigHead } from "./v1-service";
 import type { ConfigTreeSourceView } from "./config-center-types";
+import { compareUtf8 } from "../protocol/utf8";
 
 export interface ConfigWorkspaceRuntime {
   port: NodeConfigInspectionPort;
@@ -229,11 +230,4 @@ function nodePlatform(): "windows" | "macos" | "linux" {
   if (process.platform === "win32") return "windows";
   if (process.platform === "darwin") return "macos";
   return "linux";
-}
-
-function compareUtf8(left: string, right: string): number {
-  const encoder = new TextEncoder(); const a = encoder.encode(left); const b = encoder.encode(right);
-  const length = Math.min(a.length, b.length);
-  for (let index = 0; index < length; index += 1) if (a[index] !== b[index]) return a[index] - b[index];
-  return a.length - b.length;
 }

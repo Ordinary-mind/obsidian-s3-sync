@@ -263,20 +263,6 @@ describe("safe local applicator", () => {
     expect(resumed.status).toBe("accounted");
   });
 
-  it("continues independent paths when one path is unknown", async () => {
-    const first = putPlan();
-    const second = { ...putPlan(), operationId: "op-2", path: "notes/b.md", target: { ...putPlan().target, stagedRef: "staged/remote-2" } };
-    const files = seededFiles();
-    files.active.set(second.path, bytes("old"));
-    files.staged.set("staged/remote-2", bytes("remote"));
-    files.unknownPaths.add(first.path);
-    const state = new MemoryApplyState(first);
-    const result = await applicator(files, state).applyIndependently([first, second]);
-    expect(result.pendingPaths).toEqual([first.path]);
-    expect(result.results[second.path].status).toBe("accounted");
-    expect(text(files.active.get(second.path)!)).toBe("remote");
-  });
-
   it("keeps both sides reachable across delete races and recoverable I/O failures", async () => {
     const deletion = { ...putPlan(), target: { kind: "delete" as const } };
     const racedFiles = seededFiles();

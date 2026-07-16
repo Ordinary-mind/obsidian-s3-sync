@@ -1,8 +1,10 @@
 import { Modal, Notice, Setting, setIcon, type App, type ButtonComponent, type IconName } from "obsidian";
+import type { ConfigBatchResult } from "../core/config-batch-apply";
 import { detectSensitivePluginData } from "../core/config-compatibility";
 import { diffManagedConfigItems, type ConfigDiffEntry } from "../core/config-diff";
 import { summarizeConfigProfileTransition } from "../core/config-ui-state";
-import { logSafeError, safeErrorMessage } from "../core/safe-error";
+import { DiagnosticError } from "../core/diagnostics";
+import { logSafeError, safeErrorMessage, safeGenericErrorReport } from "../core/safe-error";
 import type { ConfigProfile } from "../core/types";
 import type {
   ConfigApplyPreview,
@@ -12,6 +14,8 @@ import type {
   ConfigTreeSourceView,
 } from "./config-center-types";
 import type S3SyncPlugin from "./main";
+import { appendCopyableReportButton, showCopyableErrorNotice, showCopyableNotice } from "./copyable-notice";
+import { compareUtf8 } from "../protocol/utf8";
 
 type ConfigCenterTab = "profile" | "snapshots" | "merge";
 
@@ -26,7 +30,7 @@ export class ConfigCenterModal extends Modal {
   private mergeProfileSourceId = "local";
   private mergeEnabledSourceId = "local";
   private mergeCandidate?: ConfigTreeSourceView;
-  private mergeError?: string;
+  private mergeError?: { message: string; report: string };
 
   constructor(private readonly plugin: S3SyncPlugin) {
     super(plugin.app);
@@ -58,7 +62,7 @@ export class ConfigCenterModal extends Modal {
       if (!sourceIds.has(this.mergeProfileSourceId)) this.mergeProfileSourceId = "local";
       if (!sourceIds.has(this.mergeEnabledSourceId)) this.mergeEnabledSourceId = "local";
     } catch (error) {
-      new Notice(`S3 Sync 配置：${safeErrorMessage(error)}`);
+      showCopyableErrorNotice("S3 Sync：配置中心刷新失败", error, "config-center-refresh");
     } finally {
       this.busy = false;
       this.render();
@@ -77,7 +81,7 @@ export class ConfigCenterModal extends Modal {
   private renderTabs(): void {
     const tabs = this.contentEl.createDiv({ cls: "s3-sync-config-tabs", attr: { role: "tablist" } });
     for (const [id, label, icon] of [
-      ["profile", "Profile", "sliders-horizontal"],
+      ["profile", "同步范围", "sliders-horizontal"],
       ["snapshots", "快照与差异", "git-compare-arrows"],
       ["merge", "冲突合并", "git-merge"],
     ] as Array<[ConfigCenterTab, string, IconName]>) {
@@ -99,6 +103,7 @@ export class ConfigCenterModal extends Modal {
     const banner = this.contentEl.createDiv({ cls: `s3-sync-config-status s3-sync-config-status-${status?.status ?? "loading"}` });
     banner.createEl("strong", { text: this.busy ? "正在验证配置快照" : configStatusLabel(status?.status) });
     banner.createSpan({ text: this.busy ? "正在执行本地双扫描和远端依赖验证。" : status?.message ?? "尚未读取配置状态。" });
+    if (this.snapshot?.errorReport) appendCopyableReportButton(banner, this.snapshot.errorReport);
     if (this.plugin.getConfigSyncState().reloadRequired) {
       banner.createSpan({ cls: "s3-sync-config-reload", text: "配置已写入；请停用受影响插件或重载 Obsidian 后再继续编辑。" });
     }
@@ -106,17 +111,11 @@ export class ConfigCenterModal extends Modal {
 
   private renderProfile(): void {
     const section = this.contentEl.createDiv({ cls: "s3-sync-config-section" });
-    section.createEl("h3", { text: "便携配置范围" });
-
-    new Setting(section)
-      .setName("配置同步")
-      .setDesc("远端配置只下载和预览，不会自动应用。")
-      .addToggle((toggle) => toggle
-        .setValue(this.plugin.settings.configSyncEnabled)
-        .onChange(async (value) => this.run(async () => {
-          await this.plugin.setConfigSyncEnabled(value);
-          await this.refreshAfterRun();
-        })));
+    section.createEl("h3", { text: "配置同步范围" });
+    section.createDiv({
+      cls: "s3-sync-config-scope-note",
+      text: "这里是配置通道的允许列表，与设置页的 Vault 文件忽略规则互不影响。未列入范围的配置只保留在本机。",
+    });
 
     new Setting(section)
       .setName("最低目标 Obsidian 版本")
@@ -129,8 +128,8 @@ export class ConfigCenterModal extends Modal {
         }));
 
     new Setting(section)
-      .setName("根级配置文件")
-      .setDesc("每行一个 configDir 根级文件名；workspace、core-plugins 和启用列表不可加入。")
+      .setName("同步的根级配置文件")
+      .setDesc("每行填写一个直接位于 configDir 下的文件名，不能填写目录。默认管理 app.json、appearance.json、hotkeys.json；workspace、core-plugins 和插件启用列表始终只留在本机。")
       .addTextArea((text) => {
         text.inputEl.rows = 5;
         text.inputEl.cols = 42;
@@ -170,15 +169,15 @@ export class ConfigCenterModal extends Modal {
 
     const actions = new Setting(section).setClass("s3-sync-config-actions");
     actions.addButton((button) => this.actionButton(button, {
-      label: "保存 Profile",
+      label: "保存范围",
       icon: "save",
-      tooltip: "验证并保存 ConfigProfile",
+      tooltip: "验证并保存配置同步范围",
       disabled: this.busy,
       cta: true,
       onClick: () => this.run(async () => {
         await this.plugin.updateConfigProfile(normalizeProfile(this.profileDraft));
         this.profileDraft = structuredClone(this.plugin.settings.configProfile);
-        new Notice("S3 Sync：ConfigProfile 已保存；范围缩小仅停止管理。 ");
+        new Notice("S3 Sync：同步范围已保存；移出范围的文件仍保留在本机。 ");
         await this.refreshAfterRun();
       }),
     }));
@@ -245,7 +244,15 @@ export class ConfigCenterModal extends Modal {
     summary.createDiv({ text: "传播删除：0 个路径（Profile 编辑器不会把范围移除转换为删除）" });
     if (transition.stopManaging.length > 0) this.renderPathList(summary, transition.stopManaging);
     if (transition.violations.length > 0) {
-      summary.createDiv({ cls: "s3-sync-error", text: `Profile 校验：${transition.violations.join(", ")}` });
+      const error = summary.createDiv({ cls: "s3-sync-error" });
+      error.createSpan({ text: `Profile 校验：${transition.violations.join(", ")}` });
+      appendCopyableReportButton(error, JSON.stringify({
+        type: "s3-sync-config-profile-error",
+        schemaVersion: 3,
+        code: "S3SYNC_CONFIG_PROFILE_VALIDATION",
+        category: "local-path",
+        violations: transition.violations,
+      }, null, 2));
     }
   }
 
@@ -405,7 +412,7 @@ export class ConfigCenterModal extends Modal {
     if (!(await requestRecoveryConfirmation(this.app, action, recoveryLocation))) return;
     await this.run(async () => {
       const outcome = await this.plugin.recoverConfigBatch(action);
-      new Notice(`S3 Sync 配置：${applyResultLabel(outcome.result.status)}`);
+      this.showConfigBatchResult(outcome.result);
       await this.refreshAfterRun();
     });
   }
@@ -464,12 +471,19 @@ export class ConfigCenterModal extends Modal {
           this.mergeError = undefined;
         } catch (error) {
           this.mergeCandidate = undefined;
-          this.mergeError = safeErrorMessage(error);
+          this.mergeError = {
+            message: safeErrorMessage(error),
+            report: safeGenericErrorReport(error, "config-merge"),
+          };
         }
         this.render();
       },
     }));
-    if (this.mergeError) section.createDiv({ cls: "s3-sync-error", text: this.mergeError });
+    if (this.mergeError) {
+      const error = section.createDiv({ cls: "s3-sync-error" });
+      error.createSpan({ text: this.mergeError.message });
+      appendCopyableReportButton(error, this.mergeError.report);
+    }
     if (this.mergeCandidate) {
       const candidate = section.createDiv({ cls: "s3-sync-config-merge-result" });
       candidate.createEl("code", { text: this.mergeCandidate.treeHash });
@@ -513,7 +527,7 @@ export class ConfigCenterModal extends Modal {
           ? "S3 Sync：配置已应用。请停用受影响插件或重载 Obsidian。"
           : "S3 Sync：配置 Tree 已采用，无需写入文件。 ");
       } else {
-        new Notice(`S3 Sync 配置：${applyResultLabel(outcome.result.status)}`);
+        this.showConfigBatchResult(outcome.result);
       }
       await this.refreshAfterRun();
     });
@@ -522,6 +536,22 @@ export class ConfigCenterModal extends Modal {
   private renderPathList(container: HTMLElement, paths: readonly string[]): void {
     const list = container.createEl("ul", { cls: "s3-sync-config-path-list" });
     for (const path of paths) list.createEl("li").createEl("code", { text: path });
+  }
+
+  private showConfigBatchResult(
+    result: ConfigBatchResult,
+  ): void {
+    const label = applyResultLabel(result.status);
+    if (result.status === "accounted" || result.status === "adopted-without-write") {
+      new Notice(`S3 Sync 配置：${label}`);
+      return;
+    }
+    const error = ("error" in result ? result.error : undefined) ?? new DiagnosticError(
+      `CONFIG_BATCH_${result.status.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}`,
+      "local-path",
+      `config batch stopped with status ${result.status}`,
+    );
+    showCopyableNotice(`S3 Sync 配置：${label}`, safeGenericErrorReport(error, `config-batch-${result.status}`));
   }
 
   private actionButton(button: ButtonComponent, input: {
@@ -542,7 +572,7 @@ export class ConfigCenterModal extends Modal {
     this.render();
     try { await operation(); }
     catch (error) {
-      new Notice(`S3 Sync 配置：${safeErrorMessage(error)}`);
+      showCopyableErrorNotice("S3 Sync：配置操作失败", error, "config-operation");
       logSafeError("S3 Sync ConfigTree operation failed", error);
     } finally {
       this.busy = false;
@@ -742,7 +772,7 @@ function sortedUnique(values: readonly string[]): string[] { return [...new Set(
 
 function configStatusLabel(status: ConfigCenterSnapshot["state"]["status"] | "loading" | undefined): string {
   const labels: Record<ConfigCenterSnapshot["state"]["status"] | "loading", string> = {
-    loading: "读取中", disabled: "配置同步已关闭", unbound: "未绑定仓库", ready: "可预览",
+    loading: "读取中", unbound: "未连接仓库", ready: "可预览",
     "local-changes": "本地配置变化", pending: "配置依赖待定", conflict: "ConfigTree 冲突",
     incompatible: "配置不兼容", "apply-failed": "配置应用失败", "recovery-required": "需要配置恢复", "load-failed": "配置读取失败",
   };
@@ -765,12 +795,4 @@ function applyResultLabel(status: Awaited<ReturnType<S3SyncPlugin["applyConfigPr
 function itemSummary(source: ConfigTreeSourceView, path: string): string {
   const item = source.items.find((candidate) => candidate.path === path);
   return item?.kind === "put" ? `put ${item.hash.slice(0, 8)}` : "delete";
-}
-
-
-function compareUtf8(left: string, right: string): number {
-  const encoder = new TextEncoder(); const a = encoder.encode(left); const b = encoder.encode(right);
-  const length = Math.min(a.length, b.length);
-  for (let index = 0; index < length; index += 1) if (a[index] !== b[index]) return a[index] - b[index];
-  return a.length - b.length;
 }

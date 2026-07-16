@@ -3,9 +3,9 @@ import { configItemCoverageSources, validateConfigProfile } from "./config-profi
 import type { ConfigDiffEntry } from "./config-diff";
 import { configProfileTransition, type ManagedConfigItem } from "./config-snapshot-builder";
 import type { ConfigProfile } from "./types";
+import { compareUtf8 } from "../protocol/utf8";
 
 export type ConfigUiStatus =
-  | "disabled"
   | "unbound"
   | "ready"
   | "local-changes"
@@ -62,7 +62,6 @@ export interface ConfigTrustRequirements {
 }
 
 export function deriveConfigRegisterUiState(input: {
-  enabled: boolean;
   repositoryBound: boolean;
   remoteDisposition: "empty" | "resolved" | "conflict" | "pending" | "invalid";
   remoteHeads?: readonly string[];
@@ -77,8 +76,7 @@ export function deriveConfigRegisterUiState(input: {
   const remoteHeads = sortedUnique(input.remoteHeads ?? []);
   const pendingVersions = sortedUnique(input.pendingVersions ?? []);
   const invalidVersions = sortedUnique(input.invalidVersions ?? []);
-  if (!input.enabled) return state("disabled", "配置同步已关闭。", remoteHeads, pendingVersions, invalidVersions);
-  if (!input.repositoryBound) return state("unbound", "尚未选择 v1 仓库。", remoteHeads, pendingVersions, invalidVersions);
+  if (!input.repositoryBound) return state("unbound", "尚未连接仓库。", remoteHeads, pendingVersions, invalidVersions);
   if (input.applyFailure === "recovery-required") {
     return state("recovery-required", "配置批次需要从恢复位置继续处理。", remoteHeads, pendingVersions, invalidVersions);
   }
@@ -232,15 +230,4 @@ function assertUniqueItems(items: readonly ManagedConfigItem[]): void {
 
 function sortedUnique(values: readonly string[]): string[] {
   return [...new Set(values)].sort(compareUtf8);
-}
-
-function compareUtf8(left: string, right: string): number {
-  const encoder = new TextEncoder();
-  const leftBytes = encoder.encode(left);
-  const rightBytes = encoder.encode(right);
-  const length = Math.min(leftBytes.length, rightBytes.length);
-  for (let index = 0; index < length; index += 1) {
-    if (leftBytes[index] !== rightBytes[index]) return leftBytes[index] - rightBytes[index];
-  }
-  return leftBytes.length - rightBytes.length;
 }

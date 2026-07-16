@@ -59,6 +59,45 @@
   color: var(--text-error);
 }
 
+.s3-sync-notice-with-action {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.s3-sync-notice-message {
+  flex: 1 1 auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+button.s3-sync-notice-copy-button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+}
+
+button.s3-sync-notice-copy-button .svg-icon {
+  width: 16px;
+  height: 16px;
+}
+
+button.s3-sync-inline-copy-button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  padding: 3px;
+}
+
+button.s3-sync-inline-copy-button .svg-icon {
+  width: 16px;
+  height: 16px;
+}
+
 .s3-sync-dashboard-modal {
   width: min(780px, calc(100vw - 32px));
   max-width: 780px;

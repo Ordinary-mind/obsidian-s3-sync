@@ -1,4 +1,5 @@
 import { advanceWriterFrontiers, type CommitFrontierAnchor, type WriterFrontiers } from "./commit-frontier";
+import { compareUtf8 } from "../protocol/utf8";
 
 export interface IngestedCommitState {
   frontiers: WriterFrontiers;
@@ -30,7 +31,7 @@ export function advanceIngestedCommitState(
   }
   return {
     frontiers: connected.length > 0 ? advanceWriterFrontiers(current.frontiers, connected) : cloneFrontiers(current.frontiers),
-    sparseSeenCommits: Object.fromEntries([...candidates].sort(([left], [right]) => left.localeCompare(right)).map(([hash, commit]) => [hash, { ...commit }])),
+    sparseSeenCommits: Object.fromEntries([...candidates].sort(([left], [right]) => compareUtf8(left, right)).map(([hash, commit]) => [hash, { ...commit }])),
   };
 }
 

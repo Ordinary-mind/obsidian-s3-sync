@@ -6,16 +6,16 @@ export type LocalFileObservation =
   | { kind: "unknown"; reason: string };
 
 export interface LocalFileCapabilities {
-  platform: "windows" | "macos" | "linux" | "mobile" | "unknown";
+  platform: "windows" | "macos" | "linux";
   domain: "vault" | "config";
   renameToRecovery: boolean;
   noClobberInstall: boolean;
   recoveryObservation: boolean;
   eventsObservable: boolean;
-  accessMethod: "node-fs" | "obsidian-vault-api" | "obsidian-adapter" | "conservative-port";
-  renameAtomicity: "atomic" | "link-unlink" | "unsupported";
+  accessMethod: "node-fs";
+  renameAtomicity: "link-unlink";
   overwritePolicy: "no-clobber" | "unsupported";
-  occupiedFileBehavior: "preserve-and-error" | "unknown";
+  occupiedFileBehavior: "preserve-and-error";
 }
 
 export type EmptyDirectoryRemoval = "removed" | "absent" | "not-directory" | "not-empty" | "unknown";

@@ -9,6 +9,26 @@ export interface VaultPutControlEnvelope {
   envelope: PublishEnvelope;
 }
 
+export function buildVaultDeleteControlEnvelope(input: {
+  prefix: string;
+  repositoryId: string;
+  descriptorHash: string;
+  writerId: string;
+  sequence: string;
+  previousCommitHash: string | null;
+  createdAt: string;
+  clientVersion: string;
+  path: string;
+  parents: string[];
+}): PublishEnvelope {
+  const envelope = buildVaultChangeEnvelope({
+    ...input,
+    kind: input.previousCommitHash === null ? "bootstrap" : "change",
+    mutations: [{ path: input.path, kind: "delete", parents: [...input.parents] }],
+  });
+  return { blobs: [], configTrees: [], chunks: [envelope.chunk], commit: envelope.commit };
+}
+
 export function buildVaultPutPublishEnvelope(input: {
   prefix: string;
   repositoryId: string;

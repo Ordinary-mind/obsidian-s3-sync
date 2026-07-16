@@ -1,12 +1,132 @@
 import { diagnosticCategory, type SyncDiagnosticCategory } from "./diagnostics";
+import type { RepositoryConfigurationField, RepositoryConfigurationIssue } from "./locator";
+import type { DurableOutboxReplayStage } from "./durable-outbox";
+import {
+  isSyncPreflightBlocker,
+  syncPreflightCategory,
+  type SyncPreflightBlocker,
+} from "./sync-preflight";
 
 export interface SafeErrorRecord {
   category: SyncDiagnosticCategory;
+  reasonCode?: string;
+  connectionStage?: ConnectionFlowStage;
+  initializationStep?: ConnectionInitializationStep;
+  persistenceStep?: LocalPersistenceStep;
+  syncAction?: SyncAction;
+  syncStage?: SyncFlowStage;
+  preflightBlocker?: SyncPreflightBlocker;
+  outboxStage?: DurableOutboxReplayStage;
   operation?: string;
   stage?: string;
   status?: number;
   requestId?: string;
   retries?: number;
+  configurationField?: RepositoryConfigurationField;
+  configurationIssue?: RepositoryConfigurationIssue;
+}
+
+export interface SafeErrorCause {
+  type: string;
+  code?: string;
+  message: string;
+}
+
+export type ConnectionFlowStage =
+  | "operation-lock"
+  | "configuration"
+  | "repository-discovery"
+  | "repository-verification"
+  | "write-probe"
+  | "repository-create"
+  | "settings-apply"
+  | "repository-bind";
+
+export type ConnectionInitializationStep = "saved-repository-binding" | "s3-client";
+
+export type LocalPersistenceStep = "durable-state" | "plugin-data-validation" | "plugin-data-write";
+
+export type SyncAction = "pull" | "push";
+
+export type SyncFlowStage =
+  | "preflight"
+  | "repository-selection"
+  | "repository-verification"
+  | "outbox-replay"
+  | "remote-list"
+  | "remote-state-persistence"
+  | "path-planning"
+  | "local-apply"
+  | "active-file-validation"
+  | "stable-capture"
+  | "remote-refresh"
+  | "conflict-check"
+  | "outbox-freeze"
+  | "publication"
+  | "publication-verification"
+  | "local-persistence";
+
+export class SyncFlowError extends Error {
+  readonly kind = "sync-flow";
+  readonly failure: SafeErrorRecord;
+
+  constructor(readonly syncAction: SyncAction, readonly syncStage: SyncFlowStage, readonly cause: unknown) {
+    super("sync flow failed");
+    this.name = "SyncFlowError";
+    this.failure = safeErrorRecord(cause);
+  }
+}
+
+export function withSyncFlowStage(action: SyncAction, stage: SyncFlowStage, error: unknown): SyncFlowError {
+  return error instanceof SyncFlowError ? error : new SyncFlowError(action, stage, error);
+}
+
+export class LocalPersistenceError extends Error {
+  readonly kind = "local-persistence";
+  readonly failure: SafeErrorRecord;
+
+  constructor(readonly persistenceStep: LocalPersistenceStep, readonly cause: unknown) {
+    super("local persistence failed");
+    this.name = "LocalPersistenceError";
+    this.failure = safeErrorRecord(cause);
+  }
+}
+
+export function withLocalPersistenceStep(step: LocalPersistenceStep, error: unknown): LocalPersistenceError {
+  return error instanceof LocalPersistenceError ? error : new LocalPersistenceError(step, error);
+}
+
+export class ConnectionInitializationError extends Error {
+  readonly kind = "connection-initialization";
+  readonly failure: SafeErrorRecord;
+
+  constructor(readonly initializationStep: ConnectionInitializationStep, readonly cause: unknown) {
+    super("connection initialization failed");
+    this.name = "ConnectionInitializationError";
+    this.failure = safeErrorRecord(cause);
+  }
+}
+
+export function withConnectionInitializationStep(
+  step: ConnectionInitializationStep,
+  error: unknown,
+): ConnectionInitializationError {
+  return error instanceof ConnectionInitializationError ? error : new ConnectionInitializationError(step, error);
+}
+
+export class ConnectionFlowError extends Error {
+  readonly kind = "connection-flow";
+  readonly failure: SafeErrorRecord;
+
+  constructor(readonly connectionStage: ConnectionFlowStage, readonly cause: unknown) {
+    super("connection flow failed");
+    this.name = "ConnectionFlowError";
+    this.failure = safeErrorRecord(cause);
+  }
+}
+
+export function withConnectionFlowStage(stage: ConnectionFlowStage, error: unknown): ConnectionFlowError {
+  return error instanceof ConnectionFlowError ? error : new ConnectionFlowError(stage, error);
 }
 
 const categoryMessages: Record<SyncDiagnosticCategory, string> = {
@@ -17,26 +137,221 @@ const categoryMessages: Record<SyncDiagnosticCategory, string> = {
   "repository-identity": "仓库身份校验失败；写入已暂停。",
   "local-path": "本地路径或文件状态无法安全确认。",
   conflict: "检测到并发或待协调状态。",
+  cancelled: "操作已取消。",
+  internal: "插件内部流程失败；请求不一定已经发出。请复制错误报告供开发排查。",
 };
 
 export function safeErrorMessage(error: unknown): string {
   const record = safeErrorRecord(error);
+  if (record.syncAction && record.syncStage) return safeSyncErrorMessage(error);
   const request = record.operation && record.stage ? `（${record.operation}/${record.stage}）` : "";
   return `${categoryMessages[record.category]}${request}`;
 }
 
+export function safeSyncErrorMessage(error: unknown): string {
+  const record = safeErrorRecord(error);
+  const action = record.syncAction === "pull" ? "拉取" : record.syncAction === "push" ? "上传" : "同步";
+  const summary = outboxReplayMessage(record) ?? syncFlowMessage(record) ?? categoryMessages[record.category];
+  const operationDetail = record.operation ? connectionOperationMessage(record) : undefined;
+  const metadata = [
+    record.syncAction ? `动作=${record.syncAction}` : undefined,
+    record.syncStage ? `流程=${record.syncStage}` : undefined,
+    record.preflightBlocker ? `阻断=${record.preflightBlocker}` : undefined,
+    record.outboxStage ? `Outbox阶段=${record.outboxStage}` : undefined,
+    record.persistenceStep ? `本地保存=${record.persistenceStep}` : undefined,
+    record.operation ? `操作=${record.operation.toUpperCase()}` : undefined,
+    record.stage ? `阶段=${record.stage}` : undefined,
+    record.status ? `HTTP=${record.status}` : undefined,
+    record.retries !== undefined ? `重试=${record.retries}` : undefined,
+    record.requestId ? `RequestId=${record.requestId}` : undefined,
+  ].filter((value): value is string => value !== undefined);
+  const detail = operationDetail && operationDetail !== summary ? ` ${operationDetail}` : "";
+  return `${action}失败：${summary}${detail}${metadata.length > 0 ? `（${metadata.join("，")}）` : ""}`;
+}
+
+export function safeSyncErrorReport(error: unknown): string {
+  const record = safeErrorRecord(error);
+  return JSON.stringify({
+    type: "s3-sync-operation-error",
+    schemaVersion: 3,
+    code: stableErrorCode("operation", record),
+    message: safeSyncErrorMessage(error),
+    ...record,
+    causes: safeErrorCauses(error),
+  }, null, 2);
+}
+
+export function safeConnectionErrorMessage(error: unknown): string {
+  const record = safeErrorRecord(error);
+  const configurationMessage = connectionConfigurationMessage(record);
+  const initializationMessage = connectionInitializationMessage(record);
+  const persistenceMessage = connectionPersistenceMessage(record);
+  const summary = configurationMessage
+    ?? initializationMessage
+    ?? persistenceMessage
+    ?? (!record.operation ? connectionFlowMessage(record) : undefined)
+    ?? connectionOperationMessage(record);
+  const metadata = [
+    record.connectionStage ? `流程=${record.connectionStage}` : undefined,
+    record.initializationStep ? `初始化=${record.initializationStep}` : undefined,
+    record.persistenceStep ? `本地保存=${record.persistenceStep}` : undefined,
+    record.operation ? `操作=${record.operation.toUpperCase()}` : undefined,
+    record.stage ? `阶段=${record.stage}` : undefined,
+    record.status ? `HTTP=${record.status}` : undefined,
+    record.retries !== undefined ? `重试=${record.retries}` : undefined,
+    record.requestId ? `RequestId=${record.requestId}` : undefined,
+  ].filter((value): value is string => value !== undefined);
+  return `${summary}${metadata.length > 0 ? `（${metadata.join("，")}）` : ""}`;
+}
+
+export function safeConnectionErrorReport(error: unknown): string {
+  const record = safeErrorRecord(error);
+  return JSON.stringify({
+    type: "s3-sync-connection-error",
+    schemaVersion: 3,
+    code: stableErrorCode("connection", record),
+    message: safeConnectionErrorMessage(error),
+    ...record,
+    causes: safeErrorCauses(error),
+  }, null, 2);
+}
+
+export function safeGenericErrorReport(error: unknown, context = "runtime"): string {
+  const record = safeErrorRecord(error);
+  return JSON.stringify({
+    type: "s3-sync-error",
+    schemaVersion: 3,
+    code: stableErrorCode(context, record),
+    message: safeErrorMessage(error),
+    ...record,
+    causes: safeErrorCauses(error),
+  }, null, 2);
+}
+
+export function safeErrorCauses(error: unknown): SafeErrorCause[] {
+  const causes: SafeErrorCause[] = [];
+  const visited = new Set<unknown>();
+  let current: unknown = error;
+  while (current !== undefined && current !== null && causes.length < 8 && !visited.has(current)) {
+    visited.add(current);
+    const value = isRecord(current) ? current : {};
+    const type = safeTypeName(value.name) ?? safeTypeName(value.kind) ?? typeof current;
+    const code = safeToken(value.code, 96, /^[A-Za-z0-9._-]+$/)
+      ?? safeToken(value.kind, 96, /^[A-Za-z0-9._-]+$/);
+    causes.push(compactCause({ type, code, message: safeCauseMessage(value) }));
+    current = value.cause;
+  }
+  return causes;
+}
+
 export function safeErrorRecord(error: unknown): SafeErrorRecord {
   const value = isRecord(error) ? error : {};
+  if (value.kind === "sync-flow" && isRecord(value.failure)) {
+    return compact({
+      category: isDiagnosticCategory(value.failure.category) ? value.failure.category : "internal",
+      reasonCode: safeReasonCode(value.failure.reasonCode),
+      syncAction: isSyncAction(value.syncAction) ? value.syncAction : undefined,
+      syncStage: isSyncFlowStage(value.syncStage) ? value.syncStage : undefined,
+      preflightBlocker: isSyncPreflightBlocker(value.failure.preflightBlocker)
+        ? value.failure.preflightBlocker
+        : undefined,
+      outboxStage: isDurableOutboxReplayStage(value.failure.outboxStage) ? value.failure.outboxStage : undefined,
+      persistenceStep: isLocalPersistenceStep(value.failure.persistenceStep) ? value.failure.persistenceStep : undefined,
+      operation: isObjectStoreOperation(value.failure.operation) ? value.failure.operation : undefined,
+      stage: safeToken(value.failure.stage, 64, /^[A-Za-z0-9._-]+$/),
+      status: safeInteger(value.failure.status, 100, 599),
+      requestId: safeToken(value.failure.requestId, 256, /^[A-Za-z0-9+=_-]+$/),
+      retries: safeInteger(value.failure.retries, 0, 100),
+    });
+  }
+  if (value.kind === "durable-outbox-replay") {
+    const failure = safeErrorRecord(value.cause);
+    const outboxStage = isDurableOutboxReplayStage(value.outboxStage) ? value.outboxStage : undefined;
+    const localStage = outboxStage === "durable-open" || outboxStage === "begin"
+      || outboxStage === "staged-verify" || outboxStage === "durable-confirm" || outboxStage === "reconcile";
+    return compact({
+      ...failure,
+      category: localStage && (failure.category === "network" || failure.category === "internal")
+        ? "local-path"
+        : failure.category,
+      outboxStage,
+    });
+  }
+  if (value.kind === "sync-preflight") {
+    const blocker = isSyncPreflightBlocker(value.blocker) ? value.blocker : undefined;
+    return compact({
+      category: blocker ? syncPreflightCategory(blocker) : "local-path",
+      preflightBlocker: blocker,
+    });
+  }
+  if (value.kind === "connection-flow" && isRecord(value.failure)) {
+    return compact({
+      category: isDiagnosticCategory(value.failure.category) ? value.failure.category : "internal",
+      reasonCode: safeReasonCode(value.failure.reasonCode),
+      connectionStage: isConnectionFlowStage(value.connectionStage) ? value.connectionStage : undefined,
+      initializationStep: isConnectionInitializationStep(value.failure.initializationStep)
+        ? value.failure.initializationStep
+        : undefined,
+      persistenceStep: isLocalPersistenceStep(value.failure.persistenceStep) ? value.failure.persistenceStep : undefined,
+      operation: isObjectStoreOperation(value.failure.operation) ? value.failure.operation : undefined,
+      stage: safeToken(value.failure.stage, 64, /^[A-Za-z0-9._-]+$/),
+      status: safeInteger(value.failure.status, 100, 599),
+      requestId: safeToken(value.failure.requestId, 256, /^[A-Za-z0-9+=_-]+$/),
+      retries: safeInteger(value.failure.retries, 0, 100),
+      configurationField: isConfigurationField(value.failure.configurationField) ? value.failure.configurationField : undefined,
+      configurationIssue: isConfigurationIssue(value.failure.configurationIssue) ? value.failure.configurationIssue : undefined,
+    });
+  }
+  if (value.kind === "connection-initialization" && isRecord(value.failure)) {
+    const initializationStep = isConnectionInitializationStep(value.initializationStep)
+      ? value.initializationStep
+      : undefined;
+    return compact({
+      category: initializationStep === "saved-repository-binding"
+        ? "repository-identity"
+        : isDiagnosticCategory(value.failure.category) ? value.failure.category : "internal",
+      reasonCode: safeReasonCode(value.failure.reasonCode),
+      initializationStep,
+      operation: isObjectStoreOperation(value.failure.operation) ? value.failure.operation : undefined,
+      stage: safeToken(value.failure.stage, 64, /^[A-Za-z0-9._-]+$/),
+      status: safeInteger(value.failure.status, 100, 599),
+      requestId: safeToken(value.failure.requestId, 256, /^[A-Za-z0-9+=_-]+$/),
+      retries: safeInteger(value.failure.retries, 0, 100),
+      configurationField: isConfigurationField(value.failure.configurationField) ? value.failure.configurationField : undefined,
+      configurationIssue: isConfigurationIssue(value.failure.configurationIssue) ? value.failure.configurationIssue : undefined,
+    });
+  }
+  if (value.kind === "local-persistence" && isRecord(value.failure)) {
+    return compact({
+      category: "local-path",
+      reasonCode: safeReasonCode(value.failure.reasonCode),
+      persistenceStep: isLocalPersistenceStep(value.persistenceStep) ? value.persistenceStep : undefined,
+      operation: isObjectStoreOperation(value.failure.operation) ? value.failure.operation : undefined,
+      stage: safeToken(value.failure.stage, 64, /^[A-Za-z0-9._-]+$/),
+      status: safeInteger(value.failure.status, 100, 599),
+      requestId: safeToken(value.failure.requestId, 256, /^[A-Za-z0-9+=_-]+$/),
+      retries: safeInteger(value.failure.retries, 0, 100),
+      configurationField: isConfigurationField(value.failure.configurationField) ? value.failure.configurationField : undefined,
+      configurationIssue: isConfigurationIssue(value.failure.configurationIssue) ? value.failure.configurationIssue : undefined,
+    });
+  }
   const details = isRecord(value.details) ? value.details : {};
+  const connectionConfiguration = value.kind === "connection-configuration";
+  const configurationField = connectionConfiguration && isConfigurationField(value.field) ? value.field : undefined;
   return compact({
-    category: diagnosticCategory(error),
-    operation: typeof value.operation === "string" && ["list", "get", "head", "put", "delete-probe"].includes(value.operation)
-      ? value.operation
-      : undefined,
+    category: configurationField === "access-key-id" || configurationField === "secret-access-key"
+      ? "authentication"
+      : diagnosticCategory(error),
+    reasonCode: connectionConfiguration && configurationField && isConfigurationIssue(value.issue)
+      ? `configuration-${configurationField}-${value.issue}`
+      : safeReasonCode(value.code),
+    operation: isObjectStoreOperation(value.operation) ? value.operation : undefined,
     stage: safeToken(details.stage, 64, /^[A-Za-z0-9._-]+$/),
     status: safeInteger(details.status, 100, 599),
     requestId: safeToken(details.requestId, 256, /^[A-Za-z0-9+=_-]+$/),
     retries: safeInteger(details.retries, 0, 100),
+    configurationField,
+    configurationIssue: connectionConfiguration && isConfigurationIssue(value.issue) ? value.issue : undefined,
   });
 }
 
@@ -48,6 +363,74 @@ function compact(value: SafeErrorRecord): SafeErrorRecord {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as unknown as SafeErrorRecord;
 }
 
+function compactCause(value: SafeErrorCause): SafeErrorCause {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as unknown as SafeErrorCause;
+}
+
+function stableErrorCode(context: string, record: SafeErrorRecord): string {
+  const parts = [
+    "S3SYNC",
+    context,
+    record.syncAction,
+    record.syncStage,
+    record.connectionStage,
+    record.initializationStep,
+    record.persistenceStep,
+    record.preflightBlocker,
+    record.outboxStage,
+    record.operation,
+    record.stage,
+    record.reasonCode,
+    record.category,
+  ].filter((value): value is string => !!value);
+  return parts.join("_").replace(/[^A-Za-z0-9]+/g, "_").toUpperCase();
+}
+
+function safeTypeName(value: unknown): string | undefined {
+  return safeToken(value, 96, /^[A-Za-z][A-Za-z0-9._-]*$/);
+}
+
+function redactDiagnosticText(value: string): string {
+  const redacted = value
+    .replace(/(?:https?|s3):\/\/[^\s,;]+/gi, "[endpoint-redacted]")
+    .replace(/[A-Za-z]:[\\/][^\s,;]+/g, "[path-redacted]")
+    .replace(/(^|\s)\/(?:[^\s,;]+\/)*[^\s,;]*/g, "$1[path-redacted]")
+    .replace(/AKIA[0-9A-Z]{16}/g, "[access-key-redacted]")
+    .replace(/(secret|password|token|credential|access.?key)(\s*[=:]\s*)[^\s,;]+/gi, "$1$2[redacted]");
+  return redacted.slice(0, 500) || "empty error message";
+}
+
+function safeCauseMessage(value: Record<string, unknown>): string {
+  const controlledKinds = new Set([
+    "diagnostic",
+    "sync-flow",
+    "connection-flow",
+    "connection-initialization",
+    "connection-configuration",
+    "local-persistence",
+    "durable-outbox-replay",
+    "sync-preflight",
+  ]);
+  const controlledNames = new Set([
+    "DiagnosticError",
+    "SyncFlowError",
+    "ConnectionFlowError",
+    "ConnectionInitializationError",
+    "RepositoryConfigurationError",
+    "LocalPersistenceError",
+    "DurableOutboxReplayError",
+    "SyncPreflightError",
+    "ObjectStoreError",
+  ]);
+  const controlled = controlledKinds.has(String(value.kind)) || controlledNames.has(String(value.name));
+  if (!controlled || typeof value.message !== "string") return "untyped error details redacted";
+  return redactDiagnosticText(value.message);
+}
+
+function safeReasonCode(value: unknown): string | undefined {
+  return safeToken(value, 96, /^[A-Za-z0-9._-]+$/);
+}
+
 function safeToken(value: unknown, maximumLength: number, pattern: RegExp): string | undefined {
   if (typeof value !== "string" || value.length === 0 || value.length > maximumLength) return undefined;
   return pattern.test(value) ? value : undefined;
@@ -57,6 +440,192 @@ function safeInteger(value: unknown, minimum: number, maximum: number): number |
   return Number.isSafeInteger(value) && (value as number) >= minimum && (value as number) <= maximum
     ? value as number
     : undefined;
+}
+
+function connectionConfigurationMessage(record: SafeErrorRecord): string | undefined {
+  const key = `${record.configurationField ?? ""}:${record.configurationIssue ?? ""}`;
+  return {
+    "endpoint:required": "Endpoint 未填写。",
+    "endpoint:invalid-url": "Endpoint 不是有效的完整 URL；应形如 https://s3.example.com。",
+    "endpoint:https-required": "Endpoint 必须使用 HTTPS；只有 127.0.0.1 或 localhost 可使用 HTTP。",
+    "endpoint:origin-only": "Endpoint 只能包含协议、主机和可选端口；请移除末尾 /、Bucket、路径、查询参数及用户名密码。",
+    "region:invalid-region": "Region 格式无效；只能使用 1 至 128 个字母、数字、点、下划线或连字符。",
+    "bucket:required": "Bucket 未填写。",
+    "bucket:invalid-bucket": "Bucket 格式无效；只能填写 Bucket 名称，不能包含 / 或反斜杠。",
+    "prefix:invalid-prefix": "Prefix 格式无效；不能包含空路径段、`.`、`..`、反斜杠或控制字符。",
+    "access-key-id:required": "Access Key ID 未填写。",
+    "secret-access-key:required": "Secret Access Key 未填写；复制的错误报告不会包含凭证值。",
+  }[key];
+}
+
+function connectionInitializationMessage(record: SafeErrorRecord): string | undefined {
+  if (!record.initializationStep) return undefined;
+  return {
+    "saved-repository-binding": "本机仓库绑定不完整；Endpoint、Region 和 Bucket 尚未发起检测。请重新执行“检测并应用”。",
+    "s3-client": "S3 客户端在本机初始化失败，请求尚未发出；这是插件运行时或 Bundle 初始化问题，不是网络连通性错误。",
+  }[record.initializationStep];
+}
+
+function connectionPersistenceMessage(record: SafeErrorRecord): string | undefined {
+  if (!record.persistenceStep) return undefined;
+  return {
+    "durable-state": "远端检测已通过，但本地仓库状态创建、校验或回读失败；检测结果尚未应用。",
+    "plugin-data-validation": "远端检测已通过，但本地 data.json 在写入前未通过安全边界校验；未写入新配置。",
+    "plugin-data-write": "远端检测和本地状态校验已通过，但 Obsidian 写入插件 data.json 失败。",
+  }[record.persistenceStep];
+}
+
+function connectionOperationMessage(record: SafeErrorRecord): string {
+  const probeMessage: Partial<Record<string, string>> = {
+    "atomic-create-unverified": "当前 ObjectStore adapter 未声明已验证的原子创建能力，写模式已拒绝。",
+    "atomic-create-no-winner": "两个并发条件 PUT 都没有成功；请检查写权限、条件写兼容性和服务状态。",
+    "atomic-create-multiple-winners": "存储同时接受了两个不同正文的条件 PUT，不满足当前协议的原子不可变写入要求。",
+    "atomic-create-loser-missing": "并发条件 PUT 没有产生可验证的失败方，无法证明原子创建语义。",
+    "atomic-create-loser-unclassified": "一个条件 PUT 成功，但另一个请求的失败方式不能证明对象未被覆盖。",
+    "probe-readback": "probe 对象回读的字节或 Hash 与写入内容不一致。",
+    "probe-size": "probe 对象的 HEAD 大小与写入内容不一致。",
+    "probe-not-visible": "probe 对象写入并回读成功，但没有在 LIST 中可见。",
+    verify: "条件 PUT 返回成功后，远端字节被另一请求改变；无法证明原子创建语义。",
+  };
+  if (record.stage && probeMessage[record.stage]) return probeMessage[record.stage]!;
+  if (record.category === "authentication") {
+    return "S3 认证或权限失败；请检查 Access Key、Secret、Region、系统时间及对应操作权限。";
+  }
+  if (record.category === "rate-limit") return "S3 服务正在限流或暂时不可用；请稍后重试。";
+  if (record.category === "integrity") {
+    return record.operation === "put"
+      ? "S3 条件写入未满足不可变对象要求；请检查 If-None-Match: * 兼容性。"
+      : "S3 回读内容或元数据未通过完整性校验。";
+  }
+  if (record.category === "repository-identity") return "当前连接未能验证已绑定仓库的 descriptor 或提交锚点。";
+  if (record.operation === "list") return "S3 LIST 请求失败；请检查 Endpoint、Region、Bucket、Path-style、DNS/TLS 和 ListBucket 权限。";
+  if (record.operation === "put") return "S3 PUT 请求失败；请检查 PutObject 权限和 If-None-Match: * 条件写兼容性。";
+  if (record.operation === "get") return "S3 GET 请求失败；请检查 GetObject 权限、代理和服务回读能力。";
+  if (record.operation === "head") return "S3 HEAD 请求失败；请检查 GetObject/HeadObject 权限和网关兼容性。";
+  return categoryMessages[record.category];
+}
+
+function connectionFlowMessage(record: SafeErrorRecord): string | undefined {
+  if (!record.connectionStage) return undefined;
+  return {
+    "operation-lock": "已有同步、校验或仓库操作正在运行；请等待其结束后重试。",
+    configuration: "连接配置初始化失败，但没有产生可识别的字段错误。",
+    "repository-discovery": "连接已进入仓库发现阶段，但尚未获得可识别的 S3 请求错误。",
+    "repository-verification": "已发现仓库，但 descriptor 或提交锚点验证阶段失败。",
+    "write-probe": "仓库读取阶段完成，但写入兼容性探针内部失败。",
+    "repository-create": "连接和写入探针已通过，但远端仓库创建失败。",
+    "settings-apply": "远端检测已通过，但本地连接设置保存或路由切换失败。",
+    "repository-bind": "远端检测已通过，但本地仓库绑定持久化失败。",
+  }[record.connectionStage];
+}
+
+function syncFlowMessage(record: SafeErrorRecord): string | undefined {
+  if (record.reasonCode === "REMOTE_STRUCTURAL_PATH_CONFLICT") {
+    return "检测到文件/目录碰撞或大小写别名；本轮尚未写入本地，请先处理结构冲突。";
+  }
+  if (!record.syncStage) return undefined;
+  return {
+    preflight: syncPreflightMessage(record.preflightBlocker) ?? "同步前置检查未通过，但没有识别到具体阻断状态。",
+    "repository-selection": "当前连接尚未绑定可用仓库；请先在连接设置中检测并应用。",
+    "repository-verification": "已保存的仓库绑定验证失败。",
+    "outbox-replay": "恢复上次未完成的上传失败；Outbox 仍保留，可安全重试。",
+    "remote-list": "读取远端文件清单失败。",
+    "remote-state-persistence": "远端状态已读取，但本地观察状态保存失败。",
+    "path-planning": "计算本地与远端处理方案失败。",
+    "local-apply": "下载或写入本地文件失败。",
+    "active-file-validation": "当前文件检查未通过；请确认已打开普通 Vault 文件，且没有待解决冲突。",
+    "stable-capture": "无法稳定读取当前文件；请等待文件写盘完成后重试。",
+    "remote-refresh": "发布前复查远端版本失败。",
+    "conflict-check": "发布前发现本地与远端均有变化；请先处理冲突。",
+    "outbox-freeze": "本地待上传记录未能安全落盘；尚未开始本次远端发布。",
+    publication: "远端对象或提交上传失败；本地 Outbox 已保留，可安全重试。",
+    "publication-verification": "远端发布已发起，但回读验证或本地对账未完成；请勿手工覆盖远端对象。",
+    "local-persistence": "远端操作已完成，但本地同步状态保存失败。",
+  }[record.syncStage];
+}
+
+function syncPreflightMessage(blocker: SyncPreflightBlocker | undefined): string | undefined {
+  if (!blocker) return undefined;
+  return {
+    "repository-state-recovery": "本地仓库状态暂时无法读取；为避免覆盖因果状态，本次不会访问 S3。请复制报告并在修复本地存储后重新加载插件。",
+    "apply-journal-recovery": "检测到未完成的本地文件安全应用；原文件前像已保留，请在状态页核对恢复记录。",
+    "config-journal-recovery": "检测到未完成的配置批次恢复；配置前像已保留，请在配置中心继续恢复。",
+    "operational-recovery": "本地同步状态仍要求人工恢复；本次尚未读取远端候选。请复制“状态与检查”中的诊断包。",
+    "repository-stopped": "本地同步协调器处于已停止状态；本次尚未读取远端候选。请重新加载插件后重试。",
+  }[blocker];
+}
+
+function outboxReplayMessage(record: SafeErrorRecord): string | undefined {
+  if (!record.outboxStage) return undefined;
+  return {
+    "durable-open": "恢复旧上传时无法打开本地持久状态；S3 请求尚未开始。",
+    begin: "恢复旧上传时无法更新本地 Outbox 状态；S3 请求尚未开始。",
+    descriptor: "恢复旧上传时仓库 descriptor 验证失败。",
+    frontier: "恢复旧上传时提交前沿验证失败。",
+    "staged-verify": "旧上传的本地暂存内容不可用，远端也没有可验证的完整副本；写入已停止，请复制报告供开发排查。",
+    "remote-recovery-check": "本地暂存内容不可用，检查远端恢复副本时请求失败。",
+    "terminal-remote-verify": "终止 Outbox 的远端不可变对象未全部通过 Hash/大小回读；状态保持原样，可继续只读检查远端候选。",
+    put: "恢复旧上传时写入远端不可变对象失败；Outbox 仍保留。",
+    "remote-verify": "旧上传已发起，但远端对象回读校验失败；Outbox 仍保留。",
+    inspect: "旧上传对象已重放，但读取远端提交状态失败。",
+    "durable-confirm": "旧上传已通过远端校验，但本地发布确认保存失败。",
+    reconcile: "旧上传已确认，但本地文件状态对账失败。",
+  }[record.outboxStage];
+}
+
+function isDiagnosticCategory(value: unknown): value is SyncDiagnosticCategory {
+  return typeof value === "string" && [
+    "authentication", "network", "rate-limit", "integrity", "repository-identity", "local-path", "conflict", "cancelled", "internal",
+  ].includes(value);
+}
+
+function isConnectionFlowStage(value: unknown): value is ConnectionFlowStage {
+  return typeof value === "string" && [
+    "operation-lock", "configuration", "repository-discovery", "repository-verification", "write-probe", "repository-create", "settings-apply", "repository-bind",
+  ].includes(value);
+}
+
+function isSyncAction(value: unknown): value is SyncAction {
+  return value === "pull" || value === "push";
+}
+
+function isSyncFlowStage(value: unknown): value is SyncFlowStage {
+  return typeof value === "string" && [
+    "preflight", "repository-selection", "repository-verification", "outbox-replay", "remote-list",
+    "remote-state-persistence", "path-planning", "local-apply", "active-file-validation", "stable-capture",
+    "remote-refresh", "conflict-check", "outbox-freeze", "publication", "publication-verification", "local-persistence",
+  ].includes(value);
+}
+
+function isDurableOutboxReplayStage(value: unknown): value is DurableOutboxReplayStage {
+  return typeof value === "string" && [
+    "durable-open", "begin", "descriptor", "frontier", "staged-verify", "remote-recovery-check",
+    "terminal-remote-verify", "put", "remote-verify", "inspect", "durable-confirm", "reconcile",
+  ].includes(value);
+}
+
+function isConnectionInitializationStep(value: unknown): value is ConnectionInitializationStep {
+  return typeof value === "string" && ["saved-repository-binding", "s3-client"].includes(value);
+}
+
+function isLocalPersistenceStep(value: unknown): value is LocalPersistenceStep {
+  return typeof value === "string"
+    && ["durable-state", "plugin-data-validation", "plugin-data-write"].includes(value);
+}
+
+function isObjectStoreOperation(value: unknown): value is NonNullable<SafeErrorRecord["operation"]> {
+  return typeof value === "string" && ["list", "get", "head", "put", "delete-probe"].includes(value);
+}
+
+function isConfigurationField(value: unknown): value is RepositoryConfigurationField {
+  return typeof value === "string"
+    && ["endpoint", "region", "bucket", "prefix", "access-key-id", "secret-access-key"].includes(value);
+}
+
+function isConfigurationIssue(value: unknown): value is RepositoryConfigurationIssue {
+  return typeof value === "string" && [
+    "required", "invalid-url", "https-required", "origin-only", "invalid-region", "invalid-bucket", "invalid-prefix",
+  ].includes(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

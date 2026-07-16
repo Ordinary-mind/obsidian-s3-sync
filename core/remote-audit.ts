@@ -9,6 +9,7 @@ import { verifyRemoteBlob } from "./remote-blob";
 import { InMemoryRepositoryCore } from "./repository";
 import type { RepositoryObjectStat } from "./repository-statistics";
 import { createVersionId } from "./version-id";
+import { compareUtf8 } from "../protocol/utf8";
 
 export interface RemoteAuditResult {
   repositoryId: string;
@@ -330,15 +331,4 @@ function auditFailureKind(error: unknown): ObjectStoreFailureKind {
 
 function copyProgress(progress: RemoteAuditProgress): RemoteAuditProgress {
   return { ...progress, missingClosure: [...progress.missingClosure] };
-}
-
-function compareUtf8(left: string, right: string): number {
-  const encoder = new TextEncoder();
-  const leftBytes = encoder.encode(left);
-  const rightBytes = encoder.encode(right);
-  const length = Math.min(leftBytes.length, rightBytes.length);
-  for (let index = 0; index < length; index += 1) {
-    if (leftBytes[index] !== rightBytes[index]) return leftBytes[index] - rightBytes[index];
-  }
-  return leftBytes.length - rightBytes.length;
 }

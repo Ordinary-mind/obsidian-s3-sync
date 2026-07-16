@@ -9,7 +9,7 @@ import {
   type StreamReadObservation,
 } from "../core/streaming-capture";
 import { protocolLimits } from "../protocol/limits";
-import { repositoryPerformanceProfiles } from "../core/performance-profile";
+import { repositoryPerformanceProfile } from "../core/performance-profile";
 
 export type StableVaultFileCapture = Pick<StableCapture, "hash" | "size">;
 
@@ -57,7 +57,7 @@ async function readVaultFileStream(vault: Vault, path: string): Promise<StreamRe
     return {
       type: "file",
       chunks: createReadStream(vault.adapter.getFullPath(path), {
-        highWaterMark: repositoryPerformanceProfiles.desktop.streamChunkBytes,
+        highWaterMark: repositoryPerformanceProfile.streamChunkBytes,
       }),
     };
   }

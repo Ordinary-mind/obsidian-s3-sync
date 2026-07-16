@@ -3,7 +3,7 @@ import { canonicalizeProtocolJson } from "../protocol/json";
 import { descriptorKey } from "../protocol/keys";
 import { verifyRepositoryDescriptor, verifyRepositoryDescriptorAtKey } from "../protocol/validation";
 import { readObjectBytes, type ObjectStore } from "./object-store";
-import { validateRepositoryDirectories } from "./repository-wizard";
+import { validateRepositoryDirectories } from "./repository-directories";
 
 const encoder = new TextEncoder();
 

@@ -10,6 +10,7 @@ import { isConfigItemCovered, validateConfigProfile } from "./config-profile";
 import { vaultPathCaseFoldKey } from "./path";
 import type { ConfigProfile } from "./types";
 import { safeErrorMessage } from "./safe-error";
+import { compareUtf8 } from "../protocol/utf8";
 
 export interface ConfigInspectionPort {
   stat(path: string): Promise<{ type: "file" | "folder" | "symlink" | "other"; size?: number } | null>;
@@ -42,7 +43,7 @@ export type LocalConfigSnapshotResult =
     allEnabledPluginIds: string[];
     scopeRevision: string;
   }
-  | { status: "retry"; reason: string; paths?: string[] };
+  | { status: "retry"; reason: string; paths?: string[]; error?: unknown };
 
 const maximumConfigItems = 100_000;
 
@@ -108,7 +109,7 @@ export async function inspectConfigWorkspaceOnce(input: {
       confirmedAbsentPaths,
     };
   } catch (error) {
-    return unknown(safeErrorMessage(error));
+    return unknown("本地路径或文件状态无法安全确认。", error);
   }
 }
 
@@ -131,7 +132,11 @@ export async function captureLocalConfigSnapshot(input: {
     quietWindow: input.quietWindow,
   });
   if (stable.status !== "captured" || !latest || latest.observation.status !== "complete") {
-    return { status: "retry", reason: stable.status === "retry" ? stable.reason : "scan-incomplete" };
+    return {
+      status: "retry",
+      reason: stable.status === "retry" ? stable.reason : "scan-incomplete",
+      ...(stable.status === "retry" && stable.error !== undefined ? { error: stable.error } : {}),
+    };
   }
   const built = buildManagedConfigSnapshot({
     profile: input.profile,
@@ -150,7 +155,7 @@ export async function captureLocalConfigSnapshot(input: {
   try {
     treeHash = buildConfigTreeObject("", tree, input.binding, sizes).hash;
   } catch (error) {
-    return { status: "retry", reason: safeErrorMessage(error) };
+    return { status: "retry", reason: safeErrorMessage(error), error };
   }
   return {
     status: "captured",
@@ -223,9 +228,9 @@ async function readOptionalRegularFile(port: ConfigInspectionPort, path: string)
   return new Uint8Array(bytes);
 }
 
-function unknown(reason: string): ConfigWorkspaceScan {
+function unknown(reason: string, error?: unknown): ConfigWorkspaceScan {
   return {
-    observation: { status: "unknown", reason },
+    observation: { status: "unknown", reason, ...(error !== undefined ? { error } : {}) },
     bytesByPath: new Map(),
     manifestBytesByPluginId: new Map(),
     allEnabledPluginIds: [],
@@ -241,11 +246,4 @@ function parentPath(path: string): string {
 function baseName(path: string): string {
   const index = path.lastIndexOf("/");
   return index < 0 ? path : path.slice(index + 1);
-}
-
-function compareUtf8(left: string, right: string): number {
-  const encoder = new TextEncoder(); const a = encoder.encode(left); const b = encoder.encode(right);
-  const length = Math.min(a.length, b.length);
-  for (let index = 0; index < length; index += 1) if (a[index] !== b[index]) return a[index] - b[index];
-  return a.length - b.length;
 }

@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  decideResidualStateHandling,
   normalizeRepositoryStateReference,
   repositoryStateLayout,
   resolveRepositoryStateReference,
@@ -16,11 +15,5 @@ describe("repository state layout", () => {
     expect(() => normalizeRepositoryStateReference("../outside")).toThrow("invalid");
     expect(() => normalizeRepositoryStateReference("C:/outside")).toThrow("relative");
     expect(() => normalizeRepositoryStateReference("other/value")).toThrow("unsupported area");
-  });
-
-  it("resumes residual owned state after reinstall and requires reattachment for nonempty state loss", () => {
-    expect(decideResidualStateHandling({ stateRoot: "owned", durableState: "valid", localHasContent: true })).toBe("resume-existing-state");
-    expect(decideResidualStateHandling({ stateRoot: "owned", durableState: "corrupt", localHasContent: true })).toBe("reattach-required");
-    expect(decideResidualStateHandling({ stateRoot: "foreign", durableState: "missing", localHasContent: false })).toBe("refuse-foreign-root");
   });
 });

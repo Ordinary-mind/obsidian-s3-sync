@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  assertHighRiskSummaryComplete,
   auditCoveragePercent,
   derivePathDecision,
   destructiveRepositoryResetAvailable,
@@ -19,7 +18,7 @@ import {
 
 const healthy: OperationalStatus = {
   phase: "idle", pendingApply: 0, outbox: 0, localConcurrentRecords: 0, recoveryFiles: 0, postCaptureEdits: 0,
-  commitGaps: 0, conflicts: 0, retryAttempt: 0, decisions: [], recoveryRequired: false, repositoryIdentityValid: true,
+  commitGaps: 0, conflicts: 0, retryAttempt: 0, decisions: [], recoveryBlockers: [], repositoryIdentityValid: true,
   audit: { state: "complete", completedObjects: 10, totalObjects: 10, missingClosure: [], resumable: false },
 };
 
@@ -28,7 +27,15 @@ describe("operational status", () => {
     expect(repositoryHealthLabel(healthy)).toBe("healthy");
     expect(mayClaimRepositoryFullyHealthy(healthy)).toBe(true);
     expect(mayClaimRepositoryFullyHealthy({ ...healthy, audit: { ...healthy.audit, state: "cancelled", resumable: true } })).toBe(false);
-    expect(repositoryHealthLabel({ ...healthy, recoveryRequired: true })).toBe("diagnostics-only");
+    expect(repositoryHealthLabel({
+      ...healthy,
+      recoveryBlockers: [{
+        code: "vault-apply",
+        source: "vault-apply-journal",
+        disposition: "manual",
+        message: "manual recovery",
+      }],
+    })).toBe("diagnostics-only");
     expect(repositoryHealthLabel({ ...healthy, audit: { state: "never", completedObjects: 0, totalObjects: 0, missingClosure: [], resumable: false } })).toBe("attention");
     expect(repositoryHealthDisplayLabel({ ...healthy, audit: { state: "never", completedObjects: 0, totalObjects: 0, missingClosure: [], resumable: false } })).toBe("待完整校验");
     expect(auditCoveragePercent(healthy.audit)).toBe(100);
@@ -38,6 +45,15 @@ describe("operational status", () => {
     expect(retryCountdownSeconds({ ...healthy, retryAt: 10_500 }, 8_001)).toBe(3);
     expect(destructiveRepositoryResetAvailable()).toBe(false);
     expect(mayRunMutatingSync(healthy)).toBe(true);
+    expect(mayRunMutatingSync({
+      ...healthy,
+      recoveryBlockers: [{
+        code: "durable-outbox",
+        source: "outbox",
+        disposition: "automatic",
+        message: "automatic replay",
+      }],
+    })).toBe(true);
     expect(mayRunMutatingSync({ ...healthy, repositoryIdentityValid: false })).toBe(false);
     expect(operationalStatusBarText({ ...healthy, phase: "waiting-retry", retryAttempt: 2, retryAt: 20_000 })).toContain("等待重试 · 处理中 · 重试 2");
   });
@@ -68,11 +84,6 @@ describe("operational status", () => {
     expect(derivePathDecision({ ...base, remote: { kind: "conflict", reason: "two heads" } })).toMatchObject({ decision: "conflict", reason: "two heads" });
     expect(derivePathDecision({ ...base, remote: { kind: "unknown", reason: "pending parent" } })).toMatchObject({ decision: "unknown", reason: "pending parent" });
     expect(derivePathDecision({ ...base, localState: "unknown", remote: { kind: "none" } }).decision).toBe("unknown");
-  });
-
-  it("requires every high-risk operation summary field", () => {
-    expect(() => assertHighRiskSummaryComplete({ repositoryId: "repo", normalizedPrefix: "vault", objectCount: 10, totalBytes: 20, recoveryLocation: ".obsidian/recovery" })).not.toThrow();
-    expect(() => assertHighRiskSummaryComplete({ repositoryId: "repo", normalizedPrefix: "vault", objectCount: -1, totalBytes: 20, recoveryLocation: ".obsidian/recovery" })).toThrow("incomplete");
   });
 
   it("persists space totals without retaining individual orphan object keys", () => {

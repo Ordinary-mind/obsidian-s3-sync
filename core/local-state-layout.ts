@@ -51,16 +51,3 @@ export function resolveRepositoryStateReference(
 ): string {
   return `${layout.root}/${normalizeRepositoryStateReference(reference, allowedAreas)}`;
 }
-
-export type ResidualStateDecision = "new-installation" | "resume-existing-state" | "reattach-required" | "refuse-foreign-root";
-
-export function decideResidualStateHandling(input: {
-  stateRoot: "missing" | "owned" | "foreign";
-  durableState: "missing" | "valid" | "corrupt";
-  localHasContent: boolean;
-}): ResidualStateDecision {
-  if (input.stateRoot === "foreign") return "refuse-foreign-root";
-  if (input.stateRoot === "missing") return input.localHasContent ? "reattach-required" : "new-installation";
-  if (input.durableState === "valid") return "resume-existing-state";
-  return input.localHasContent ? "reattach-required" : "new-installation";
-}

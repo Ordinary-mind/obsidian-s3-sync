@@ -1,6 +1,7 @@
 import type { ConfigProfile } from "./types";
 import type { ManagedConfigItem } from "./config-snapshot-builder";
 import { planSafeParentReduction, type ParentReductionStep } from "./parent-reduction";
+import { compareUtf8 } from "../protocol/utf8";
 
 export type ConfigDiffKind = "add" | "modify" | "delete" | "stop-managing" | "unchanged";
 
@@ -113,15 +114,4 @@ function sameItem(left: ManagedConfigItem, right: ManagedConfigItem): boolean {
   return left.kind === right.kind && (left.kind === "delete" || right.kind === "delete"
     ? left.kind === right.kind
     : left.hash === right.hash && left.size === right.size);
-}
-
-function compareUtf8(left: string, right: string): number {
-  const encoder = new TextEncoder();
-  const leftBytes = encoder.encode(left);
-  const rightBytes = encoder.encode(right);
-  const length = Math.min(leftBytes.length, rightBytes.length);
-  for (let index = 0; index < length; index += 1) {
-    if (leftBytes[index] !== rightBytes[index]) return leftBytes[index] - rightBytes[index];
-  }
-  return leftBytes.length - rightBytes.length;
 }

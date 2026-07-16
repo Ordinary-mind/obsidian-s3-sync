@@ -1,5 +1,8 @@
 import { isValidSequence, isWithinCollectionLimit, utf8ByteLength } from "./limits";
 import { defaultCaseFold151, normalizeNfc151 } from "./unicode";
+import { compareUtf8 } from "./utf8";
+
+export { compareUtf8 } from "./utf8";
 
 export interface ProtocolCommit {
   protocol: 1;
@@ -307,29 +310,9 @@ function isValidClientVersion(value: string): boolean {
   );
 }
 
-const utf8Encoder = new TextEncoder();
-
 export function isUtf8SortedUnique(values: string[]): boolean {
   for (let index = 1; index < values.length; index += 1) {
     if (compareUtf8(values[index - 1], values[index]) >= 0) return false;
-  }
-  return true;
-}
-
-export function compareUtf8(left: string, right: string): number {
-  if (isAscii(left) && isAscii(right)) return left < right ? -1 : left > right ? 1 : 0;
-  const leftBytes = utf8Encoder.encode(left);
-  const rightBytes = utf8Encoder.encode(right);
-  const length = Math.min(leftBytes.length, rightBytes.length);
-  for (let index = 0; index < length; index += 1) {
-    if (leftBytes[index] !== rightBytes[index]) return leftBytes[index] - rightBytes[index];
-  }
-  return leftBytes.length - rightBytes.length;
-}
-
-function isAscii(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    if (value.charCodeAt(index) > 0x7f) return false;
   }
   return true;
 }

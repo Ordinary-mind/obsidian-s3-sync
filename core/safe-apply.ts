@@ -172,18 +172,6 @@ export class SafeLocalApplicator {
     return { status: "accounted", journal };
   }
 
-  async applyIndependently(plans: readonly BoundApplyPlan[]): Promise<{ results: Record<string, SafeApplyResult>; pendingPaths: string[] }> {
-    if (new Set(plans.map((plan) => plan.path)).size !== plans.length) throw new Error("independent ApplyPlans contain duplicate paths");
-    const results: Record<string, SafeApplyResult> = {};
-    const pendingPaths: string[] = [];
-    for (const plan of plans) {
-      try { results[plan.path] = await this.apply(plan); }
-      catch { results[plan.path] = { status: "pending" }; }
-      if (!["accounted", "adopted-without-write"].includes(results[plan.path].status)) pendingPaths.push(plan.path);
-    }
-    return { results, pendingPaths };
-  }
-
   async resume(journal: SafeApplyJournal): Promise<SafeApplyResult> {
     if (journal.state === "accounted") return { status: "accounted", journal };
     if (journal.state === "recovery-required") return { status: "recovery-required", journal };

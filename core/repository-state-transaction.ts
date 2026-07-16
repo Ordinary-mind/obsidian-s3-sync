@@ -1,19 +1,21 @@
 import type { DurableStateSnapshot, DurableStateStore, StateJsonValue } from "./durable-state";
 import {
   assertDurableOutboxQueue,
+  confirmRemotelyVerifiedTerminalOutbox,
   createPublishedReconciles,
   forkedWriterDisposition,
   markWriterForked,
   nextDurableOutbox,
   transitionDurableOutbox,
   type DurableOutboxEntry,
+  type VerifiedTerminalOutboxProof,
 } from "./durable-outbox";
 import { normalizeRepositoryStateReference } from "./local-state-layout";
 import type { PersistedLocalConcurrentRecord } from "./local-concurrent-resolution";
 import type { RecoveryRecord } from "./recovery-record";
 import { advanceWriterFrontiers } from "./commit-frontier";
 import { parseVersionId } from "./version-id";
-import { repositoryFingerprint, type RepositoryLocator } from "./locator";
+import { repositoryFingerprint } from "./locator";
 import { canonicalizeProtocolJson } from "../protocol/json";
 import { parseRepositoryDurablePayload } from "./repository-durable-payload";
 import { isMaximumSequence, nextSequence } from "./sequence";
@@ -48,6 +50,14 @@ export interface WaitingRootDelete {
   state: "waiting-publication" | "ready";
 }
 
+interface VerifiedOutboxStatePatch {
+  observedRegisters: StateJsonValue;
+  pendingApply: StateJsonValue;
+  writerFrontiers?: StateJsonValue;
+  sparseSeenCommits?: StateJsonValue;
+  operationalStatus?: StateJsonValue;
+}
+
 export async function writeRepositoryStateTransaction(
   store: DurableStateStore<StateJsonValue>,
   next: StateJsonValue,
@@ -72,34 +82,6 @@ export async function writeRepositoryStateTransaction(
         parsePublishedReconciles(merged.publishedReconciles),
       );
     }
-    return merged;
-  });
-}
-
-export async function rebindVerifiedRepositoryRouteStateTransaction(
-  store: DurableStateStore<StateJsonValue>,
-  candidateLocator: RepositoryLocator,
-): Promise<DurableStateSnapshot<StateJsonValue>> {
-  return store.update((current) => {
-    if (!isRecord(current)) throw new Error("repository state is missing");
-    const identity = validateRepositoryStatePayload(current);
-    if (candidateLocator.bucket !== identity.locator.bucket
-      || candidateLocator.normalizedPrefix !== identity.locator.normalizedPrefix) {
-      throw new Error("Bucket or Prefix change requires non-destructive reattachment");
-    }
-    const nextFingerprint = repositoryFingerprint(candidateLocator, identity.repositoryId, identity.descriptorHash);
-    const entries = parseDurableOutboxEntries(current.durableOutbox).map((entry) => ({
-      ...entry,
-      repositoryFingerprint: nextFingerprint,
-    }));
-    const merged: Record<string, StateJsonValue> = {
-      ...current,
-      locator: toJson(candidateLocator),
-      repositoryFingerprint: nextFingerprint,
-      durableOutbox: toJson(entries),
-      outboxRefs: toJson(entries.map(outboxReference)),
-    };
-    validateRepositoryStatePayload(merged);
     return merged;
   });
 }
@@ -183,12 +165,33 @@ export async function confirmDurableOutboxPublishedTransaction(
   store: DurableStateStore<StateJsonValue>,
   outboxId: string,
   verifiedCommitHash: string,
-  verifiedStatePatch: {
-    observedRegisters: StateJsonValue;
-    pendingApply: StateJsonValue;
-    writerFrontiers?: StateJsonValue;
-    sparseSeenCommits?: StateJsonValue;
-  },
+  verifiedStatePatch: VerifiedOutboxStatePatch,
+): Promise<DurableStateSnapshot<StateJsonValue>> {
+  return confirmVerifiedOutboxPublishedTransaction(store, outboxId, verifiedStatePatch, (entry) => {
+    if (entry.commitHash !== verifiedCommitHash) throw new Error("verified Commit does not match frozen Outbox");
+    if (entry.state !== "publishing") throw new Error("Outbox is not publishing");
+    return transitionDurableOutbox(entry, "published");
+  });
+}
+
+export async function confirmTerminalDurableOutboxPublishedTransaction(
+  store: DurableStateStore<StateJsonValue>,
+  proof: VerifiedTerminalOutboxProof,
+  verifiedStatePatch: VerifiedOutboxStatePatch,
+): Promise<DurableStateSnapshot<StateJsonValue>> {
+  return confirmVerifiedOutboxPublishedTransaction(
+    store,
+    proof.outboxId,
+    verifiedStatePatch,
+    (entry) => confirmRemotelyVerifiedTerminalOutbox(entry, proof),
+  );
+}
+
+async function confirmVerifiedOutboxPublishedTransaction(
+  store: DurableStateStore<StateJsonValue>,
+  outboxId: string,
+  verifiedStatePatch: VerifiedOutboxStatePatch,
+  publishEntry: (entry: DurableOutboxEntry) => DurableOutboxEntry,
 ): Promise<DurableStateSnapshot<StateJsonValue>> {
   return store.update((current) => {
     if (!isRecord(current)) throw new Error("repository state is missing");
@@ -198,9 +201,8 @@ export async function confirmDurableOutboxPublishedTransaction(
       : parseRepositoryDurablePayload({ ...current, writerFrontiers: verifiedStatePatch.writerFrontiers });
     const entries = parseDurableOutboxEntries(current.durableOutbox);
     const entry = entries.find((candidate) => candidate.id === outboxId);
-    if (!entry || entry.commitHash !== verifiedCommitHash) throw new Error("verified Commit does not match frozen Outbox");
-    if (entry.state !== "publishing") throw new Error("Outbox is not publishing");
-    const published = transitionDurableOutbox(entry, "published");
+    if (!entry) throw new Error("verified durable Outbox was not found");
+    const published = publishEntry(entry);
     const commitObject = entry.objects.at(-1)!;
     const anchor = {
       key: commitObject.key,
@@ -647,7 +649,7 @@ function validateConfigSyncState(
   identity: ReturnType<typeof parseRepositoryDurablePayload>,
 ): void {
   if (value === undefined) return;
-  if (!isRecord(value) || !["disabled", "unbound", "ready", "local-changes", "pending", "conflict", "incompatible",
+  if (!isRecord(value) || !["unbound", "ready", "local-changes", "pending", "conflict", "incompatible",
     "apply-failed", "recovery-required", "load-failed"].includes(value.status as string)
     || !stringArray(value.projectedHeads) || !(value.projectedHeads as string[]).every(isVersionId)
     || (value.projectedTreeHash !== null && !isHash(value.projectedTreeHash))

@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { captureStableConfigScan, type ConfigScanObservation } from "../../core/config-scan";
-import { canApplyConfigBatch } from "../../core/config-apply";
 
 describe("stable Config channel scans", () => {
   it("accepts only two equal complete scans and keeps second-scan staging", async () => {
@@ -24,18 +23,10 @@ describe("stable Config channel scans", () => {
     ]) {
       await expect(captureStableConfigScan({ scan: async () => scans.shift()!, quietWindow: async () => {} })).resolves.toMatchObject({ status: "retry" });
     }
-    await expect(captureStableConfigScan({ scan: async () => { throw new Error("read failed"); }, quietWindow: async () => {} }))
-      .resolves.toEqual({ status: "retry", reason: "unknown" });
-    await expect(captureStableConfigScan({ scan: async () => complete("scope", "a"), quietWindow: async () => { throw new Error("cancelled"); } }))
-      .resolves.toEqual({ status: "retry", reason: "unknown" });
-  });
-
-  it("rechecks local Tree, observed heads, and RepositoryLocator before apply", () => {
-    const base = { projectedTreeHash: "tree", currentTreeHash: "tree", targetHeads: ["head"], observedHeads: ["head"] };
-    expect(canApplyConfigBatch({ ...base, repositoryLocatorMatches: true })).toBe(true);
-    expect(canApplyConfigBatch({ ...base, currentTreeHash: "changed" })).toBe(false);
-    expect(canApplyConfigBatch({ ...base, observedHeads: ["new-head"] })).toBe(false);
-    expect(canApplyConfigBatch({ ...base, repositoryLocatorMatches: false })).toBe(false);
+    const readFailure = await captureStableConfigScan({ scan: async () => { throw new Error("read failed"); }, quietWindow: async () => {} });
+    expect(readFailure).toMatchObject({ status: "retry", reason: "unknown", error: { message: "read failed" } });
+    const quietWindowFailure = await captureStableConfigScan({ scan: async () => complete("scope", "a"), quietWindow: async () => { throw new Error("cancelled"); } });
+    expect(quietWindowFailure).toMatchObject({ status: "retry", reason: "unknown", error: { message: "cancelled" } });
   });
 });
 

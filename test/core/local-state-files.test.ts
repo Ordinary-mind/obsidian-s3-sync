@@ -1,32 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
+  archiveRepositoryStateCopies,
   openRepositoryStateFiles,
-  recoverResidualRepositoryDirectories,
-  scanResidualRepositoryStateRoots,
   type LocalStatePathAdapter,
 } from "../../core/local-state-files";
-import { DurableStateStore, type StateJsonValue } from "../../core/durable-state";
-import { repositoryDurablePayload } from "../../core/repository-durable-payload";
-import { repositoryFingerprint, type RepositoryLocator } from "../../core/locator";
+import { DurableStateStore } from "../../core/durable-state";
 
 class MemoryPaths implements LocalStatePathAdapter {
   readonly entries = new Map<string, { type: "file" | "folder"; source?: string }>([[".obsidian", { type: "folder" }]]);
-  mkdirCalls = 0;
-  writeCalls = 0;
   async exists(path: string): Promise<boolean> { return this.entries.has(path); }
   async stat(path: string): Promise<{ type: "file" | "folder" } | null> { return this.entries.get(path) ?? null; }
-  async mkdir(path: string): Promise<void> { this.mkdirCalls += 1; if (this.entries.has(path)) throw new Error("exists"); this.entries.set(path, { type: "folder" }); }
+  async mkdir(path: string): Promise<void> { if (this.entries.has(path)) throw new Error("exists"); this.entries.set(path, { type: "folder" }); }
   async read(path: string): Promise<string> { const entry = this.entries.get(path); if (entry?.type !== "file") throw new Error("not a file"); return entry.source!; }
-  async write(path: string, source: string): Promise<void> { this.writeCalls += 1; this.entries.set(path, { type: "file", source }); }
-  async list(path: string): Promise<{ files: string[]; folders: string[] }> {
-    const prefix = `${path}/`;
-    const files: string[] = [];
-    const folders: string[] = [];
-    for (const [candidate, entry] of this.entries) {
-      if (!candidate.startsWith(prefix) || candidate.slice(prefix.length).includes("/")) continue;
-      (entry.type === "file" ? files : folders).push(candidate);
-    }
-    return { files, folders };
+  async write(path: string, source: string): Promise<void> { this.entries.set(path, { type: "file", source }); }
+  async rename(path: string, newPath: string): Promise<void> {
+    const entry = this.entries.get(path);
+    if (!entry || this.entries.has(newPath)) throw new Error("rename refused");
+    this.entries.delete(path);
+    this.entries.set(newPath, entry);
   }
 }
 
@@ -59,68 +50,22 @@ describe("repository local state files", () => {
     await expect(files.write("state-a.json", "value")).rejects.toThrow("ownership refused");
   });
 
-  it("finds owned residual state after plugin data is lost and refuses unknown roots", async () => {
+  it("archives invalid state copies without deleting staged or recovery content", async () => {
     const paths = new MemoryPaths();
-    await openRepositoryStateFiles(paths, ".obsidian", repositoryId);
-    paths.entries.set(".obsidian/.obsidian-s3-sync-local/not-owned", { type: "folder" });
-    paths.entries.set(".obsidian/.obsidian-s3-sync-local/orphan.json", { type: "file", source: "{}" });
-    const scan = await scanResidualRepositoryStateRoots(paths, ".obsidian");
-    expect(scan.ownedRepositoryIds).toEqual([repositoryId]);
-    expect(scan.refusedRoots).toEqual([
-      ".obsidian/.obsidian-s3-sync-local/not-owned",
-      ".obsidian/.obsidian-s3-sync-local/orphan.json",
+    const files = await openRepositoryStateFiles(paths, ".obsidian", repositoryId);
+    await files.write("state-a.json", "invalid-a");
+    await files.write("state-b.json", "invalid-b");
+    paths.entries.set(`${root}/staged/blob`, { type: "file", source: "staged" });
+
+    const result = await archiveRepositoryStateCopies(paths, ".obsidian", repositoryId, "invalid-state-1");
+
+    expect(result.archived).toEqual([
+      `${root}/recovery/invalid-state-1-state-a.json`,
+      `${root}/recovery/invalid-state-1-state-b.json`,
     ]);
+    expect(paths.entries.get(`${root}/staged/blob`)?.source).toBe("staged");
+    expect(paths.entries.has(`${root}/state-a.json`)).toBe(false);
+    expect(paths.entries.has(`${root}/state-b.json`)).toBe(false);
   });
 
-  it("recovers directory history from verified durable state without modifying residual roots", async () => {
-    const paths = new MemoryPaths();
-    const validFiles = await openRepositoryStateFiles(paths, ".obsidian", repositoryId);
-    const locator: RepositoryLocator = {
-      endpoint: "https://s3.example.com",
-      region: "test",
-      bucket: "vault",
-      forcePathStyle: true,
-      normalizedPrefix: "team",
-    };
-    const descriptorHash = "a".repeat(64);
-    await new DurableStateStore<StateJsonValue>(validFiles).update(() => repositoryDurablePayload({
-      repositoryId,
-      descriptorHash,
-      repositoryFingerprint: repositoryFingerprint(locator, repositoryId, descriptorHash),
-      locator,
-      configDir: ".obsidian",
-      historicalConfigDirs: [".old", ".legacy"],
-      writerId: "123e4567-e89b-42d3-a456-426614174099",
-      nextSequence: "00000000000000000001",
-      previousCommitHash: null,
-      writerFrontiers: {},
-    }));
-    paths.entries.set(`${root}/state-b.json`, { type: "file", source: "corrupt-copy" });
-
-    const missingId = "123e4567-e89b-42d3-a456-426614174001";
-    await openRepositoryStateFiles(paths, ".obsidian", missingId);
-    const corruptId = "123e4567-e89b-42d3-a456-426614174002";
-    await openRepositoryStateFiles(paths, ".obsidian", corruptId);
-    paths.entries.set(`.obsidian/.obsidian-s3-sync-local/${corruptId}/state-a.json`, { type: "file", source: "corrupt" });
-    paths.entries.set(".obsidian/.obsidian-s3-sync-local/not-owned", { type: "folder" });
-
-    const callsBefore = { mkdir: paths.mkdirCalls, write: paths.writeCalls };
-    const recovery = await recoverResidualRepositoryDirectories(paths, ".obsidian");
-
-    expect(recovery.recovered).toEqual([expect.objectContaining({
-      repositoryId,
-      configDir: ".obsidian",
-      historicalConfigDirs: [".old", ".legacy"],
-    })]);
-    expect(recovery.historicalConfigDirCandidates).toEqual([".legacy", ".obsidian", ".old"]);
-    expect(recovery).toMatchObject({
-      complete: false,
-      issues: expect.arrayContaining([
-        { root: `.obsidian/.obsidian-s3-sync-local/${missingId}`, reason: "state-missing" },
-        { root: `.obsidian/.obsidian-s3-sync-local/${corruptId}`, reason: "state-invalid" },
-        { root: ".obsidian/.obsidian-s3-sync-local/not-owned", reason: "root-refused" },
-      ]),
-    });
-    expect({ mkdir: paths.mkdirCalls, write: paths.writeCalls }).toEqual(callsBefore);
-  });
 });

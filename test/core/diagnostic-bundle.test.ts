@@ -43,29 +43,19 @@ describe("redacted diagnostics and policies", () => {
     expect(redactEndpoint("https://user:pass@s3.example.com?token=x#secret")).toBe("https://s3.example.com");
   });
 
-  it("keeps normal, probe and old-generation capabilities in separate scoped policies", () => {
+  it("keeps normal and probe cleanup capabilities in separate scoped policies", () => {
     const policy = (name: string) => JSON.parse(readFileSync(new URL(`../../docs/${name}`, import.meta.url), "utf8")) as {
       Statement: Array<{ Action: string | string[]; Resource: string; Condition?: unknown }>;
     };
     const minimal = policy("s3-policy-minimal.json");
     const probe = policy("s3-policy-probe.json");
-    const maintenance = policy("s3-policy-maintenance.json");
     const actions = (value: string | string[]) => Array.isArray(value) ? value : [value];
     expect(minimal.Statement.flatMap((statement) => actions(statement.Action))).not.toContain("s3:DeleteObject");
     expect(minimal.Statement.find((statement) => actions(statement.Action).includes("s3:ListBucket"))?.Condition).toBeDefined();
     const probeDeletes = probe.Statement.filter((item) => actions(item.Action).includes("s3:DeleteObject"));
-    const maintenanceDeletes = maintenance.Statement.filter((item) => actions(item.Action).includes("s3:DeleteObject"));
     expect(probeDeletes).toHaveLength(1);
-    expect(maintenanceDeletes).toHaveLength(1);
     for (const statement of probeDeletes) {
       expect(statement.Resource.endsWith("/.obsidian-s3-sync/v1/probes/*")).toBe(true);
     }
-    for (const statement of maintenanceDeletes) {
-      expect(statement.Resource).toContain("/repositories/REPLACE_OLD_REPOSITORY_ID/*");
-      expect(statement.Resource).not.toContain("/probes/");
-    }
-    const maintenanceList = maintenance.Statement.find((statement) => actions(statement.Action).includes("s3:ListBucket"));
-    expect(maintenanceList?.Condition).toBeDefined();
-    expect(JSON.stringify(maintenanceList)).toContain("REPLACE_OLD_REPOSITORY_ID/*");
   });
 });

@@ -43,7 +43,7 @@ export function assertPersistedRepositoryBinding(
     throw new Error("RepositoryLocator changed; select the repository again");
   }
   if (vaultPathCaseFoldKey(binding.configDir) !== vaultPathCaseFoldKey(actualConfigDir)) {
-    throw new Error("vault.configDir changed; create a new repository generation before publishing or applying");
+    throw new Error("vault.configDir changed; select a new Prefix before publishing or applying");
   }
   const descriptorHistory = new Set(binding.historicalConfigDirs.map(vaultPathCaseFoldKey));
   if (localHistoricalConfigDirs.some((path) => !descriptorHistory.has(vaultPathCaseFoldKey(path)))) {

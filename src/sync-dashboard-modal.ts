@@ -4,7 +4,6 @@ import {
   auditCoveragePercent,
   diagnosticCategoryLabel,
   mayClaimRepositoryFullyHealthy,
-  mayRunMutatingSync,
   operationalPhaseLabel,
   pathDecisionLabel,
   repositoryHealthDisplayLabel,
@@ -13,6 +12,9 @@ import {
   type OperationalStatus,
 } from "../core/operational-status";
 import { v1SecurityBoundaryDisclosures } from "../core/security-boundary";
+import { logSafeError } from "../core/safe-error";
+import { appendCopyableReportButton, showCopyableErrorNotice } from "./copyable-notice";
+import { writeClipboardText } from "./clipboard";
 
 export class SyncDashboardModal extends Modal {
   private refreshTimer: number | null = null;
@@ -21,7 +23,7 @@ export class SyncDashboardModal extends Modal {
   constructor(private readonly plugin: S3SyncPlugin) { super(plugin.app); }
 
   onOpen(): void {
-    this.setTitle("S3 Sync 状态与诊断");
+    this.setTitle("S3 Sync 状态与检查");
     this.modalEl.addClass("s3-sync-dashboard-modal");
     this.render();
     this.refreshTimer = window.setInterval(() => this.render(), 1_000);
@@ -36,7 +38,7 @@ export class SyncDashboardModal extends Modal {
   private render(): void {
     const status = this.plugin.getOperationalStatus();
     const health = repositoryHealthLabel(status);
-    const mutatingAllowed = !!this.plugin.data.v1 && mayRunMutatingSync(status);
+    const mutatingAllowed = this.plugin.canAttemptV1Sync();
     const busy = this.operationRunning || this.plugin.isV1OperationRunning();
     this.contentEl.empty();
 
@@ -51,8 +53,8 @@ export class SyncDashboardModal extends Modal {
       const bannerIcon = banner.createSpan({ cls: "s3-sync-inline-icon" });
       setIcon(bannerIcon, "shield-alert");
       banner.createSpan({ text: this.plugin.data.v1
-        ? "写操作已暂停，仅保留预览、校验与非破坏性重新接入。"
-        : "尚未选择 v1 仓库。" });
+        ? "写操作已暂停；可继续预览、完整校验和复制诊断信息。"
+        : "尚未连接仓库。" });
     }
 
     const summary = this.contentEl.createDiv({ cls: "s3-sync-status-grid" });
@@ -81,13 +83,23 @@ export class SyncDashboardModal extends Modal {
       const error = this.contentEl.createDiv({ cls: "s3-sync-error" });
       error.createEl("strong", { text: `${diagnosticCategoryLabel(status.lastError.category)}：` });
       error.createSpan({ text: status.lastError.message });
+      appendCopyableReportButton(error, status.lastError.report);
+    }
+
+    if (status.recoveryBlockers.length > 0) {
+      const recovery = this.contentEl.createDiv({ cls: "s3-sync-recovery-blockers" });
+      for (const blocker of status.recoveryBlockers) {
+        recovery.createDiv({
+          cls: blocker.disposition === "manual" ? "s3-sync-error" : "s3-sync-retry-state",
+          text: `${blocker.disposition === "manual" ? "需要处理" : "自动恢复"}：${blocker.message}`,
+        });
+      }
     }
 
     this.renderActions(status, mutatingAllowed, busy);
     this.renderAudit(status);
     this.renderRepositorySpace(status);
     this.renderSecurityBoundary();
-    this.renderHighRiskOperation(status);
     this.renderDecisions(status);
   }
 
@@ -154,10 +166,17 @@ export class SyncDashboardModal extends Modal {
         icon: "clipboard-copy",
         tooltip: "复制不含凭证、正文和明文路径的诊断数据",
         disabled: busy,
-        onClick: async () => {
-          await navigator.clipboard.writeText(this.plugin.exportRedactedDiagnostics());
+        onClick: () => this.run(async () => {
+          await writeClipboardText(this.plugin.exportRedactedDiagnostics());
           new Notice("S3 Sync：已复制脱敏诊断包。");
-        },
+        }),
+      }))
+      .addButton((button) => this.actionButton(button, {
+        label: "运行环境检查",
+        icon: "monitor-check",
+        tooltip: "验证桌面文件系统、编辑器事件和重载持久化能力",
+        disabled: busy,
+        onClick: () => this.run(() => this.plugin.runDesktopRuntimeContract()),
       }));
   }
 
@@ -211,28 +230,11 @@ export class SyncDashboardModal extends Modal {
 
   private renderSecurityBoundary(): void {
     const section = this.contentEl.createDiv({ cls: "s3-sync-dashboard-section" });
-    section.createEl("h3", { text: "v1 信任与加密边界" });
+    section.createEl("h3", { text: "信任与加密边界" });
     const grid = section.createDiv({ cls: "s3-sync-status-grid" });
     for (const disclosure of v1SecurityBoundaryDisclosures) {
       grid.createDiv({ cls: "s3-sync-status-label", text: disclosure.label });
       grid.createDiv({ cls: "s3-sync-status-value", text: disclosure.detail });
-    }
-  }
-
-  private renderHighRiskOperation(status: OperationalStatus): void {
-    if (!status.highRiskOperation) return;
-    const section = this.contentEl.createDiv({ cls: "s3-sync-dashboard-section s3-sync-high-risk" });
-    section.createEl("h3", { text: status.highRiskOperation.kind === "clone" ? "高风险克隆" : "高风险新世代" });
-    const summary = section.createDiv({ cls: "s3-sync-status-grid" });
-    for (const [label, value] of [
-      ["repositoryId", status.highRiskOperation.summary.repositoryId],
-      ["Prefix", status.highRiskOperation.summary.normalizedPrefix || "（根 Prefix）"],
-      ["对象数量", String(status.highRiskOperation.summary.objectCount)],
-      ["对象大小", formatBytes(status.highRiskOperation.summary.totalBytes)],
-      ["恢复位置", status.highRiskOperation.summary.recoveryLocation],
-    ]) {
-      summary.createDiv({ cls: "s3-sync-status-label", text: label });
-      summary.createDiv({ cls: "s3-sync-status-value", text: value });
     }
   }
 
@@ -279,6 +281,9 @@ export class SyncDashboardModal extends Modal {
     this.render();
     try {
       await operation();
+    } catch (error) {
+      showCopyableErrorNotice("S3 Sync：状态页操作失败", error, "dashboard-operation");
+      logSafeError("S3 Sync dashboard operation failed", error);
     } finally {
       this.operationRunning = false;
       this.render();

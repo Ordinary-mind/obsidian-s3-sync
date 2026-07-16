@@ -1,5 +1,4 @@
 import type { S3SyncData, S3SyncSettings } from "./types";
-import { randomId } from "./utils";
 import { createDefaultConfigProfile } from "../core/config-profile";
 import { createDefaultConfigSyncState } from "./config-center-types";
 
@@ -12,26 +11,12 @@ export const DEFAULT_SETTINGS: S3SyncSettings = {
   prefix: "",
   forcePathStyle: true,
   autoSync: false,
-  syncOnStartup: false,
-  syncOnEvents: true,
-  remotePolling: false,
-  pollIntervalMinutes: 15,
-  debounceSeconds: 10,
-  ignoredPatterns: [
-    ".trash/**",
-    ".s3-sync/**",
-    ".obsidian/plugins/obsidian-s3-sync/**",
-    ".obsidian/workspace.json",
-    ".obsidian/workspace-mobile.json",
-  ].join("\n"),
-  configSyncEnabled: false,
+  ignoredPatterns: ".trash/**",
   configProfile: createDefaultConfigProfile("1.7.7"),
 };
 
 export function createDefaultData(): S3SyncData {
   return {
-    deviceId: randomId("device"),
-    lastSyncedVersion: 0,
     files: {},
     conflicts: {},
     v1DirtyIntents: {},
@@ -47,7 +32,6 @@ export function createDefaultData(): S3SyncData {
     v1PublishedReconciles: [],
     v1DurableOutbox: [],
     v1RecoveryRecords: {},
-    v1ReattachRequired: false,
     v1OperationalStatus: {
       phase: "idle",
       pendingApply: 0,
@@ -60,7 +44,7 @@ export function createDefaultData(): S3SyncData {
       retryAttempt: 0,
       decisions: [],
       audit: { state: "never", completedObjects: 0, totalObjects: 0, missingClosure: [], resumable: false },
-      recoveryRequired: false,
+      recoveryBlockers: [],
       repositoryIdentityValid: true,
     },
     v1ConfigSync: createDefaultConfigSyncState(),

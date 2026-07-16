@@ -5,6 +5,7 @@ import { validatePortablePluginId, vaultPathCaseFoldKey } from "./path";
 import type { ManagedConfigItem } from "./config-snapshot-builder";
 import type { ConfigProfile } from "./types";
 import { safeErrorMessage } from "./safe-error";
+import { compareUtf8 } from "../protocol/utf8";
 
 export interface PortableConfigSnapshotView {
   profile: ConfigProfile;
@@ -146,15 +147,4 @@ function isCanonicalPluginIdArray(values: readonly string[]): boolean {
     if (index > 0 && compareUtf8(values[index - 1], id) >= 0) return false;
   }
   return values.length <= 100_000;
-}
-
-function compareUtf8(left: string, right: string): number {
-  const encoder = new TextEncoder();
-  const leftBytes = encoder.encode(left);
-  const rightBytes = encoder.encode(right);
-  const length = Math.min(leftBytes.length, rightBytes.length);
-  for (let index = 0; index < length; index += 1) {
-    if (leftBytes[index] !== rightBytes[index]) return leftBytes[index] - rightBytes[index];
-  }
-  return leftBytes.length - rightBytes.length;
 }

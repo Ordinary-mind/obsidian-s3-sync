@@ -9,6 +9,7 @@
     "generate:protocol": "node scripts/generate-protocol-validators.mjs",
     "generate:unicode": "node scripts/generate-unicode-case-folding.mjs && node scripts/generate-unicode-nfc.mjs",
     "check:generated": "node scripts/generate-protocol-validators.mjs --check",
+    "check:bundle": "node scripts/check-bundle-current.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:types": "tsc -p tsconfig.test.json --noEmit",
@@ -18,8 +19,8 @@
     "test:s3-minio": "npm run test:s3-contract",
     "benchmark:core": "vitest bench --run test/benchmarks/core.bench.ts",
     "check:dependencies": "node scripts/check-dependencies.mjs",
-    "check:vulnerabilities": "npm audit --omit=dev --audit-level=high",
-    "test:ci": "npm test && npm run test:types && npm run check:generated && npm run build && npm run check:dependencies && npm run check:vulnerabilities && git diff --exit-code -- main.js"
+    "check:vulnerabilities": "npm audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org",
+    "test:ci": "npm test && npm run test:types && npm run check:generated && npm run check:bundle && npm run check:dependencies && npm run check:vulnerabilities"
   },
   "keywords": [
     "obsidian",

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { sha256Hex } from "../../protocol/hash";
 import {
   assertDurableOutboxQueue,
+  confirmRemotelyVerifiedTerminalOutbox,
   createPublishedReconciles,
   forkedWriterDisposition,
   freezeDurableOutbox,
@@ -97,6 +98,27 @@ describe("durable Outbox", () => {
     expect(reconcilePublishedMutation(reconcile, { kind: "put", hash: "f".repeat(64) }, false).state).toBe("next-generation");
   });
 
+  it("converges a terminal entry only from an exact all-object remote proof", async () => {
+    const publishing = transitionDurableOutbox(await entry(1), "publishing");
+    const terminal = transitionDurableOutbox(publishing, "integrity-error");
+    const proof = {
+      outboxId: terminal.id,
+      repositoryFingerprint: terminal.repositoryFingerprint,
+      writerId: terminal.writerId,
+      sequence: terminal.sequence,
+      previousCommitHash: terminal.previousCommitHash,
+      commitHash: terminal.commitHash,
+      objects: terminal.objects.map(({ kind, key, hash, size }) => ({ kind, key, hash, size })),
+    };
+
+    expect(confirmRemotelyVerifiedTerminalOutbox(terminal, proof).state).toBe("published");
+    expect(() => confirmRemotelyVerifiedTerminalOutbox(terminal, {
+      ...proof,
+      objects: proof.objects.map((object, index) => index === 0 ? { ...object, hash: "0".repeat(64) } : object),
+    })).toThrow("does not cover every frozen");
+    expect(() => confirmRemotelyVerifiedTerminalOutbox(publishing, proof)).toThrow("terminal durable Outbox");
+  });
+
   it("drains only verified frozen bytes after a writer fork", async () => {
     const one = await entry(1);
     const forked = markWriterForked([one], "writer");
@@ -128,6 +150,10 @@ describe("durable Outbox", () => {
     let failOnce = true;
     const target = {
       repositoryFingerprint: "f".repeat(64),
+      isRemoteVerified: async (item: { key: string; hash: string; size: number }) => {
+        const bytes = stored.get(item.key);
+        return !!bytes && sha256Hex(bytes) === item.hash && bytes.byteLength === item.size;
+      },
       putImmutable: async (item: { key: string }, openBody: () => Promise<AsyncIterable<Uint8Array>>) => {
         calls.push(item.key);
         if (item.key === "chunk" && failOnce) { failOnce = false; throw new Error("crash"); }
@@ -141,16 +167,51 @@ describe("durable Outbox", () => {
         if (!bytes || sha256Hex(bytes) !== item.hash || bytes.byteLength !== item.size) throw new Error("remote mismatch");
       },
     };
-    await expect(replayFrozenDurableOutbox(publishing, stager, target)).rejects.toThrow("crash");
+    await expect(replayFrozenDurableOutbox(publishing, stager, target))
+      .rejects.toMatchObject({ kind: "durable-outbox-replay", outboxStage: "put" });
     await replayFrozenDurableOutbox(publishing, stager, target);
     expect(calls).toEqual(["blob", "chunk", "blob", "chunk", "commit"]);
     expect(new TextDecoder().decode(stored.get("blob")!)).toBe("b");
     await expect(replayFrozenDurableOutbox(publishing, stager, { ...target, repositoryFingerprint: "e".repeat(64) }))
       .rejects.toThrow("another repository binding");
   });
+
+  it("finishes a replay from verified remote objects when local staged content is gone", async () => {
+    const stager = new MemoryStager();
+    const queued = await entry(1, stager);
+    const publishing = transitionDurableOutbox(queued, "publishing");
+    const remote = new Map(publishing.objects.map((item) => [item.key, new Uint8Array(stager.contents.get(item.contentRef)!)]));
+    stager.contents.clear();
+    let puts = 0;
+
+    await replayFrozenDurableOutbox(publishing, stager, {
+      repositoryFingerprint: publishing.repositoryFingerprint,
+      isRemoteVerified: async (item) => {
+        const bytes = remote.get(item.key);
+        return !!bytes && sha256Hex(bytes) === item.hash && bytes.byteLength === item.size;
+      },
+      putImmutable: async () => { puts += 1; },
+      verifyRemote: async () => undefined,
+    });
+
+    expect(puts).toBe(0);
+  });
+
+  it("reports staged verification when neither local nor remote content can recover the object", async () => {
+    const stager = new MemoryStager();
+    const publishing = transitionDurableOutbox(await entry(1), "publishing");
+    stager.contents.clear();
+
+    await expect(replayFrozenDurableOutbox(publishing, stager, {
+      repositoryFingerprint: publishing.repositoryFingerprint,
+      isRemoteVerified: async () => false,
+      putImmutable: async () => undefined,
+      verifyRemote: async () => undefined,
+    })).rejects.toMatchObject({ kind: "durable-outbox-replay", outboxStage: "staged-verify" });
+  });
 });
 
-async function entry(sequence: number): Promise<DurableOutboxEntry> {
+async function entry(sequence: number, stager = new MemoryStager()): Promise<DurableOutboxEntry> {
   const value = sequence.toString();
   const blob = object(`blob-${value}`, `b${value}`);
   const chunk = object(`chunk-${value}`, `h${value}`);
@@ -163,7 +224,7 @@ async function entry(sequence: number): Promise<DurableOutboxEntry> {
     previousCommitHash: sequence === 1 ? null : "a".repeat(64),
     captureGeneration: sequence,
     mutations: [{ registerKey: "vault:a.md", versionId: `${commit.hash}:0:0`, kind: "put", parents: [], valueHash: blob.hash }],
-  }, new MemoryStager());
+  }, stager);
 }
 
 function object(key: string, body: string): ImmutableObject {

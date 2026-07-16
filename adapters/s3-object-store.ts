@@ -16,6 +16,7 @@ import {
   type ReplayableObjectBody,
 } from "../core/object-store";
 import type { RepositoryEndpoint } from "../core/locator";
+import { compareUtf8 } from "../protocol/utf8";
 
 interface S3Sender {
   send(command: unknown, options?: { abortSignal?: AbortSignal }): Promise<any>;
@@ -23,6 +24,7 @@ interface S3Sender {
 
 export interface S3ObjectStoreOptions extends RepositoryEndpoint {
   credentials?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
+  signal?: AbortSignal;
   requestTimeoutMs?: number;
   maximumAttempts?: number;
   maximumConcurrency?: number;
@@ -75,12 +77,13 @@ export class S3ObjectStore implements ObjectStore {
   }
 
   async list(prefix: string, continuationToken?: string, options?: ObjectStoreListOptions): Promise<ObjectStoreListPage> {
-    const result = await this.execute("list", "request", options?.signal, (signal) => this.client.send(new ListObjectsV2Command({
+    const signal = this.operationSignal(options?.signal);
+    const result = await this.execute("list", "request", signal, (requestSignal) => this.client.send(new ListObjectsV2Command({
       Bucket: this.options.bucket,
       Prefix: prefix,
       ContinuationToken: continuationToken,
       Delimiter: options?.delimiter,
-    }), { abortSignal: signal }));
+    }), { abortSignal: requestSignal }));
     const listed = normalizeListedObjects(result.Contents ?? []);
     return {
       keys: listed.keys,
@@ -91,15 +94,16 @@ export class S3ObjectStore implements ObjectStore {
   }
 
   async getStream(key: string, options?: ObjectStoreRequestOptions): Promise<AsyncIterable<Uint8Array>> {
-    const release = await this.downloadLimiter.acquire(options?.signal);
+    const signal = this.operationSignal(options?.signal);
+    const release = await this.downloadLimiter.acquire(signal);
     try {
-      const result = await this.execute("get", "request", options?.signal, (signal) => this.client.send(
+      const result = await this.execute("get", "request", signal, (requestSignal) => this.client.send(
         new GetObjectCommand({ Bucket: this.options.bucket, Key: key }),
-        { abortSignal: signal },
+        { abortSignal: requestSignal },
       ));
       if (!result.Body) throw this.failure("integrity", "get", 0, "response-body");
       return releaseAfter(
-        toAsyncBytes(result.Body.transformToWebStream(), options?.signal, (size) => {
+        toAsyncBytes(result.Body.transformToWebStream(), signal, (size) => {
           this.maximumObservedDownloadChunkBytes = Math.max(this.maximumObservedDownloadChunkBytes, size);
         }),
         release,
@@ -111,7 +115,7 @@ export class S3ObjectStore implements ObjectStore {
   }
 
   async head(key: string, options?: ObjectStoreRequestOptions): Promise<{ size: number }> {
-    const result = await this.execute("head", "request", options?.signal, (signal) => this.client.send(
+    const result = await this.execute("head", "request", this.operationSignal(options?.signal), (signal) => this.client.send(
       new HeadObjectCommand({ Bucket: this.options.bucket, Key: key }),
       { abortSignal: signal },
     ));
@@ -120,23 +124,26 @@ export class S3ObjectStore implements ObjectStore {
   }
 
   async putImmutable(key: string, bytes: Uint8Array, options?: ObjectStoreRequestOptions): Promise<void> {
+    const signal = this.operationSignal(options?.signal);
+    let preconditionFailed = false;
     try {
-      await this.execute("put", "conditional-create", options?.signal, (signal) => this.client.send(
+      await this.execute("put", "conditional-create", signal, (requestSignal) => this.client.send(
         new PutObjectCommand({ Bucket: this.options.bucket, Key: key, Body: bytes, IfNoneMatch: "*" }),
-        { abortSignal: signal },
+        { abortSignal: requestSignal },
       ));
     } catch (error) {
       if (!isPreconditionFailure(error)) throw error;
+      preconditionFailed = true;
     }
 
     try {
       await verifyObjectStream(this, key, {
         hash: createHash("sha256").update(bytes).digest("hex"),
         size: bytes.byteLength,
-      }, options);
+      }, { ...options, signal });
     } catch (error) {
       if (error instanceof ObjectStoreError && error.kind === "integrity") {
-        throw this.failure("integrity", "put", 0, "verify");
+        throw this.failure("integrity", "put", 0, preconditionFailed ? "conditional-existing-different" : "verify");
       }
       throw error;
     }
@@ -149,26 +156,29 @@ export class S3ObjectStore implements ObjectStore {
     options?: ObjectStoreRequestOptions,
   ): Promise<void> {
     assertImmutableStreamIdentity(expected);
+    const signal = this.operationSignal(options?.signal);
+    let preconditionFailed = false;
     try {
-      await this.execute("put", "conditional-create-stream", options?.signal, async (signal) => {
-        const body = validateUploadBody(await openBody(), expected, signal);
+      await this.execute("put", "conditional-create-stream", signal, async (requestSignal) => {
+        const body = validateUploadBody(await openBody(), expected, requestSignal);
         return this.client.send(new PutObjectCommand({
           Bucket: this.options.bucket,
           Key: key,
           Body: Readable.from(body, { objectMode: false }),
           ContentLength: expected.size,
           IfNoneMatch: "*",
-        }), { abortSignal: signal });
+        }), { abortSignal: requestSignal });
       });
     } catch (error) {
       if (!isPreconditionFailure(error)) throw error;
+      preconditionFailed = true;
     }
 
     try {
-      await verifyObjectStream(this, key, expected, options);
+      await verifyObjectStream(this, key, expected, { ...options, signal });
     } catch (error) {
       if (error instanceof ObjectStoreError && error.kind === "integrity") {
-        throw this.failure("integrity", "put", 0, "verify-stream");
+        throw this.failure("integrity", "put", 0, preconditionFailed ? "conditional-existing-different" : "verify-stream");
       }
       throw error;
     }
@@ -224,6 +234,10 @@ export class S3ObjectStore implements ObjectStore {
     this.options.onDiagnostic?.(error);
     return error;
   }
+
+  private operationSignal(signal?: AbortSignal): AbortSignal | undefined {
+    return signal ?? this.options.signal;
+  }
 }
 
 function normalizeListedObjects(entries: Array<{ Key?: string; Size?: number }>): {
@@ -247,7 +261,7 @@ function normalizeListedObjects(entries: Array<{ Key?: string; Size?: number }>)
   }
   return {
     keys: [...keys].sort(),
-    objects: [...byKey].map(([key, size]) => ({ key, size })).sort((left, right) => left.key.localeCompare(right.key)),
+    objects: [...byKey].map(([key, size]) => ({ key, size })).sort((left, right) => compareUtf8(left.key, right.key)),
   };
 }
 
@@ -402,7 +416,7 @@ function classifyS3Failure(cause: unknown, operation: ObjectStoreOperation, retr
   else if (status === 429 || name === "SlowDown" || code === "SlowDown" || name === "ThrottlingException") kind = "throttled";
   else if (status === 412 || name === "PreconditionFailed") kind = "integrity";
   else kind = "temporary";
-  return new ObjectStoreError(kind, operation, { status, requestId, retries, stage });
+  return new ObjectStoreError(kind, operation, { status, requestId, retries, stage }, cause);
 }
 
 function isPreconditionFailure(error: unknown): boolean {

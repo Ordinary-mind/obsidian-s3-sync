@@ -4,6 +4,7 @@ import { changeChunkKey, commitKey } from "../protocol/keys";
 import { parseAndValidateBoundCommitEnvelope } from "../protocol/validation";
 import type { ImmutableObject } from "./immutable-object";
 import type { CommitKind } from "./types";
+import { compareUtf8 } from "../protocol/utf8";
 
 export interface ConfigSnapshotEnvelopeInput {
   prefix: string;
@@ -55,11 +56,4 @@ export function buildConfigSnapshotEnvelope(input: ConfigSnapshotEnvelopeInput):
     chunk: { key: changeChunkKey(input.prefix, input.repositoryId, chunkHash), hash: chunkHash, bytes: chunkBytes },
     commit: { key: commitKey(input.prefix, input.repositoryId, input.writerId, input.sequence, commitHash), hash: commitHash, bytes: commitBytes },
   };
-}
-
-function compareUtf8(left: string, right: string): number {
-  const encoder = new TextEncoder(); const a = encoder.encode(left); const b = encoder.encode(right);
-  const length = Math.min(a.length, b.length);
-  for (let index = 0; index < length; index += 1) if (a[index] !== b[index]) return a[index] - b[index];
-  return a.length - b.length;
 }

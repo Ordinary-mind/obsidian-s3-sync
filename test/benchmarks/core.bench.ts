@@ -1,8 +1,8 @@
 import { afterAll, bench, describe } from "vitest";
-import { createRepositoryBenchmarkDataset, measurePeakHeap, streamBenchmarkFile } from "../../core/benchmark-dataset";
+import { createRepositoryBenchmarkDataset, measurePeakHeap, streamBenchmarkFile } from "../support/benchmark-dataset";
 import { buildVaultMultiChunkEnvelopeIncremental } from "../../core/commit-builder";
 import { sha256Stream } from "../../core/streaming-capture";
-import { evaluateMemoryObservation, repositoryPerformanceProfiles } from "../../core/performance-profile";
+import { evaluateMemoryObservation, repositoryPerformanceProfile } from "../../core/performance-profile";
 import { sha256Hex } from "../../protocol/hash";
 import { protocolLimits } from "../../protocol/limits";
 
@@ -16,7 +16,7 @@ afterAll(() => {
 describe("large repository planning", () => {
   bench("100,000-file single-Commit bootstrap with bounded Chunks", async () => {
     const dataset = createRepositoryBenchmarkDataset(100_000);
-    const profile = repositoryPerformanceProfiles.mobile;
+    const profile = repositoryPerformanceProfile;
     const mutations = [...dataset.files].reverse().map((file) => ({ path: file.path, kind: "put" as const, blob: { hash: file.seed.toString(16).padStart(64, "0"), size: file.size }, parents: [] }));
     let maximumWorkSliceMs = 0;
     let maximumWorkSlicePhase = "copy";
@@ -52,13 +52,12 @@ describe("large repository planning", () => {
       maximumWorkSlicePhase = "assemble";
     }
     const memory = evaluateMemoryObservation({
-      platform: "mobile",
       dataset: dataset.name,
       phase: "bootstrap",
       baselineHeapBytes,
       peakHeapBytes: measured.peakBytes,
     });
-    performanceObservations.set("mobile-bootstrap", {
+    performanceObservations.set("desktop-bootstrap", {
       peakHeapBytes: measured.peakBytes,
       heapGrowthBytes: memory.heapGrowthBytes,
       maximumWorkSliceMs,
@@ -67,39 +66,35 @@ describe("large repository planning", () => {
     });
     const expectedChunkCount = Math.ceil(dataset.files.length / profile.bootstrapChunkMutations);
     if (measured.value.chunks.length !== expectedChunkCount || measured.value.chunks.length > protocolLimits.commitChunks) {
-      throw new Error(`mobile bootstrap emitted ${measured.value.chunks.length} Change Chunks`);
+      throw new Error(`desktop bootstrap emitted ${measured.value.chunks.length} Change Chunks`);
     }
     if (measured.value.chunks.some((chunk) => chunk.bytes.byteLength > protocolLimits.changeChunkBytes)) {
-      throw new Error("mobile bootstrap emitted an oversized Change Chunk");
+      throw new Error("desktop bootstrap emitted an oversized Change Chunk");
     }
-    if (!memory.withinBudget) throw new Error(`mobile bootstrap heap growth ${memory.heapGrowthBytes} exceeded its budget`);
+    if (!memory.withinBudget) throw new Error(`desktop bootstrap heap growth ${memory.heapGrowthBytes} exceeded its budget`);
     if (maximumWorkSliceMs > profile.maximumMainThreadSliceMs) {
-      throw new Error(`mobile bootstrap ${maximumWorkSlicePhase} slice ${maximumWorkSliceMs.toFixed(1)} ms exceeded its budget`);
+      throw new Error(`desktop bootstrap ${maximumWorkSlicePhase} slice ${maximumWorkSliceMs.toFixed(1)} ms exceeded its budget`);
     }
     sink = measured.value.chunks.length;
   }, { iterations: 1, warmupIterations: 0, warmupTime: 0, time: 0 });
 
-  for (const platform of ["desktop", "mobile"] as const) {
-    bench(`512 MiB attachment stream Hash (${platform} envelope)`, async () => {
-      const dataset = createRepositoryBenchmarkDataset(10_000);
-      const profile = repositoryPerformanceProfiles[platform];
-      const baselineHeapBytes = process.memoryUsage().heapUsed;
-      const measured = await measurePeakHeap(
-        () => sha256Stream(streamBenchmarkFile(dataset.attachment!, profile.streamChunkBytes)),
-        () => process.memoryUsage().heapUsed,
-      );
-      const memory = evaluateMemoryObservation({
-        platform,
-        dataset: dataset.attachment!.path,
-        phase: "stream-hash",
-        baselineHeapBytes,
-        peakHeapBytes: measured.peakBytes,
-      });
-      if (!memory.withinBudget) throw new Error(`${platform} attachment Hash exceeded its heap-growth budget`);
-      performanceObservations.set(`${platform}-attachment`, { peakHeapBytes: measured.peakBytes, heapGrowthBytes: memory.heapGrowthBytes });
-      sink = memory.heapGrowthBytes + measured.value.size;
-    }, { iterations: 1, warmupIterations: 0, warmupTime: 0, time: 0 });
-  }
+  bench("512 MiB attachment stream Hash (desktop envelope)", async () => {
+    const dataset = createRepositoryBenchmarkDataset(10_000);
+    const baselineHeapBytes = process.memoryUsage().heapUsed;
+    const measured = await measurePeakHeap(
+      () => sha256Stream(streamBenchmarkFile(dataset.attachment!, repositoryPerformanceProfile.streamChunkBytes)),
+      () => process.memoryUsage().heapUsed,
+    );
+    const memory = evaluateMemoryObservation({
+      dataset: dataset.attachment!.path,
+      phase: "stream-hash",
+      baselineHeapBytes,
+      peakHeapBytes: measured.peakBytes,
+    });
+    if (!memory.withinBudget) throw new Error("desktop attachment Hash exceeded its heap-growth budget");
+    performanceObservations.set("desktop-attachment", { peakHeapBytes: measured.peakBytes, heapGrowthBytes: memory.heapGrowthBytes });
+    sink = memory.heapGrowthBytes + measured.value.size;
+  }, { iterations: 1, warmupIterations: 0, warmupTime: 0, time: 0 });
 
   bench("10,000 small files", () => {
     const dataset = createRepositoryBenchmarkDataset(10_000);

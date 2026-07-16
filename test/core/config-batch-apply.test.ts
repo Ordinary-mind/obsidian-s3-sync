@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { sha256Hex } from "../../protocol/hash";
 import { SafeConfigBatchApplicator, configBatchPlanHash, orderConfigOperations, type ConfigBatchFileAdapter, type ConfigBatchGuard, type ConfigBatchJournal, type ConfigBatchOperation, type ConfigBatchPlan, type ConfigBatchStateStore } from "../../core/config-batch-apply";
+import { DiagnosticError } from "../../core/diagnostics";
 import type { LocalFileObservation } from "../../core/local-file";
 
 class MemoryConfigFiles implements ConfigBatchFileAdapter {
@@ -121,6 +122,13 @@ describe("safe ConfigTree batch apply", () => {
     const state = new MemoryConfigState(plan);
     const result = await applicator(files, state, plan.targetTreeHash).apply(plan, confirmation(plan));
     expect(result.status).toBe("rolled-back");
+    if (result.status !== "rolled-back") throw new Error("expected a rolled-back result");
+    expect(result.error).toMatchObject({
+      code: "CONFIG_BATCH_OPERATION_FAILED",
+      category: "local-path",
+    });
+    expect(result.error).toBeInstanceOf(DiagnosticError);
+    expect((result.error as DiagnosticError).cause).toMatchObject({ message: "injected install failure" });
     expect(text(files.active.get("plugins/p/main.js")!)).toBe("old-code");
     expect(text(files.active.get("community-plugins.json")!)).toBe("old-enabled");
     expect(state.accounted).toBe(0);

@@ -7,11 +7,11 @@ export interface ConfigScanItem {
 
 export type ConfigScanObservation =
   | { status: "complete"; scopeRevision: string; items: ConfigScanItem[] }
-  | { status: "unknown"; reason: string };
+  | { status: "unknown"; reason: string; error?: unknown };
 
 export type StableConfigScanResult =
   | { status: "captured"; scopeRevision: string; items: ConfigScanItem[] }
-  | { status: "retry"; reason: "unknown" | "scope-changed" | "content-changed" };
+  | { status: "retry"; reason: "unknown" | "scope-changed" | "content-changed"; error?: unknown };
 
 export async function captureStableConfigScan(input: {
   scan: () => Promise<ConfigScanObservation>;
@@ -19,14 +19,14 @@ export async function captureStableConfigScan(input: {
 }): Promise<StableConfigScanResult> {
   let first: ConfigScanObservation;
   try { first = await input.scan(); }
-  catch { return { status: "retry", reason: "unknown" }; }
-  if (first.status !== "complete") return { status: "retry", reason: "unknown" };
+  catch (error) { return { status: "retry", reason: "unknown", error }; }
+  if (first.status !== "complete") return { status: "retry", reason: "unknown", ...(first.error !== undefined ? { error: first.error } : {}) };
   try { await input.quietWindow(); }
-  catch { return { status: "retry", reason: "unknown" }; }
+  catch (error) { return { status: "retry", reason: "unknown", error }; }
   let second: ConfigScanObservation;
   try { second = await input.scan(); }
-  catch { return { status: "retry", reason: "unknown" }; }
-  if (second.status !== "complete") return { status: "retry", reason: "unknown" };
+  catch (error) { return { status: "retry", reason: "unknown", error }; }
+  if (second.status !== "complete") return { status: "retry", reason: "unknown", ...(second.error !== undefined ? { error: second.error } : {}) };
   if (first.scopeRevision !== second.scopeRevision) return { status: "retry", reason: "scope-changed" };
   if (!sameLogicalItems(first.items, second.items)) return { status: "retry", reason: "content-changed" };
   return {

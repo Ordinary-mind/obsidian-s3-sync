@@ -9,17 +9,17 @@ import {
   completePublishedConfigOutboxTransaction,
   completePublishedVaultOutboxTransaction,
   confirmDurableOutboxPublishedTransaction,
+  confirmTerminalDurableOutboxPublishedTransaction,
   failDurableOutboxPublicationTransaction,
   freezeDurableOutboxStateTransaction,
   markDurableWriterForkTransaction,
   persistLocalConcurrentRecordTransaction,
   persistRecoveryRecordTransaction,
   queueDeleteAfterFrozenRootPutTransaction,
-  rebindVerifiedRepositoryRouteStateTransaction,
   reconcilePublishedMutationStateTransaction,
   rotateDrainedDurableWriterTransaction,
 } from "../../core/repository-state-transaction";
-import type { DurableOutboxEntry } from "../../core/durable-outbox";
+import type { DurableOutboxEntry, VerifiedTerminalOutboxProof } from "../../core/durable-outbox";
 import { markLocalConcurrentSelectionPublished, selectLocalConcurrentRecordResolution } from "../../core/local-concurrent-resolution";
 import { createRecoveryRecord, requestRecoveryCleanup } from "../../core/recovery-record";
 import { createDefaultConfigProfile } from "../../core/config-profile";
@@ -118,6 +118,9 @@ describe("atomic repository state transaction", () => {
       dirtyIntent: { generation: 2, basisHeads: ["not-a-version"], projectedTreeHash: treeHash },
     };
     await expect(writeRepositoryStateTransaction(store, corrupt)).rejects.toThrow("config dirty intent");
+    const removedState = structuredClone(valid);
+    (removedState.configSync as Record<string, StateJsonValue>).status = "disabled";
+    await expect(writeRepositoryStateTransaction(store, removedState)).rejects.toThrow("config sync state");
     await expect(store.load()).resolves.toMatchObject({ generation: 1 });
   });
 
@@ -194,28 +197,37 @@ describe("atomic repository state transaction", () => {
     });
   });
 
+  it("atomically confirms a terminal Outbox only after an exact remote proof", async () => {
+    const store = new DurableStateStore<StateJsonValue>(new Files());
+    await writeRepositoryStateTransaction(store, payload("00000000000000000001", 1));
+    const frozen = outbox("9".repeat(64), "00000000000000000001", null);
+    await freezeDurableOutboxStateTransaction(store, frozen);
+    await beginDurableOutboxPublicationTransaction(store, frozen.id);
+    await failDurableOutboxPublicationTransaction(store, frozen.id, "integrity-error");
+    const proof = terminalProof(frozen);
+
+    await expect(confirmTerminalDurableOutboxPublishedTransaction(store, {
+      ...proof,
+      commitHash: "8".repeat(64),
+    }, verifiedPatch(frozen))).rejects.toThrow("does not match");
+    await expect(store.load()).resolves.toMatchObject({ payload: { durableOutbox: [{ state: "integrity-error" }] } });
+
+    const confirmed = await confirmTerminalDurableOutboxPublishedTransaction(store, proof, {
+      ...verifiedPatch(frozen),
+      operationalStatus: { recoveryRequired: false, repositoryIdentityValid: true },
+    });
+    expect(confirmed.payload).toMatchObject({
+      durableOutbox: [{ state: "published" }],
+      publishedReconciles: [{ outboxId: frozen.id, state: "pending" }],
+      operationalStatus: { recoveryRequired: false, repositoryIdentityValid: true },
+    });
+  });
+
   it("rejects skipped or replaced reservations without changing the durable generation", async () => {
     const store = new DurableStateStore<StateJsonValue>(new Files());
     await writeRepositoryStateTransaction(store, payload("00000000000000000001", 1));
     await expect(freezeDurableOutboxStateTransaction(store, outbox("b".repeat(64), "00000000000000000002", null))).rejects.toThrow("writer cursor");
     await expect(store.load()).resolves.toMatchObject({ generation: 1, payload: { nextSequence: "00000000000000000001", durableOutbox: [] } });
-  });
-
-  it("atomically rebinds a verified route and retags frozen Outbox metadata without changing Commit bytes", async () => {
-    const store = new DurableStateStore<StateJsonValue>(new Files());
-    await writeRepositoryStateTransaction(store, payload("00000000000000000001", 1));
-    const frozen = outbox("b".repeat(64), "00000000000000000001", null);
-    await freezeDurableOutboxStateTransaction(store, frozen);
-    const candidate = createRepositoryLocator({ endpoint: "https://route-two.example.com", region: "next", bucket: "vault", forcePathStyle: false, prefix: "team" });
-    const rebound = await rebindVerifiedRepositoryRouteStateTransaction(store, candidate);
-    const nextFingerprint = repositoryFingerprint(candidate, repositoryId, descriptorHash);
-    expect(rebound.payload).toMatchObject({
-      repositoryFingerprint: nextFingerprint,
-      locator: candidate,
-      durableOutbox: [{ id: frozen.id, commitHash: frozen.commitHash, repositoryFingerprint: nextFingerprint }],
-    });
-    const wrongBucket = createRepositoryLocator({ endpoint: "https://route-two.example.com", region: "next", bucket: "other", forcePathStyle: false, prefix: "team" });
-    await expect(rebindVerifiedRepositoryRouteStateTransaction(store, wrongBucket)).rejects.toThrow("reattachment");
   });
 
   it("persists LocalConcurrent selection state and clears it only after publication", async () => {
@@ -415,8 +427,6 @@ describe("atomic repository state transaction", () => {
     await auditCrashBoundary(files, (store) => clearPublishedLocalConcurrentRecordTransaction(store, concurrent.path));
     await auditCrashBoundary(files, (store) => markDurableWriterForkTransaction(store, writerId, new Set([rootPut.id, deletion.id])));
     await auditCrashBoundary(files, (store) => rotateDrainedDurableWriterTransaction(store, "123e4567-e89b-42d3-a456-426614174002"));
-    const candidate = createRepositoryLocator({ endpoint: "https://route-two.example.com", region: "next", bucket: "vault", forcePathStyle: false, prefix: "team" });
-    await auditCrashBoundary(files, (store) => rebindVerifiedRepositoryRouteStateTransaction(store, candidate));
   });
 
   it("freezes, retries, confirms, and accounts a Config publication without a cursor reuse window", async () => {
@@ -661,6 +671,18 @@ function verifiedPatch(entry: DurableOutboxEntry): { observedRegisters: StateJso
       },
     },
     pendingApply: {},
+  };
+}
+
+function terminalProof(entry: DurableOutboxEntry): VerifiedTerminalOutboxProof {
+  return {
+    outboxId: entry.id,
+    repositoryFingerprint: entry.repositoryFingerprint,
+    writerId: entry.writerId,
+    sequence: entry.sequence,
+    previousCommitHash: entry.previousCommitHash,
+    commitHash: entry.commitHash,
+    objects: entry.objects.map(({ kind, key, hash, size }) => ({ kind, key, hash, size })),
   };
 }
 

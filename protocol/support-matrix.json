@@ -33,7 +33,7 @@
       "name": "MinIO or equivalent S3-compatible storage",
       "status": "verified-real-contract-tests",
       "claimedForV1": true,
-      "verified": ["concurrent If-None-Match star atomic create", "conditional retry body verification", "GetObject/HeadObject/ListObjectsV2 round trip", "versioned conditional retries create no noncurrent versions", "large bootstrap resume and full repository recovery", "third-client clone and repository generation isolation", "ConfigTree recovery", "no DeleteObject normal-sync credential"],
+      "verified": ["concurrent If-None-Match star atomic create", "conditional retry body verification", "GetObject/HeadObject/ListObjectsV2 round trip", "versioned conditional retries create no noncurrent versions", "large bootstrap resume and full repository recovery", "third-client clone and repository identity isolation", "ConfigTree recovery", "no DeleteObject normal-sync credential"],
       "evidence": { "date": "2026-07-14", "server": "MinIO RELEASE.2025-04-22T22-12-26Z", "command": "npm run test:s3-minio", "testsPassed": 3 },
       "requirements": []
     },

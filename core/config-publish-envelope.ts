@@ -4,6 +4,7 @@ import { buildConfigTreeObject, type ConfigTreeBinding, type ProtocolConfigTree 
 import type { PublishEnvelope } from "./remote-publish";
 import type { CommitKind } from "./types";
 import { protocolLimits } from "../protocol/limits";
+import { compareUtf8 } from "../protocol/utf8";
 
 export function buildConfigSnapshotPublishEnvelope(input: {
   prefix: string;
@@ -74,13 +75,4 @@ function configCommitKind(parents: readonly string[]): CommitKind {
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.byteLength === right.byteLength && left.every((value, index) => value === right[index]);
-}
-
-function compareUtf8(left: string, right: string): number {
-  const encoder = new TextEncoder();
-  const a = encoder.encode(left);
-  const b = encoder.encode(right);
-  const length = Math.min(a.length, b.length);
-  for (let index = 0; index < length; index += 1) if (a[index] !== b[index]) return a[index] - b[index];
-  return a.length - b.length;
 }

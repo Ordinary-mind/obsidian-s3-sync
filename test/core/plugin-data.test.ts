@@ -4,18 +4,24 @@ import {
   effectivePersistedRepositoryPrefix,
   plaintextCredentialWarning,
 } from "../../core/plugin-data";
+import { createDefaultConfigProfile } from "../../core/config-profile";
 
 describe("plugin data boundary", () => {
   it("allows connection and UI preferences but rejects causal state in data.json", () => {
-    expect(() => assertPluginDataContainsNoOperationalState({ schemaVersion: 2, connection: { endpoint: "https://s3.example.com" }, preferences: { autoSync: false } })).not.toThrow();
+    expect(() => assertPluginDataContainsNoOperationalState({ schemaVersion: 3, connection: { endpoint: "https://s3.example.com" }, preferences: { autoSync: false } })).not.toThrow();
+    expect(() => assertPluginDataContainsNoOperationalState({
+      schemaVersion: 3,
+      connection: {},
+      preferences: { configProfile: createDefaultConfigProfile("1.7.7") },
+    })).not.toThrow();
     expect(() => assertPluginDataContainsNoOperationalState({ settings: {}, syncData: { outbox: [] } })).toThrow("syncData.outbox");
-    expect(() => assertPluginDataContainsNoOperationalState({ schemaVersion: 2, preferences: { v1DurableOutbox: [] } })).toThrow("v1DurableOutbox");
-    expect(() => assertPluginDataContainsNoOperationalState({ schemaVersion: 2, connection: {}, preferences: {}, unexpected: true })).toThrow("unexpected");
+    expect(() => assertPluginDataContainsNoOperationalState({ schemaVersion: 3, preferences: { v1DurableOutbox: [] } })).toThrow("v1DurableOutbox");
+    expect(() => assertPluginDataContainsNoOperationalState({ schemaVersion: 3, preferences: { baseFiles: [] }, connection: {} })).not.toThrow();
+    expect(() => assertPluginDataContainsNoOperationalState({ schemaVersion: 3, connection: {}, preferences: {}, unexpected: true })).toThrow("unexpected");
   });
 
   it("explicitly warns when credentials are persisted without a secret provider", () => {
-    expect(plaintextCredentialWarning({ kind: "plaintext", accessKeyId: "id", secretAccessKey: "secret" })).toContain("明文");
-    expect(plaintextCredentialWarning({ kind: "secret-provider", reference: "keychain:one" })).toBeUndefined();
+    expect(plaintextCredentialWarning()).toContain("明文");
   });
 
   it("keeps the confirmed Prefix after the Vault fallback name changes", () => {
