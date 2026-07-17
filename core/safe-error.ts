@@ -145,7 +145,7 @@ export function safeErrorMessage(error: unknown): string {
   const record = safeErrorRecord(error);
   if (record.syncAction && record.syncStage) return safeSyncErrorMessage(error);
   const request = record.operation && record.stage ? `（${record.operation}/${record.stage}）` : "";
-  return `${categoryMessages[record.category]}${request}`;
+  return `${genericReasonMessage(record) ?? categoryMessages[record.category]}${request}`;
 }
 
 export function safeSyncErrorMessage(error: unknown): string {
@@ -494,6 +494,87 @@ function connectionConfigurationMessage(record: SafeErrorRecord): string | undef
   }[key];
 }
 
+function genericReasonMessage(record: SafeErrorRecord): string | undefined {
+  if (record.reasonCode?.startsWith("CONFLICT_APPLY_")) {
+    return "所选冲突候选未能安全应用；原文件前像和冲突状态均已保留。";
+  }
+  return {
+    PLUGIN_DATA_READ_FAILED: "Obsidian 无法读取插件 data.json；插件已进入未连接只读状态，原文件未被改写。",
+    PLUGIN_DATA_SCHEMA_INVALID: "插件 data.json 未通过当前严格 schema；插件已进入未连接只读状态，原文件未被改写。",
+    SAVED_REPOSITORY_BINDING_INVALID: "保存的仓库绑定与当前 Vault 配置目录不一致；本次不会访问 S3，请使用新 Prefix 重新执行“检测并应用”。",
+    REPOSITORY_STATE_RESTORE_FAILED: "本地仓库状态读取失败；为避免覆盖因果状态，本次不会访问 S3。",
+    REPOSITORY_STATE_ARCHIVED_AND_RESET: "本地仓库状态损坏或格式不受支持；异常副本已归档并建立新的本地 writer。",
+    CONFLICT_NOT_FOUND: "该冲突已不存在或已由另一操作解决；请刷新冲突窗口。",
+    CONFLICT_REPOSITORY_NOT_CONNECTED: "当前未连接仓库，不能解决冲突；请先执行“检测并应用”。",
+    CONFLICT_REMOTE_CHANGED: "远端冲突头或候选已经变化；未应用所选版本，请重新检查并选择。",
+    CONFLICT_CANDIDATE_REQUIRED: "尚未选择有效的远端冲突候选。",
+    CONFLICT_LOCAL_PATH_OCCUPIED: "冲突路径被目录或其他非文件条目占用；未覆盖现有内容。",
+    CONFLICT_LOCAL_CAPTURE_CHANGED: "读取本地冲突文件期间内容再次变化；未发布解决结果，请重试。",
+    CONFLICT_SELECTED_REMOTE_CHANGED: "所选远端候选应用后发生了新的本地变化；未发布解决结果，请重新检查。",
+    CONFLICT_LOCAL_VERSION_CHANGED: "本地冲突版本已经变化或无法稳定读取；未发布解决结果，请重新检查。",
+    REPOSITORY_OPERATION_BUSY: "已有同步、检查或配置操作正在运行；本次操作尚未开始。",
+    CONFIG_PROFILE_INVALID: "配置同步范围未通过校验；设置未保存。",
+    CONFIG_LOCAL_VIEW_MISSING: "本地配置扫描未生成可验证的 ConfigTree；未继续访问或发布配置。",
+    CONFIG_REPOSITORY_BINDING_CHANGED: "仓库绑定在配置操作期间发生变化；本次操作已安全停止。",
+    CONFIG_MERGE_SNAPSHOT_REQUIRED: "配置冲突快照已经过期；请刷新配置中心后重新合并。",
+    CONFIG_MERGE_BYTES_MISSING: "配置合并候选缺少已验证字节；候选未发布。",
+    CONFIG_REPOSITORY_NOT_CONNECTED: "当前未连接仓库，不能执行配置操作；请先执行“检测并应用”。",
+    CONFIG_RECOVERY_BLOCKS_PUBLICATION: "存在未完成的配置恢复；恢复完成前不能发布新快照。",
+    CONFIG_PUBLICATION_CONFIRMATION_EXPIRED: "配置发布确认已经过期；候选未发布，请重新预览确认。",
+    CONFIG_PLUGIN_CODE_CONFIRMATION_REQUIRED: "配置包含插件代码；必须单独确认后才能发布。",
+    CONFIG_SENSITIVE_DATA_CONFIRMATION_REQUIRED: "配置包含可能敏感的 plugin data；必须确认明文远端存储风险后才能发布。",
+    CONFIG_TARGET_INCOMPATIBLE: "目标 ConfigTree 与当前设备或 Obsidian 版本不兼容；未应用或发布。",
+    CONFIG_REMOTE_HEADS_CHANGED: "远端配置头在确认后发生变化；候选未发布，请刷新。",
+    CONFIG_REMOTE_REGISTER_BLOCKED: "远端配置仍有待验证依赖或无效版本；不能发布解决版本。",
+    CONFIG_LOCAL_TREE_CHANGED: "本地配置在确认后发生变化；候选未发布，请重新预览。",
+    CONFIG_FROZEN_TREE_MISMATCH: "冻结的 ConfigTree 与确认预览不一致；Outbox 未写入。",
+    CONFIG_APPLY_STATE_BLOCKED: "当前配置状态存在冲突、待依赖、不兼容或恢复项；不能应用。",
+    CONFIG_RESOLVED_REMOTE_MISSING: "当前没有可应用的已解析远端 ConfigTree。",
+    CONFIG_REMOTE_TARGET_CHANGED: "所选远端 ConfigTree 已变化；未应用，请刷新配置中心。",
+    CONFIG_COMMUNITY_PLUGINS_PATH_INVALID: "community-plugins.json 被目录或其他非文件条目占用；未覆盖现有内容。",
+    CONFIG_APPLY_CONFIRMATION_EXPIRED: "配置应用确认已经过期；未写入文件，请重新预览确认。",
+    CONFIG_RECOVERY_BATCH_MISSING: "当前没有可继续或回滚的配置批次。",
+    CONFIG_RECOVERY_TARGET_MISSING: "配置恢复记录缺少目标 ConfigTree；请保留恢复目录并复制报告。",
+    CONFIG_STAGED_CONTENT_MISMATCH: "配置暂存内容未通过 Hash/大小校验；未写入正式配置路径。",
+    CONFIG_PUBLICATION_OUTBOX_UNVERIFIED: "配置发布 Outbox 尚未通过远端验证；本地状态和暂存内容均已保留。",
+    CONFIG_PUBLICATION_LOCAL_RECHECK_INCOMPLETE: "配置已发布，但发布后的本地复查未完成；请保留本地状态并安全重试。",
+    CONFIG_DESKTOP_RUNTIME_REQUIRED: "配置应用需要桌面版 Obsidian 的 FileSystemAdapter；当前平台只能预览。",
+    CONTENT_STAGING_DESKTOP_RUNTIME_REQUIRED: "持久暂存需要桌面版 Obsidian；当前平台不能执行发布或应用。",
+    VAULT_APPLY_DESKTOP_RUNTIME_REQUIRED: "Vault 安全应用需要桌面版 Obsidian；当前平台不能写入文件。",
+    VAULT_STAGED_REFERENCE_REPOSITORY_MISMATCH: "Vault 暂存引用属于另一仓库状态目录；未写入正式路径。",
+    DURABLE_OUTBOX_REPOSITORY_CHANGED: "Outbox 恢复前仓库绑定发生变化；自动重放已停止。",
+    DURABLE_OUTBOX_REPOSITORY_MISSING: "Outbox 恢复期间仓库绑定丢失；自动重放已停止。",
+    DURABLE_OUTBOX_COMMIT_NOT_ACCEPTED: "Outbox Commit 未进入已验证提交前沿；发布确认未写入本地。",
+    DURABLE_OUTBOX_SNAPSHOT_REPOSITORY_MISMATCH: "Outbox 状态快照属于另一仓库绑定；未应用该快照。",
+    VAULT_PUBLICATION_RECONCILE_INCOMPLETE: "文件已发布，但本地发布对账尚未完成；Outbox 与本地变化记录均已保留。",
+    VAULT_DELETION_RECONCILE_INCOMPLETE: "删除已发布，但本地发布对账尚未完成；Outbox 与本地变化记录均已保留。",
+    PUBLISHED_VAULT_OUTBOX_METADATA_INCOMPLETE: "已发布 Outbox 的 Vault 变更元数据不完整；自动对账已停止。",
+    PUBLISHED_VAULT_OUTBOX_BLOB_MISSING: "已发布 Outbox 缺少对应 Blob 元数据；自动对账已停止。",
+    REPOSITORY_PREFIX_NOT_CONNECTED: "当前 Prefix 尚未连接到已验证仓库；请先执行“检测并应用”。",
+    LOCAL_CONCURRENT_RECORD_UNRESOLVED: "当前文件仍有本地并发记录；解决后才能发布。",
+    PUBLISHED_MUTATION_RECONCILE_PENDING: "上次发布仍在等待本地对账；本次不会重复上传。",
+    VAULT_CONFLICT_UNRESOLVED: "当前文件仍有未解决冲突；本次不会上传。",
+    VAULT_STAGING_CAPTURE_FAILED: "当前文件无法稳定写入持久暂存；Outbox 尚未冻结。",
+    AUTO_SYNC_DELAY_INVALID: "自动同步调度参数无效；调度器未启动，请复制报告供开发排查。",
+    REPOSITORY_OPERATION_RUNTIME_DISPOSED: "仓库操作运行时已经停止；请重新加载插件后重试。",
+    REPOSITORY_OPERATION_SIGNAL_MISSING: "仓库操作缺少取消信号；本次操作已停止，请复制报告供开发排查。",
+    REPOSITORY_OPERATION_OWNERSHIP_INVALID: "仓库操作锁所有权异常；本次操作已停止，请复制报告供开发排查。",
+    REPOSITORY_OPERATION_CANCELLED: "仓库操作已取消；未完成步骤不会继续执行。",
+    RUNTIME_CONTRACT_CONFIG_DIR_MISSING: "Vault 的 configDir 为空；运行环境检查无法继续。",
+    CONFIG_TREE_HASH_COLLISION: "相同 ConfigTree Hash 对应不同对象；远端配置已按完整性错误隔离。",
+    CONFIG_TREE_BLOB_REFERENCE_MISSING: "ConfigTree 文件项缺少 Blob 引用；未应用或发布。",
+    CONFIG_TREE_BLOB_BYTES_MISSING: "ConfigTree 对应的已验证 Blob 字节不可用；未应用或发布。",
+    CONFIG_TREE_STAGED_BLOB_MISMATCH: "ConfigTree 暂存 Blob 未通过 Hash/大小校验；未应用或发布。",
+    CONFIG_TREE_STAGED_REFERENCE_MISSING: "ConfigTree 文件项缺少本地暂存引用；未应用或发布。",
+    REPOSITORY_ALREADY_EXISTS: "当前 Prefix 已出现仓库，可能由另一客户端刚刚创建；请重新执行“检测并应用”。",
+    REMOTE_VAULT_REGISTER_UNRESOLVED: "远端文件寄存器仍有并发、待依赖或无效版本；本次不会发布。",
+    TERMINAL_OUTBOX_STATE_INVALID: "终止 Outbox 恢复收到非终止状态；自动恢复已停止。",
+    TERMINAL_OUTBOX_REPOSITORY_MISMATCH: "终止 Outbox 属于另一仓库绑定；自动恢复已停止。",
+    DURABLE_OUTBOX_REPLAY_SIZE_MISMATCH: "Outbox 暂存字节超过冻结大小；自动重放已停止。",
+    DURABLE_OUTBOX_REPLAY_CONTENT_MISMATCH: "Outbox 暂存字节未通过冻结 Hash/大小校验；自动重放已停止。",
+  }[record.reasonCode ?? ""];
+}
+
 function connectionInitializationMessage(record: SafeErrorRecord): string | undefined {
   if (!record.initializationStep) return undefined;
   return {
@@ -551,6 +632,8 @@ function connectionOperationMessage(record: SafeErrorRecord): string {
 }
 
 function connectionFlowMessage(record: SafeErrorRecord): string | undefined {
+  const genericMessage = genericReasonMessage(record);
+  if (genericMessage) return genericMessage;
   if (record.reasonCode === "OBJECT_STORE_PAGINATION_TOKEN_REPEATED") {
     return "S3 LIST 分页返回了重复游标；为避免无限循环，操作已停止。请检查对象存储或网关的 ListObjectsV2 分页兼容性。";
   }
@@ -574,6 +657,8 @@ function connectionFlowMessage(record: SafeErrorRecord): string | undefined {
 }
 
 function syncFlowMessage(record: SafeErrorRecord): string | undefined {
+  const genericMessage = genericReasonMessage(record);
+  if (genericMessage) return genericMessage;
   if (record.reasonCode === "OBJECT_STORE_PAGINATION_TOKEN_REPEATED") {
     return "S3 LIST 分页返回了重复游标；为避免无限循环，操作已停止。请检查对象存储或网关的 ListObjectsV2 分页兼容性。";
   }

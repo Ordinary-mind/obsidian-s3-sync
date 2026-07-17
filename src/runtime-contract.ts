@@ -1,5 +1,6 @@
 import { compareUtf8, validateChangeChunkObject } from "../protocol/semantics";
 import { defaultCaseFold151 } from "../protocol/unicode";
+import { DiagnosticError } from "../core/diagnostics";
 
 export interface RuntimeContractAdapter {
   copy(path: string, target: string): Promise<void>;
@@ -34,7 +35,13 @@ export async function runDesktopRuntimeContract(
   editorChangeObserved: boolean,
   runId = Date.now().toString(36),
 ): Promise<DesktopRuntimeContractResult> {
-  if (!configDir) throw new Error("Vault configDir is empty");
+  if (!configDir) {
+    throw new DiagnosticError(
+      "RUNTIME_CONTRACT_CONFIG_DIR_MISSING",
+      "local-path",
+      "Vault configDir is empty",
+    );
+  }
 
   const root = `${configDir.replace(/\/+$/, "")}/plugins/${pluginId}/runtime-contract-${runId}`;
   const source = `${root}/source.txt`;

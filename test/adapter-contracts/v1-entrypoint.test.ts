@@ -1,7 +1,18 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("v1 plugin entrypoint contract", () => {
+  it("uses typed diagnostics at every production src throw boundary", () => {
+    const sourceRoot = new URL("../../src/", import.meta.url);
+    const plainThrows = readdirSync(sourceRoot)
+      .filter((name) => name.endsWith(".ts"))
+      .flatMap((name) => {
+        const source = readFileSync(new URL(name, sourceRoot), "utf8");
+        return source.includes("throw new Error") ? [name] : [];
+      });
+    expect(plainThrows).toEqual([]);
+  });
+
   it("ships only the current repository runtime", () => {
     const source = readFileSync(new URL("../../src/main.ts", import.meta.url), "utf8");
 
@@ -151,6 +162,33 @@ describe("v1 plugin entrypoint contract", () => {
     expect(main).toContain("conflictId(state.repositoryId, \"vault\", [remote.path], remote.heads)");
     expect(main).toContain("conflictVersionCopyPath(id, versionId, remote.path)");
     expect(modal).toContain("candidate.versionId, conflict.path");
+  });
+
+  it("keeps startup, conflict, and configuration action failures diagnostic", () => {
+    const main = readFileSync(new URL("../../src/main.ts", import.meta.url), "utf8");
+    const loadStart = main.indexOf("private async loadPluginData");
+    const loadEnd = main.indexOf("private async savePluginData", loadStart);
+    const load = main.slice(loadStart, loadEnd);
+    const conflictStart = main.indexOf("private async resolveV1Conflict");
+    const conflictEnd = main.indexOf("private configWorkspaceRuntime", conflictStart);
+    const conflict = main.slice(conflictStart, conflictEnd);
+    const configStart = main.indexOf("private async updateConfigProfileLocked");
+    const configEnd = main.indexOf("private async drainDurableOutbox", configStart);
+    const config = main.slice(configStart, configEnd);
+
+    expect(load).toContain("persisted = await this.loadData()");
+    expect(load).toContain('"PLUGIN_DATA_READ_FAILED"');
+    expect(load).toContain('"PLUGIN_DATA_SCHEMA_INVALID"');
+    expect(load).toContain('"SAVED_REPOSITORY_BINDING_INVALID"');
+    expect(load).toContain("this.enterUnboundStartupFailure(");
+    expect(conflict).toContain('"CONFLICT_REMOTE_CHANGED"');
+    expect(conflict).toContain('"CONFLICT_LOCAL_PATH_OCCUPIED"');
+    expect(conflict).not.toContain("throw new Error");
+    expect(config).toContain('"CONFIG_PUBLICATION_CONFIRMATION_EXPIRED"');
+    expect(config).toContain('"CONFIG_APPLY_CONFIRMATION_EXPIRED"');
+    expect(config).toContain('"CONFIG_STAGED_CONTENT_MISMATCH"');
+    expect(config).not.toContain("throw new Error");
+    expect(main).not.toContain("throw new Error");
   });
 
   it("attaches precise push stages and copyable redacted reports to operational errors", () => {

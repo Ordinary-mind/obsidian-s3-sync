@@ -16,6 +16,7 @@ import type { ConfigProfile } from "../core/types";
 import type { V1ConfigHead } from "./v1-service";
 import type { ConfigTreeSourceView } from "./config-center-types";
 import { compareUtf8 } from "../protocol/utf8";
+import { DiagnosticError } from "../core/diagnostics";
 
 export interface ConfigWorkspaceRuntime {
   port: NodeConfigInspectionPort;
@@ -124,7 +125,13 @@ export async function buildRemoteConfigSources(input: {
   const sources: ConfigTreeSourceView[] = [];
   for (const [treeHash, heads] of [...grouped].sort(([left], [right]) => compareUtf8(left, right))) {
     const head = heads[0];
-    if (heads.some((candidate) => !sameTree(candidate.tree, head.tree))) throw new Error("equal ConfigTree hashes produced different objects");
+    if (heads.some((candidate) => !sameTree(candidate.tree, head.tree))) {
+      throw new DiagnosticError(
+        "CONFIG_TREE_HASH_COLLISION",
+        "integrity",
+        "equal ConfigTree hashes produced different objects",
+      );
+    }
     const bytesByPath = cloneBytesMap(head.bytesByPath);
     const items = await stageRemoteTreeItems(input.runtime, head.tree, bytesByPath);
     const compatibility = assessConfigTreeCompatibility({
@@ -168,11 +175,29 @@ export async function stageConfigTreeBytes(
   const refs = new Map<string, string>();
   for (const item of tree.items) {
     if (item.kind !== "put") continue;
-    if (!item.blobHash || item.size === undefined) throw new Error(`ConfigTree put has no Blob reference: ${item.path}`);
+    if (!item.blobHash || item.size === undefined) {
+      throw new DiagnosticError(
+        "CONFIG_TREE_BLOB_REFERENCE_MISSING",
+        "integrity",
+        "ConfigTree put has no Blob reference",
+      );
+    }
     const bytes = bytesByPath.get(item.path);
-    if (!bytes) throw new Error(`ConfigTree Blob bytes are not available: ${item.path}`);
+    if (!bytes) {
+      throw new DiagnosticError(
+        "CONFIG_TREE_BLOB_BYTES_MISSING",
+        "integrity",
+        "ConfigTree Blob bytes are not available",
+      );
+    }
     const staged = await runtime.staging.stage(oneChunk(bytes), item.size);
-    if (staged.hash !== item.blobHash || staged.size !== item.size) throw new Error(`staged ConfigTree Blob mismatch: ${item.path}`);
+    if (staged.hash !== item.blobHash || staged.size !== item.size) {
+      throw new DiagnosticError(
+        "CONFIG_TREE_STAGED_BLOB_MISMATCH",
+        "integrity",
+        "staged ConfigTree Blob does not match its verified identity",
+      );
+    }
     refs.set(item.path, `${runtime.statePrefix}/${staged.ref}`);
   }
   return refs;
@@ -181,9 +206,21 @@ export async function stageConfigTreeBytes(
 export function treeManagedItems(tree: ProtocolConfigTree, stagedRefs: ReadonlyMap<string, string>): ManagedConfigItem[] {
   return tree.items.map((item): ManagedConfigItem => {
     if (item.kind === "delete") return { path: item.path, kind: "delete" };
-    if (!item.blobHash || item.size === undefined) throw new Error(`ConfigTree put has no Blob reference: ${item.path}`);
+    if (!item.blobHash || item.size === undefined) {
+      throw new DiagnosticError(
+        "CONFIG_TREE_BLOB_REFERENCE_MISSING",
+        "integrity",
+        "ConfigTree put has no Blob reference",
+      );
+    }
     const stagedRef = stagedRefs.get(item.path);
-    if (!stagedRef) throw new Error(`ConfigTree put has not been staged: ${item.path}`);
+    if (!stagedRef) {
+      throw new DiagnosticError(
+        "CONFIG_TREE_STAGED_REFERENCE_MISSING",
+        "integrity",
+        "ConfigTree put has not been staged",
+      );
+    }
     return { path: item.path, kind: "put", hash: item.blobHash, size: item.size, stagedRef };
   });
 }

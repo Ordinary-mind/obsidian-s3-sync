@@ -31,6 +31,7 @@ import {
 import { ObjectStoreError, readObjectBytes, repeatedContinuationTokenError, verifyObjectStream } from "../core/object-store";
 import { verifyBlobWithAdvisoryCache, type BlobExistenceCacheEntry } from "../core/blob-existence-cache";
 import { repositoryPerformanceProfile } from "../core/performance-profile";
+import { DiagnosticError } from "../core/diagnostics";
 import {
   inspectRemoteVaultRegister,
   listRemoteVaultConflicts,
@@ -96,7 +97,13 @@ export class V1RepositoryService {
   }
   async createRepository(repositoryId: string, configDir: string, historicalConfigDirs: string[] = []): Promise<{ repositoryId: string; descriptorHash: string; key: string }> {
     const existing = await this.discover();
-    if (existing.length > 0) throw new Error("repository already exists at this Prefix; select it instead of creating another");
+    if (existing.length > 0) {
+      throw new DiagnosticError(
+        "REPOSITORY_ALREADY_EXISTS",
+        "repository-identity",
+        "repository already exists at this Prefix",
+      );
+    }
     return createRepositoryDescriptor(this.store(), { prefix: this.prefix, repositoryId, configDir, historicalConfigDirs });
   }
   async probeWritableConnection(probeId: string): Promise<void> {
@@ -142,7 +149,13 @@ export class V1RepositoryService {
   async resolvedVaultHeads(repositoryId: string, descriptorHash: string, path: string): Promise<string[]> {
     const repository = await this.pullAllCommits(repositoryId, descriptorHash);
     const state = repository.register(repositoryId, "vault", path);
-    if (state.disposition !== "resolved") throw new Error(`cannot publish ${path}: remote register is ${state.disposition}`);
+    if (state.disposition !== "resolved") {
+      throw new DiagnosticError(
+        "REMOTE_VAULT_REGISTER_UNRESOLVED",
+        "conflict",
+        "remote Vault register is not resolved",
+      );
+    }
     return state.heads;
   }
   async resolvedVaultPut(repositoryId: string, descriptorHash: string, path: string): Promise<{ heads: string[]; hash: string; size: number } | undefined> {
@@ -155,7 +168,11 @@ export class V1RepositoryService {
   }> {
     const pulled = await this.inspectVaultRegisterWithAnchors(repositoryId, descriptorHash, path);
     if (pulled.register.disposition !== "resolved") {
-      throw new Error(`cannot publish ${path}: remote register is ${pulled.register.disposition}`);
+      throw new DiagnosticError(
+        "REMOTE_VAULT_REGISTER_UNRESOLVED",
+        "conflict",
+        "remote Vault register is not resolved",
+      );
     }
     const candidate = pulled.register.candidates[0];
     return {
@@ -399,11 +416,19 @@ export class V1RepositoryService {
     writerFrontiers: WriterFrontiers;
   }): Promise<{ anchor: CommitFrontierAnchor; proof: VerifiedTerminalOutboxProof }> {
     if (input.entry.state !== "integrity-error" && input.entry.state !== "recovery-required") {
-      throw new Error("terminal durable Outbox verification requires a terminal entry");
+      throw new DiagnosticError(
+        "TERMINAL_OUTBOX_STATE_INVALID",
+        "integrity",
+        "terminal durable Outbox verification requires a terminal entry",
+      );
     }
     try {
       if (input.entry.repositoryFingerprint !== repositoryFingerprint(this.locator, input.repositoryId, input.descriptorHash)) {
-        throw new Error("terminal durable Outbox belongs to another repository binding");
+        throw new DiagnosticError(
+          "TERMINAL_OUTBOX_REPOSITORY_MISMATCH",
+          "repository-identity",
+          "terminal durable Outbox belongs to another repository binding",
+        );
       }
       await this.requireDescriptor(input.repositoryId, input.descriptorHash);
     } catch (error) {
@@ -595,7 +620,13 @@ async function readReplayBody(body: AsyncIterable<Uint8Array>, expectedHash: str
   let size = 0;
   for await (const chunk of body) {
     size += chunk.byteLength;
-    if (size > expectedSize) throw new Error("durable Outbox replay size integrity mismatch");
+    if (size > expectedSize) {
+      throw new DiagnosticError(
+        "DURABLE_OUTBOX_REPLAY_SIZE_MISMATCH",
+        "integrity",
+        "durable Outbox replay exceeded its frozen size",
+      );
+    }
     chunks.push(new Uint8Array(chunk));
   }
   const bytes = new Uint8Array(size);
@@ -604,7 +635,13 @@ async function readReplayBody(body: AsyncIterable<Uint8Array>, expectedHash: str
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  if (size !== expectedSize || sha256Hex(bytes) !== expectedHash) throw new Error("durable Outbox replay content integrity mismatch");
+  if (size !== expectedSize || sha256Hex(bytes) !== expectedHash) {
+    throw new DiagnosticError(
+      "DURABLE_OUTBOX_REPLAY_CONTENT_MISMATCH",
+      "integrity",
+      "durable Outbox replay content does not match its frozen Hash and size",
+    );
+  }
   return bytes;
 }
 

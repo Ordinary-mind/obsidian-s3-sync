@@ -12,6 +12,7 @@
 - [x] Endpoint、Region、Bucket、Prefix、Path-style 和凭证字段具有明确校验错误。
 - [x] descriptor 绑定 `configDir` 与历史排除目录；目录变化只能使用新 Prefix。
 - [x] 插件配置使用严格 schema 4，不读取部分结构或未知字段。
+- [x] data.json 读取、严格 schema、仓库绑定或本地状态恢复失败时安全进入未连接只读状态，并提供可复制报告。
 - [x] 仓库运行状态使用校验和双副本、回读验证和仓库身份隔离。
 - [x] Vault create/modify/delete/rename 与 editor-change 都进入持久因果事件。
 - [x] 发布使用磁盘暂存、writer reservation、durable Outbox、不可变对象顺序和远端回读确认。
@@ -26,6 +27,7 @@
 - [x] 同步固定先拉后发；冲突、待依赖或恢复项会阻断本轮发布。
 - [x] 自动同步可关闭，关闭时只记录变化，不自动联网。
 - [x] 所有用户可见错误均可复制，包含稳定错误码、脱敏分支 cause、S3 请求元数据和具体流程阶段。
+- [x] `src/` 生产入口不再抛出无法分类的普通错误；配置、冲突、Outbox、运行环境和取消操作均有稳定诊断码。
 - [x] 状态页可复制完整脱敏诊断包，不包含凭证、正文和明文路径。
 - [x] 删除只由测试调用的旧 Outbox、旧 Apply、旧同步状态机、旧内存持久化和冲突解析原型。
 - [x] 发布产物固定为仓库根目录 `main.js`、`manifest.json`、`styles.css`，不使用 `dist/`。
@@ -38,7 +40,7 @@
 - [x] 多客户端离线、乱序、重复、冲突和重启确定性模拟。
 - [x] S3 adapter 不可变写、分页、流式读取、取消、限流和并发测试。
 - [x] 错误脱敏、稳定 code、连接阶段、同步阶段和 Outbox 阶段测试。
-- [x] 本次重构后的 `npm test` 全量通过（111 个测试文件，499 项测试）。
+- [x] 本次重构后的 `npm test` 全量通过（111 个测试文件，507 项测试）。
 - [x] 本次重构后的 `npm run test:types` 通过。
 - [x] 本次重构后的 `npm run build` 通过并更新根目录 `main.js`。
 - [x] 本次重构后的 `npm run test:ci` 全量通过，官方 npm audit 为 0 漏洞。

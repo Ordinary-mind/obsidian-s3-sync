@@ -1,3 +1,5 @@
+import { DiagnosticError } from "../core/diagnostics";
+
 export interface AutoSyncTimerHost {
   setTimeout(callback: () => void, delayMs: number): unknown;
   clearTimeout(handle: unknown): void;
@@ -127,6 +129,12 @@ export class AutoSyncScheduler {
 }
 
 function positiveDelay(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value < 1) throw new Error(`auto-sync ${label} delay is invalid`);
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new DiagnosticError(
+      "AUTO_SYNC_DELAY_INVALID",
+      "internal",
+      `auto-sync ${label} delay is invalid`,
+    );
+  }
   return value;
 }

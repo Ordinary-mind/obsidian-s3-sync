@@ -10,6 +10,7 @@ import {
   safeConnectionErrorMessage,
   safeConnectionErrorReport,
   safeErrorCauses,
+  safeGenericErrorReport,
   safeErrorMessage,
   safeErrorRecord,
   safeSyncErrorMessage,
@@ -186,6 +187,96 @@ describe("safe runtime errors", () => {
       operation: "list",
       stage: "pagination-token",
     });
+  });
+
+  it("gives startup binding failures a specific copyable explanation", () => {
+    const error = new DiagnosticError(
+      "SAVED_REPOSITORY_BINDING_INVALID",
+      "repository-identity",
+      "saved binding mismatch",
+      new Error("D:\\private\\vault"),
+    );
+    expect(safeErrorMessage(error)).toBe(
+      "保存的仓库绑定与当前 Vault 配置目录不一致；本次不会访问 S3，请使用新 Prefix 重新执行“检测并应用”。",
+    );
+    const report = JSON.parse(safeGenericErrorReport(error, "saved-repository-binding"));
+    expect(report).toMatchObject({
+      type: "s3-sync-error",
+      reasonCode: "SAVED_REPOSITORY_BINDING_INVALID",
+      category: "repository-identity",
+    });
+    expect(JSON.stringify(report)).not.toContain("private");
+  });
+
+  it("explains stale and unsafe conflict actions without a generic internal error", () => {
+    expect(safeErrorMessage(new DiagnosticError(
+      "CONFLICT_REMOTE_CHANGED",
+      "conflict",
+      "remote changed",
+    ))).toBe("远端冲突头或候选已经变化；未应用所选版本，请重新检查并选择。");
+    expect(safeErrorMessage(new DiagnosticError(
+      "CONFLICT_LOCAL_PATH_OCCUPIED",
+      "local-path",
+      "path occupied",
+    ))).toBe("冲突路径被目录或其他非文件条目占用；未覆盖现有内容。");
+    expect(safeErrorMessage(new DiagnosticError(
+      "CONFLICT_APPLY_LOCAL_CHANGE_FROZEN",
+      "conflict",
+      "apply stopped",
+    ))).toBe("所选冲突候选未能安全应用；原文件前像和冲突状态均已保留。");
+  });
+
+  it("distinguishes expected configuration action failures", () => {
+    expect(safeErrorMessage(new DiagnosticError(
+      "CONFIG_PUBLICATION_CONFIRMATION_EXPIRED",
+      "conflict",
+      "confirmation expired",
+    ))).toBe("配置发布确认已经过期；候选未发布，请重新预览确认。");
+    expect(safeErrorMessage(new DiagnosticError(
+      "CONFIG_SENSITIVE_DATA_CONFIRMATION_REQUIRED",
+      "cancelled",
+      "confirmation required",
+    ))).toBe("配置包含可能敏感的 plugin data；必须确认明文远端存储风险后才能发布。");
+    expect(safeErrorMessage(new DiagnosticError(
+      "CONFIG_STAGED_CONTENT_MISMATCH",
+      "integrity",
+      "staged mismatch",
+    ))).toBe("配置暂存内容未通过 Hash/大小校验；未写入正式配置路径。");
+  });
+
+  it("identifies publication blockers and incomplete reconciliation", () => {
+    expect(safeSyncErrorMessage(withSyncFlowStage(
+      "push",
+      "active-file-validation",
+      new DiagnosticError("VAULT_CONFLICT_UNRESOLVED", "conflict", "conflict remains"),
+    ))).toContain("当前文件仍有未解决冲突；本次不会上传。");
+    expect(safeSyncErrorMessage(withSyncFlowStage(
+      "push",
+      "publication-verification",
+      new DiagnosticError("VAULT_PUBLICATION_RECONCILE_INCOMPLETE", "local-path", "reconcile pending"),
+    ))).toContain("文件已发布，但本地发布对账尚未完成");
+    expect(safeErrorMessage(new DiagnosticError(
+      "CONFIG_PUBLICATION_LOCAL_RECHECK_INCOMPLETE",
+      "local-path",
+      "local recheck failed",
+    ))).toBe("配置已发布，但发布后的本地复查未完成；请保留本地状态并安全重试。");
+  });
+
+  it("explains lower-level configuration and repository diagnostics", () => {
+    expect(safeErrorMessage(new DiagnosticError(
+      "CONFIG_TREE_STAGED_BLOB_MISMATCH",
+      "integrity",
+      "staged mismatch",
+    ))).toBe("ConfigTree 暂存 Blob 未通过 Hash/大小校验；未应用或发布。");
+    expect(safeConnectionErrorMessage(withConnectionFlowStage(
+      "repository-create",
+      new DiagnosticError("REPOSITORY_ALREADY_EXISTS", "repository-identity", "repository exists"),
+    ))).toBe("当前 Prefix 已出现仓库，可能由另一客户端刚刚创建；请重新执行“检测并应用”。（流程=repository-create）");
+    expect(safeErrorMessage(new DiagnosticError(
+      "DURABLE_OUTBOX_REPLAY_CONTENT_MISMATCH",
+      "integrity",
+      "content mismatch",
+    ))).toBe("Outbox 暂存字节未通过冻结 Hash/大小校验；自动重放已停止。");
   });
 
   it("explains strict descriptor discovery even when a GET failure has request metadata", () => {
