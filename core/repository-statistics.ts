@@ -1,4 +1,4 @@
-import type { ObjectStore, ObjectStoreRequestOptions } from "./object-store";
+import { repeatedContinuationTokenError, type ObjectStore, type ObjectStoreRequestOptions } from "./object-store";
 import type { RemoteAuditResult } from "./remote-audit";
 import { compareUtf8 } from "../protocol/utf8";
 
@@ -152,7 +152,7 @@ export async function listRepositoryProtocolObjects(
       objects.push({ key, size, ...identity });
     }
     token = page.continuationToken;
-    if (token && tokens.has(token)) throw new Error("ObjectStore returned a repeated continuation token");
+    if (token && tokens.has(token)) throw repeatedContinuationTokenError();
     if (token) tokens.add(token);
   } while (token);
   return uniqueObjects(objects).sort((left, right) => compareUtf8(left.key, right.key));

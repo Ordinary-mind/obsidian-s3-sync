@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { ObjectStoreError } from "../../core/object-store";
+import { ObjectStoreError, repeatedContinuationTokenError } from "../../core/object-store";
 import { DiagnosticError } from "../../core/diagnostics";
 import { RepositoryConfigurationError } from "../../core/locator";
 import { withDurableOutboxReplayStage } from "../../core/durable-outbox";
@@ -9,6 +9,7 @@ import {
   logSafeError,
   safeConnectionErrorMessage,
   safeConnectionErrorReport,
+  safeErrorCauses,
   safeErrorMessage,
   safeErrorRecord,
   safeSyncErrorMessage,
@@ -134,6 +135,92 @@ describe("safe runtime errors", () => {
     expect(safeConnectionErrorMessage(error)).toBe(
       "存储同时接受了两个不同正文的条件 PUT，不满足当前协议的原子不可变写入要求。（操作=PUT，阶段=atomic-create-multiple-winners，重试=0）",
     );
+  });
+
+  it("retains every stable branch of an aggregate cause without exposing raw details", () => {
+    const error = new DiagnosticError(
+      "ROLLBACK_FAILED",
+      "local-path",
+      "rollback failed",
+      new AggregateError([
+        new DiagnosticError("APPLY_FAILED", "repository-identity", "apply failed"),
+        new DiagnosticError("SAVE_FAILED", "local-path", "save failed", new Error("token=private")),
+      ], "two failures"),
+    );
+    const causes = safeErrorCauses(error);
+    expect(causes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "ROLLBACK_FAILED" }),
+      expect.objectContaining({ type: "AggregateError", message: "multiple failures" }),
+      expect.objectContaining({ code: "APPLY_FAILED" }),
+      expect.objectContaining({ code: "SAVE_FAILED" }),
+    ]));
+    expect(JSON.stringify(causes)).not.toContain("private");
+  });
+
+  it("keeps bounded request metadata through a DiagnosticError wrapper", () => {
+    const error = new DiagnosticError(
+      "DESCRIPTOR_READ_FAILED",
+      "integrity",
+      "descriptor read failed",
+      new ObjectStoreError("temporary", "get", { status: 503, requestId: "descriptor-read", retries: 2, stage: "request" }),
+    );
+    expect(safeErrorRecord(error)).toEqual({
+      category: "integrity",
+      reasonCode: "DESCRIPTOR_READ_FAILED",
+      operation: "get",
+      stage: "request",
+      status: 503,
+      requestId: "descriptor-read",
+      retries: 2,
+    });
+  });
+
+  it("explains a repeated LIST pagination token with a stable code", () => {
+    const error = withSyncFlowStage("pull", "remote-list", repeatedContinuationTokenError());
+    expect(safeSyncErrorMessage(error)).toBe(
+      "拉取失败：S3 LIST 分页返回了重复游标；为避免无限循环，操作已停止。请检查对象存储或网关的 ListObjectsV2 分页兼容性。" +
+      "（动作=pull，流程=remote-list，操作=LIST，阶段=pagination-token，重试=0）",
+    );
+    expect(safeErrorRecord(error)).toMatchObject({
+      reasonCode: "OBJECT_STORE_PAGINATION_TOKEN_REPEATED",
+      operation: "list",
+      stage: "pagination-token",
+    });
+  });
+
+  it("explains strict descriptor discovery even when a GET failure has request metadata", () => {
+    const error = withConnectionFlowStage(
+      "repository-discovery",
+      new DiagnosticError(
+        "REPOSITORY_DISCOVERY_INCOMPLETE",
+        "integrity",
+        "descriptor discovery incomplete",
+        new AggregateError([
+          new DiagnosticError("REPOSITORY_DESCRIPTOR_KEY_INVALID", "repository-identity", "invalid key"),
+          new ObjectStoreError("temporary", "get", { status: 503, requestId: "descriptor-get", retries: 1, stage: "request" }),
+        ]),
+      ),
+    );
+    expect(safeConnectionErrorMessage(error)).toBe(
+      "Prefix 中存在无法完整验证的仓库描述符；为避免误建第二个仓库，检测已停止且不会把该 Prefix 当作空仓库。 S3 GET 请求失败；请检查 GetObject 权限、代理和服务回读能力。" +
+      "（流程=repository-discovery，操作=GET，阶段=request，HTTP=503，重试=1，RequestId=descriptor-get）",
+    );
+  });
+
+  it("identifies an inactive-writer Outbox instead of reporting a generic replay failure", () => {
+    const error = withSyncFlowStage(
+      "pull",
+      "outbox-replay",
+      withDurableOutboxReplayStage(
+        "writer-binding",
+        new DiagnosticError("DURABLE_OUTBOX_WRITER_MISMATCH", "integrity", "writer mismatch"),
+      ),
+    );
+    expect(safeSyncErrorMessage(error)).toContain("属于非活动 writer 的未完成 Outbox");
+    expect(safeErrorRecord(error)).toMatchObject({
+      reasonCode: "DURABLE_OUTBOX_WRITER_MISMATCH",
+      outboxStage: "writer-binding",
+    });
   });
 
   it("reports structural path conflicts before any local apply", () => {

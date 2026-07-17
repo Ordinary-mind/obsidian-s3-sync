@@ -3,7 +3,7 @@ import { canonicalizeProtocolJson } from "../protocol/json";
 import type { ConfigTreeForLineage, ProtocolCommit } from "../protocol/semantics";
 import { parseAndValidateKeyedCommitEnvelope, parseAndValidateProtocolObject, verifyRepositoryDescriptorAtKey } from "../protocol/validation";
 import { downloadConfigTree, type ConfigTreeBinding } from "./config-tree";
-import { ObjectStoreError, readObjectBytes, type ObjectStore, type ObjectStoreFailureKind, type ObjectStoreRequestOptions } from "./object-store";
+import { ObjectStoreError, readObjectBytes, repeatedContinuationTokenError, type ObjectStore, type ObjectStoreFailureKind, type ObjectStoreRequestOptions } from "./object-store";
 import { receiveKeyedCommitBytes } from "./receive-repository";
 import { verifyRemoteBlob } from "./remote-blob";
 import { InMemoryRepositoryCore } from "./repository";
@@ -96,7 +96,7 @@ export async function pollRemoteCommitKeys(
     const page = await store.list(root, token, options);
     page.keys.filter((key) => key.startsWith(root) && /\/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\/\d{20}-[0-9a-f]{64}\.json$/.test(key)).forEach((key) => keys.add(key));
     token = page.continuationToken;
-    if (token && (tokens.has(token) || (tokens.add(token), false))) throw new Error("ObjectStore returned a repeated continuation token");
+    if (token && (tokens.has(token) || (tokens.add(token), false))) throw repeatedContinuationTokenError();
   } while (token);
   return [...keys].filter((key) => !marker.has(key)).sort();
 }

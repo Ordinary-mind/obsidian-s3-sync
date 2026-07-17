@@ -95,7 +95,7 @@ export class ConflictModal extends Modal {
               await this.runAction(
                 "打开冲突候选副本失败",
                 "conflict-open-candidate",
-                () => this.plugin.openFile(conflictVersionCopyPath(conflict.id, candidate.versionId)),
+                () => this.plugin.openFile(conflictVersionCopyPath(conflict.id, candidate.versionId, conflict.path)),
               );
             }));
         }

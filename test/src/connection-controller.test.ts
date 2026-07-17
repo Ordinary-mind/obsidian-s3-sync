@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDefaultConfigProfile } from "../../core/config-profile";
+import { DiagnosticError } from "../../core/diagnostics";
 import { createRepositoryLocator } from "../../core/locator";
 import { createPersistedRepositoryBinding } from "../../core/repository-binding";
-import { safeErrorRecord } from "../../core/safe-error";
+import { safeConnectionErrorReport, safeErrorRecord } from "../../core/safe-error";
 import {
   ConnectionController,
   type ConnectionControllerHost,
@@ -54,6 +55,7 @@ function harness(input: {
   initialData?: S3SyncData;
   repositories?: DiscoveredRepository[];
   activateError?: unknown;
+  saveError?: unknown;
   configDir?: string;
 }) {
   let currentSettings = structuredClone(input.initialSettings ?? settings());
@@ -89,7 +91,10 @@ function harness(input: {
         previousCommitHash: null,
       };
     }),
-    savePluginData: vi.fn(async () => { events.push("save"); }),
+    savePluginData: vi.fn(async () => {
+      events.push("save");
+      if (input.saveError) throw input.saveError;
+    }),
     markRepositoryVerified: vi.fn(() => { events.push("verified"); }),
   };
   return {
@@ -224,5 +229,26 @@ describe("connection controller", () => {
     expect(test.settings()).toEqual(original);
     expect(test.data()).toEqual(originalData);
     expect(test.events.slice(-4)).toEqual(["set-settings", "set-data", "clear-state", "save"]);
+  });
+
+  it("reports both the original apply failure and a failed rollback persistence", async () => {
+    const test = harness({
+      repositories: [],
+      activateError: new DiagnosticError("ACTIVATION_FAILED", "repository-identity", "activation failed"),
+      saveError: new DiagnosticError("ROLLBACK_SAVE_FAILED", "local-path", "rollback save failed"),
+    });
+
+    const error = await test.controller.testAndApply(settings()).catch((cause) => cause);
+    const report = JSON.parse(safeConnectionErrorReport(error));
+
+    expect(report).toMatchObject({
+      reasonCode: "CONNECTION_APPLY_ROLLBACK_FAILED",
+      category: "local-path",
+      connectionStage: "settings-apply",
+    });
+    expect(report.causes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "ACTIVATION_FAILED" }),
+      expect.objectContaining({ code: "ROLLBACK_SAVE_FAILED" }),
+    ]));
   });
 });

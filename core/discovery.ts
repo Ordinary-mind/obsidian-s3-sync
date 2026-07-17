@@ -1,6 +1,7 @@
-import { readObjectBytes, type ObjectStore } from "./object-store";
+import { readObjectBytes, repeatedContinuationTokenError, type ObjectStore } from "./object-store";
 import { verifyRepositoryDescriptorAtKey } from "../protocol/validation";
 import { compareUtf8 } from "../protocol/utf8";
+import { DiagnosticError } from "./diagnostics";
 
 export interface DiscoveredRepositoryDescriptor {
   key: string;
@@ -13,6 +14,7 @@ export interface DiscoveredRepositoryDescriptor {
 export interface RepositoryDiscoveryDiagnostic {
   key: string;
   stage: "candidate" | "read-or-verify";
+  cause: unknown;
 }
 
 export interface RepositoryDiscoveryResult {
@@ -21,7 +23,16 @@ export interface RepositoryDiscoveryResult {
 }
 
 export async function discoverRepositoryDescriptors(store: ObjectStore, prefix: string): Promise<DiscoveredRepositoryDescriptor[]> {
-  return (await discoverRepositoryDescriptorsWithDiagnostics(store, prefix)).repositories;
+  const result = await discoverRepositoryDescriptorsWithDiagnostics(store, prefix);
+  if (result.diagnostics.length > 0) {
+    throw new DiagnosticError(
+      "REPOSITORY_DISCOVERY_INCOMPLETE",
+      "integrity",
+      `repository discovery rejected ${result.diagnostics.length} descriptor candidate(s); the Prefix was not treated as empty`,
+      new AggregateError(result.diagnostics.map((diagnostic) => diagnostic.cause), "repository descriptor discovery failures"),
+    );
+  }
+  return result.repositories;
 }
 
 export async function discoverRepositoryDescriptorsWithDiagnostics(store: ObjectStore, prefix: string): Promise<RepositoryDiscoveryResult> {
@@ -35,11 +46,21 @@ export async function discoverRepositoryDescriptorsWithDiagnostics(store: Object
     const page = await store.list(`${root}/`, token);
     for (const key of page.keys) {
       if (exactCandidate.test(key)) candidates.add(key);
-      else if (key.endsWith("/format.json")) diagnostics.push({ key, stage: "candidate" });
+      else if (key.endsWith("/format.json")) {
+        diagnostics.push({
+          key,
+          stage: "candidate",
+          cause: new DiagnosticError(
+            "REPOSITORY_DESCRIPTOR_KEY_INVALID",
+            "repository-identity",
+            "repository descriptor object key is not canonical",
+          ),
+        });
+      }
     }
     token = page.continuationToken;
     if (token && (seenTokens.has(token) || (seenTokens.add(token), false))) {
-      throw new Error("ObjectStore returned a repeated continuation token");
+      throw repeatedContinuationTokenError();
     }
   } while (token);
 
@@ -54,8 +75,8 @@ export async function discoverRepositoryDescriptorsWithDiagnostics(store: Object
         configDir: verified.descriptor.configDir as string,
         historicalConfigDirs: [...verified.descriptor.historicalConfigDirs as string[]],
       });
-    } catch {
-      diagnostics.push({ key, stage: "read-or-verify" });
+    } catch (cause) {
+      diagnostics.push({ key, stage: "read-or-verify", cause });
     }
   }
   return {

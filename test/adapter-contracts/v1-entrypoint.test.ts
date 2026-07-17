@@ -136,6 +136,23 @@ describe("v1 plugin entrypoint contract", () => {
     expect(service).toContain('withDurableOutboxReplayStage("terminal-remote-verify", error)');
   });
 
+  it("recovers every unfinished Outbox and verifies conflict candidate copies before opening them", () => {
+    const main = readFileSync(new URL("../../src/main.ts", import.meta.url), "utf8");
+    const modal = readFileSync(new URL("../../src/conflict-modal.ts", import.meta.url), "utf8");
+    const drainStart = main.indexOf("private async drainDurableOutboxIfPresent");
+    const drainEnd = main.indexOf("private async freezePublishAndReconcileVaultPut", drainStart);
+    const drain = main.slice(drainStart, drainEnd);
+
+    expect(drain).toContain('some((entry) => entry.state !== "published")');
+    expect(main).toContain('"DURABLE_OUTBOX_WRITER_MISMATCH"');
+    expect(main).toContain("input.service.inspectRepositoryState(");
+    expect(main).toContain("conflictCopyContentMatches(bytes, expected)");
+    expect(main).toContain("await this.materializeConflictCopies(state, service, id, path, remote.candidates)");
+    expect(main).toContain("conflictId(state.repositoryId, \"vault\", [remote.path], remote.heads)");
+    expect(main).toContain("conflictVersionCopyPath(id, versionId, remote.path)");
+    expect(modal).toContain("candidate.versionId, conflict.path");
+  });
+
   it("attaches precise push stages and copyable redacted reports to operational errors", () => {
     const main = readFileSync(new URL("../../src/main.ts", import.meta.url), "utf8");
     const publishStart = main.indexOf("private async publishPathV1");

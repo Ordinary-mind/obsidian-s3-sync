@@ -94,6 +94,7 @@ export type DurableOutboxReplayStage =
   | "staged-verify"
   | "remote-recovery-check"
   | "terminal-remote-verify"
+  | "writer-binding"
   | "put"
   | "remote-verify"
   | "inspect"

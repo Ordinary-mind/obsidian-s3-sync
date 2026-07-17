@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { DiagnosticError } from "./diagnostics";
 
 export type ObjectStoreOperation = "list" | "get" | "head" | "put" | "delete-probe";
 export type ObjectStoreFailureKind = "not-found" | "temporary" | "throttled" | "auth" | "integrity" | "cancelled";
@@ -65,6 +66,15 @@ export class ObjectStoreError extends Error {
     super(`ObjectStore ${operation} failed during ${details.stage}`);
     this.name = "ObjectStoreError";
   }
+}
+
+export function repeatedContinuationTokenError(): DiagnosticError {
+  return new DiagnosticError(
+    "OBJECT_STORE_PAGINATION_TOKEN_REPEATED",
+    "integrity",
+    "ObjectStore returned a repeated continuation token",
+    new ObjectStoreError("integrity", "list", { retries: 0, stage: "pagination-token" }),
+  );
 }
 
 export async function readObjectBytes(

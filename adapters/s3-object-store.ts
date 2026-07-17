@@ -332,11 +332,15 @@ async function withTimeout<T>(request: (signal: AbortSignal) => Promise<T>, time
 async function sleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) throw abortError();
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, milliseconds);
-    signal?.addEventListener("abort", () => {
+    const onAbort = () => {
       clearTimeout(timer);
       reject(abortError());
-    }, { once: true });
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 

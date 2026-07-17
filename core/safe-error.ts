@@ -186,11 +186,19 @@ export function safeConnectionErrorMessage(error: unknown): string {
   const configurationMessage = connectionConfigurationMessage(record);
   const initializationMessage = connectionInitializationMessage(record);
   const persistenceMessage = connectionPersistenceMessage(record);
+  const flowMessage = connectionFlowMessage(record);
+  const specificFlowMessage = record.reasonCode === "REPOSITORY_DISCOVERY_INCOMPLETE"
+    || record.reasonCode === "CONNECTION_APPLY_ROLLBACK_FAILED"
+    || record.reasonCode === "OBJECT_STORE_PAGINATION_TOKEN_REPEATED"
+    ? flowMessage
+    : undefined;
   const summary = configurationMessage
     ?? initializationMessage
     ?? persistenceMessage
-    ?? (!record.operation ? connectionFlowMessage(record) : undefined)
+    ?? specificFlowMessage
+    ?? (!record.operation ? flowMessage : undefined)
     ?? connectionOperationMessage(record);
+  const operationDetail = record.operation ? connectionOperationMessage(record) : undefined;
   const metadata = [
     record.connectionStage ? `流程=${record.connectionStage}` : undefined,
     record.initializationStep ? `初始化=${record.initializationStep}` : undefined,
@@ -201,7 +209,8 @@ export function safeConnectionErrorMessage(error: unknown): string {
     record.retries !== undefined ? `重试=${record.retries}` : undefined,
     record.requestId ? `RequestId=${record.requestId}` : undefined,
   ].filter((value): value is string => value !== undefined);
-  return `${summary}${metadata.length > 0 ? `（${metadata.join("，")}）` : ""}`;
+  const detail = operationDetail && operationDetail !== summary ? ` ${operationDetail}` : "";
+  return `${summary}${detail}${metadata.length > 0 ? `（${metadata.join("，")}）` : ""}`;
 }
 
 export function safeConnectionErrorReport(error: unknown): string {
@@ -231,20 +240,31 @@ export function safeGenericErrorReport(error: unknown, context = "runtime"): str
 export function safeErrorCauses(error: unknown): SafeErrorCause[] {
   const causes: SafeErrorCause[] = [];
   const visited = new Set<unknown>();
-  let current: unknown = error;
-  while (current !== undefined && current !== null && causes.length < 8 && !visited.has(current)) {
+  const pending: unknown[] = [error];
+  while (pending.length > 0 && causes.length < 8) {
+    const current = pending.shift();
+    if (current === undefined || current === null || visited.has(current)) continue;
     visited.add(current);
     const value = isRecord(current) ? current : {};
     const type = safeTypeName(value.name) ?? safeTypeName(value.kind) ?? typeof current;
     const code = safeToken(value.code, 96, /^[A-Za-z0-9._-]+$/)
       ?? safeToken(value.kind, 96, /^[A-Za-z0-9._-]+$/);
     causes.push(compactCause({ type, code, message: safeCauseMessage(value) }));
-    current = value.cause;
+    if (value.cause !== undefined && value.cause !== null) pending.push(value.cause);
+    if (Array.isArray(value.errors)) pending.push(...value.errors);
   }
   return causes;
 }
 
 export function safeErrorRecord(error: unknown): SafeErrorRecord {
+  return safeErrorRecordInternal(error, new Set());
+}
+
+function safeErrorRecordInternal(error: unknown, visited: Set<unknown>): SafeErrorRecord {
+  if (error !== null && typeof error === "object") {
+    if (visited.has(error)) return { category: "internal" };
+    visited.add(error);
+  }
   const value = isRecord(error) ? error : {};
   if (value.kind === "sync-flow" && isRecord(value.failure)) {
     return compact({
@@ -265,7 +285,7 @@ export function safeErrorRecord(error: unknown): SafeErrorRecord {
     });
   }
   if (value.kind === "durable-outbox-replay") {
-    const failure = safeErrorRecord(value.cause);
+    const failure = safeErrorRecordInternal(value.cause, visited);
     const outboxStage = isDurableOutboxReplayStage(value.outboxStage) ? value.outboxStage : undefined;
     const localStage = outboxStage === "durable-open" || outboxStage === "begin"
       || outboxStage === "staged-verify" || outboxStage === "durable-confirm" || outboxStage === "reconcile";
@@ -335,23 +355,38 @@ export function safeErrorRecord(error: unknown): SafeErrorRecord {
       configurationIssue: isConfigurationIssue(value.failure.configurationIssue) ? value.failure.configurationIssue : undefined,
     });
   }
+  if (value.name === "AggregateError" && Array.isArray(value.errors)) {
+    const failures = value.errors
+      .map((cause) => safeErrorRecordInternal(cause, visited))
+      .filter((failure) => failure.category !== "internal" || Object.keys(failure).length > 1);
+    return failures.find((failure) => failure.operation !== undefined)
+      ?? failures.find((failure) => failure.persistenceStep !== undefined)
+      ?? failures[0]
+      ?? { category: "internal" };
+  }
   const details = isRecord(value.details) ? value.details : {};
   const connectionConfiguration = value.kind === "connection-configuration";
   const configurationField = connectionConfiguration && isConfigurationField(value.field) ? value.field : undefined;
+  const inherited = value.kind === "diagnostic" && value.cause !== undefined
+    ? safeErrorRecordInternal(value.cause, visited)
+    : undefined;
   return compact({
+    ...inherited,
     category: configurationField === "access-key-id" || configurationField === "secret-access-key"
       ? "authentication"
       : diagnosticCategory(error),
     reasonCode: connectionConfiguration && configurationField && isConfigurationIssue(value.issue)
       ? `configuration-${configurationField}-${value.issue}`
-      : safeReasonCode(value.code),
-    operation: isObjectStoreOperation(value.operation) ? value.operation : undefined,
-    stage: safeToken(details.stage, 64, /^[A-Za-z0-9._-]+$/),
-    status: safeInteger(details.status, 100, 599),
-    requestId: safeToken(details.requestId, 256, /^[A-Za-z0-9+=_-]+$/),
-    retries: safeInteger(details.retries, 0, 100),
-    configurationField,
-    configurationIssue: connectionConfiguration && isConfigurationIssue(value.issue) ? value.issue : undefined,
+      : safeReasonCode(value.code) ?? inherited?.reasonCode,
+    operation: isObjectStoreOperation(value.operation) ? value.operation : inherited?.operation,
+    stage: safeToken(details.stage, 64, /^[A-Za-z0-9._-]+$/) ?? inherited?.stage,
+    status: safeInteger(details.status, 100, 599) ?? inherited?.status,
+    requestId: safeToken(details.requestId, 256, /^[A-Za-z0-9+=_-]+$/) ?? inherited?.requestId,
+    retries: safeInteger(details.retries, 0, 100) ?? inherited?.retries,
+    configurationField: configurationField ?? inherited?.configurationField,
+    configurationIssue: connectionConfiguration && isConfigurationIssue(value.issue)
+      ? value.issue
+      : inherited?.configurationIssue,
   });
 }
 
@@ -401,6 +436,7 @@ function redactDiagnosticText(value: string): string {
 }
 
 function safeCauseMessage(value: Record<string, unknown>): string {
+  if (value.name === "AggregateError") return "multiple failures";
   const controlledKinds = new Set([
     "diagnostic",
     "sync-flow",
@@ -488,10 +524,19 @@ function connectionOperationMessage(record: SafeErrorRecord): string {
     verify: "条件 PUT 返回成功后，远端字节被另一请求改变；无法证明原子创建语义。",
   };
   if (record.stage && probeMessage[record.stage]) return probeMessage[record.stage]!;
+  if (record.operation === "list" && record.stage === "pagination-token") {
+    return "S3 LIST 分页返回了重复游标；为避免无限循环，操作已停止。请检查对象存储或网关的 ListObjectsV2 分页兼容性。";
+  }
   if (record.category === "authentication") {
     return "S3 认证或权限失败；请检查 Access Key、Secret、Region、系统时间及对应操作权限。";
   }
   if (record.category === "rate-limit") return "S3 服务正在限流或暂时不可用；请稍后重试。";
+  if (record.status !== undefined) {
+    if (record.operation === "list") return "S3 LIST 请求失败；请检查 Endpoint、Region、Bucket、Path-style、DNS/TLS 和 ListBucket 权限。";
+    if (record.operation === "put") return "S3 PUT 请求失败；请检查 PutObject 权限和 If-None-Match: * 条件写兼容性。";
+    if (record.operation === "get") return "S3 GET 请求失败；请检查 GetObject 权限、代理和服务回读能力。";
+    if (record.operation === "head") return "S3 HEAD 请求失败；请检查 GetObject/HeadObject 权限和网关兼容性。";
+  }
   if (record.category === "integrity") {
     return record.operation === "put"
       ? "S3 条件写入未满足不可变对象要求；请检查 If-None-Match: * 兼容性。"
@@ -506,6 +551,15 @@ function connectionOperationMessage(record: SafeErrorRecord): string {
 }
 
 function connectionFlowMessage(record: SafeErrorRecord): string | undefined {
+  if (record.reasonCode === "OBJECT_STORE_PAGINATION_TOKEN_REPEATED") {
+    return "S3 LIST 分页返回了重复游标；为避免无限循环，操作已停止。请检查对象存储或网关的 ListObjectsV2 分页兼容性。";
+  }
+  if (record.reasonCode === "REPOSITORY_DISCOVERY_INCOMPLETE") {
+    return "Prefix 中存在无法完整验证的仓库描述符；为避免误建第二个仓库，检测已停止且不会把该 Prefix 当作空仓库。";
+  }
+  if (record.reasonCode === "CONNECTION_APPLY_ROLLBACK_FAILED") {
+    return "远端检测后的本地应用失败，恢复旧连接配置时写入 data.json 也失败；内存配置已还原，请保留 data.json 并复制本报告。";
+  }
   if (!record.connectionStage) return undefined;
   return {
     "operation-lock": "已有同步、校验或仓库操作正在运行；请等待其结束后重试。",
@@ -520,6 +574,21 @@ function connectionFlowMessage(record: SafeErrorRecord): string | undefined {
 }
 
 function syncFlowMessage(record: SafeErrorRecord): string | undefined {
+  if (record.reasonCode === "OBJECT_STORE_PAGINATION_TOKEN_REPEATED") {
+    return "S3 LIST 分页返回了重复游标；为避免无限循环，操作已停止。请检查对象存储或网关的 ListObjectsV2 分页兼容性。";
+  }
+  if (record.reasonCode === "CONFLICT_COPY_SOURCE_MISMATCH") {
+    return "远端候选下载完成后未通过 Hash/大小校验；候选副本未写入，请复制报告排查远端对象。";
+  }
+  if (record.reasonCode === "CONFLICT_COPY_PATH_OCCUPIED") {
+    return "冲突候选副本路径被目录或其他非文件条目占用；未覆盖现有内容。";
+  }
+  if (record.reasonCode === "CONFLICT_COPY_READ_FAILED") {
+    return "已有冲突候选副本无法读取校验；未覆盖现有内容。";
+  }
+  if (record.reasonCode === "CONFLICT_COPY_CONTENT_MISMATCH") {
+    return "已有冲突候选副本已被修改，不能再代表远端版本；请先重命名或移走该副本后重试。";
+  }
   if (record.reasonCode === "REMOTE_STRUCTURAL_PATH_CONFLICT") {
     return "检测到文件/目录碰撞或大小写别名；本轮尚未写入本地，请先处理结构冲突。";
   }
@@ -565,6 +634,7 @@ function outboxReplayMessage(record: SafeErrorRecord): string | undefined {
     "staged-verify": "旧上传的本地暂存内容不可用，远端也没有可验证的完整副本；写入已停止，请复制报告供开发排查。",
     "remote-recovery-check": "本地暂存内容不可用，检查远端恢复副本时请求失败。",
     "terminal-remote-verify": "终止 Outbox 的远端不可变对象未全部通过 Hash/大小回读；状态保持原样，可继续只读检查远端候选。",
+    "writer-binding": "检测到属于非活动 writer 的未完成 Outbox；自动恢复已停止，请复制报告排查本地持久状态。",
     put: "恢复旧上传时写入远端不可变对象失败；Outbox 仍保留。",
     "remote-verify": "旧上传已发起，但远端对象回读校验失败；Outbox 仍保留。",
     inspect: "旧上传对象已重放，但读取远端提交状态失败。",
@@ -600,7 +670,7 @@ function isSyncFlowStage(value: unknown): value is SyncFlowStage {
 function isDurableOutboxReplayStage(value: unknown): value is DurableOutboxReplayStage {
   return typeof value === "string" && [
     "durable-open", "begin", "descriptor", "frontier", "staged-verify", "remote-recovery-check",
-    "terminal-remote-verify", "put", "remote-verify", "inspect", "durable-confirm", "reconcile",
+    "terminal-remote-verify", "writer-binding", "put", "remote-verify", "inspect", "durable-confirm", "reconcile",
   ].includes(value);
 }
 

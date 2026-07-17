@@ -13,7 +13,11 @@ describe("repository discovery", () => {
   });
   it("stops a malformed repeated continuation token instead of looping forever", async () => {
     const store = { list: async () => ({ keys: [], continuationToken: "repeat" }), getStream: async () => objectBodyFromBytes(new Uint8Array()), head: async () => ({ size: 0 }), putImmutable: async () => undefined };
-    await expect(discoverRepositoryDescriptors(store, "")).rejects.toThrow("repeated continuation token");
+    await expect(discoverRepositoryDescriptors(store, "")).rejects.toMatchObject({
+      code: "OBJECT_STORE_PAGINATION_TOKEN_REPEATED",
+      category: "integrity",
+      cause: expect.objectContaining({ operation: "list", details: expect.objectContaining({ stage: "pagination-token" }) }),
+    });
   });
   it("isolates malformed UUID and unreadable candidates while retaining valid repositories", async () => {
     const vector = JSON.parse(readFileSync(new URL("../../protocol/vectors/repository-descriptor-basic.json", import.meta.url), "utf8"));
@@ -33,9 +37,26 @@ describe("repository discovery", () => {
     await expect(discoverRepositoryDescriptorsWithDiagnostics(store, "")).resolves.toMatchObject({
       repositories: [{ key: validKey }],
       diagnostics: expect.arrayContaining([
-        { key: invalidUuidKey, stage: "candidate" },
-        { key: missingKey, stage: "read-or-verify" },
+        expect.objectContaining({ key: invalidUuidKey, stage: "candidate" }),
+        expect.objectContaining({ key: missingKey, stage: "read-or-verify" }),
       ]),
+    });
+    await expect(discoverRepositoryDescriptors(store, "")).rejects.toMatchObject({
+      code: "REPOSITORY_DISCOVERY_INCOMPLETE",
+      category: "integrity",
+    });
+  });
+  it("never treats an unreadable descriptor candidate as an empty Prefix", async () => {
+    const vector = JSON.parse(readFileSync(new URL("../../protocol/vectors/repository-descriptor-basic.json", import.meta.url), "utf8"));
+    const store = {
+      list: async () => ({ keys: [vector.key as string] }),
+      getStream: async () => { throw new Error("temporary read failure"); },
+      head: async () => ({ size: 0 }),
+      putImmutable: async () => undefined,
+    };
+    await expect(discoverRepositoryDescriptors(store, "")).rejects.toMatchObject({
+      code: "REPOSITORY_DISCOVERY_INCOMPLETE",
+      category: "integrity",
     });
   });
 });

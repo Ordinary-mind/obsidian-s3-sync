@@ -213,7 +213,7 @@ export class ConnectionController {
           "CONNECTION_APPLY_ROLLBACK_FAILED",
           "local-path",
           "connection apply failed and the previous local settings could not be persisted again",
-          rollbackError,
+          new AggregateError([error, rollbackError], "connection apply and rollback both failed"),
         );
       }
       throw error;

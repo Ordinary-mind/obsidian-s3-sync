@@ -28,7 +28,7 @@ import {
   type DurableOutboxReplaySource,
   type VerifiedTerminalOutboxProof,
 } from "../core/durable-outbox";
-import { ObjectStoreError, readObjectBytes, verifyObjectStream } from "../core/object-store";
+import { ObjectStoreError, readObjectBytes, repeatedContinuationTokenError, verifyObjectStream } from "../core/object-store";
 import { verifyBlobWithAdvisoryCache, type BlobExistenceCacheEntry } from "../core/blob-existence-cache";
 import { repositoryPerformanceProfile } from "../core/performance-profile";
 import {
@@ -174,6 +174,18 @@ export class V1RepositoryService {
     const pulled = await this.pullAllCommitsWithAnchors(repositoryId, descriptorHash);
     return {
       register: inspectRemoteVaultRegister(pulled.repository, repositoryId, path),
+      acceptedCommits: pulled.acceptedCommits,
+      observations: registerObservations(pulled.repository, repositoryId),
+    };
+  }
+  async inspectRepositoryState(repositoryId: string, descriptorHash: string): Promise<{
+    blockedCommitKeys: Array<{ key: string; reason: unknown }>;
+    acceptedCommits: CommitFrontierAnchor[];
+    observations: RemoteRegisterObservation[];
+  }> {
+    const pulled = await this.pullAllCommitsWithDiagnostics(repositoryId, descriptorHash);
+    return {
+      blockedCommitKeys: pulled.blockedCommitKeys,
       acceptedCommits: pulled.acceptedCommits,
       observations: registerObservations(pulled.repository, repositoryId),
     };
@@ -453,10 +465,13 @@ export class V1RepositoryService {
     const root = [this.prefix.replace(/\/$/, ""), `.obsidian-s3-sync/v1/repositories/${repositoryId}/commits/`].filter(Boolean).join("/");
     const keys: string[] = [];
     let token: string | undefined;
+    const seenTokens = new Set<string>();
     do {
       const page = await this.store().list(root, token);
       keys.push(...page.keys.filter((key) => key.startsWith(root) && key.endsWith(".json")));
       token = page.continuationToken;
+      if (token && seenTokens.has(token)) throw repeatedContinuationTokenError();
+      if (token) seenTokens.add(token);
     } while (token);
     return [...new Set(keys)].sort();
   }

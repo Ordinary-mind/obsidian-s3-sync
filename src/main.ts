@@ -12,7 +12,7 @@ import { captureStableVaultFile, captureStableVaultFileToStaging } from "./vault
 import { reserveWriterCommit } from "../core/writer-session";
 import { decideResolvedRemotePut } from "../core/pull-decision";
 import { conflictId } from "../core/conflict-id";
-import { conflictVersionCopyPath } from "../core/conflict-copy";
+import { conflictCopyContentMatches, conflictVersionCopyPath } from "../core/conflict-copy";
 import { findCaseAliasConflicts, findStructuralConflicts } from "../core/structural-conflict";
 import { vaultPathCaseFoldKey } from "../core/path";
 import { mayApplyRemoteWithEditorIntent } from "../core/editor-latch";
@@ -1169,7 +1169,18 @@ export default class S3SyncPlugin extends Plugin {
         .sort((left, right) => compareUtf8(left.writerId, right.writerId) || compareUtf8(left.sequence, right.sequence));
       const terminalEntry = terminalEntries[0];
       let entry = nextDurableOutbox(this.data.v1DurableOutbox, state.writerId);
-      if (!terminalEntry && !entry) return;
+      if (!terminalEntry && !entry) {
+        const inactiveEntry = this.data.v1DurableOutbox.find((candidate) => candidate.state !== "published");
+        if (!inactiveEntry) return;
+        throw withDurableOutboxReplayStage(
+          "writer-binding",
+          new DiagnosticError(
+            "DURABLE_OUTBOX_WRITER_MISMATCH",
+            "integrity",
+            "an unfinished durable Outbox entry belongs to an inactive writer; automatic replay was stopped",
+          ),
+        );
+      }
       let store: DurableStateStore<StateJsonValue>;
       try {
         store = await this.v1DurableStore(state);
@@ -1247,7 +1258,7 @@ export default class S3SyncPlugin extends Plugin {
   }): Promise<void> {
     let inspection;
     try {
-      inspection = await input.service.inspectConfigRegister(input.state.repositoryId, input.state.descriptorHash);
+      inspection = await input.service.inspectRepositoryState(input.state.repositoryId, input.state.descriptorHash);
     } catch (error) {
       throw withDurableOutboxReplayStage("inspect", error);
     }
@@ -1286,7 +1297,7 @@ export default class S3SyncPlugin extends Plugin {
 
   private async drainDurableOutboxIfPresent(state: NonNullable<S3SyncData["v1"]>): Promise<void> {
     const staging = this.repositoryContentStaging(state);
-    const replayed = this.data.v1DurableOutbox.some((entry) => entry.writerId === state.writerId && entry.state !== "published");
+    const replayed = this.data.v1DurableOutbox.some((entry) => entry.state !== "published");
     if (replayed) {
       await this.drainDurableOutbox(state, staging);
     }
@@ -2059,8 +2070,15 @@ export default class S3SyncPlugin extends Plugin {
         : vaultEvent ? vaultEvent.localPredecessorVersion ? [vaultEvent.localPredecessorVersion] : vaultEvent.basisHeads
           : this.data.v1ProjectedHeads[path] ?? [];
       if (remote.disposition !== "resolved") {
-        this.recordV1ConcurrentConflict(path, this.data.files[path]?.hash ?? null, observedCapture?.hash ?? null, remote.heads, remote.candidates);
+        const id = this.recordV1ConcurrentConflict(
+          path,
+          this.data.files[path]?.hash ?? null,
+          observedCapture?.hash ?? null,
+          remote.heads,
+          remote.candidates,
+        );
         await this.saveSyncData();
+        await this.materializeConflictCopies(state, service, id, path, remote.candidates);
         new ConflictModal(this).open();
         throw new DiagnosticError("REMOTE_REGISTER_CONCURRENT", "conflict", "remote register is not resolved");
       }
@@ -2082,8 +2100,15 @@ export default class S3SyncPlugin extends Plugin {
           await this.saveSyncData();
           return { status: "success" };
         }
-        this.recordV1ConcurrentConflict(path, this.data.files[path]?.hash ?? null, observedCapture?.hash ?? null, remote.heads, remote.candidates);
+        const id = this.recordV1ConcurrentConflict(
+          path,
+          this.data.files[path]?.hash ?? null,
+          observedCapture?.hash ?? null,
+          remote.heads,
+          remote.candidates,
+        );
         await this.saveSyncData();
+        await this.materializeConflictCopies(state, service, id, path, remote.candidates);
         new ConflictModal(this).open();
         throw new DiagnosticError("LOCAL_REMOTE_DIVERGED", "conflict", "remote heads changed after the local generation was captured");
       }
@@ -2226,13 +2251,26 @@ export default class S3SyncPlugin extends Plugin {
         const decision = decideResolvedRemotePut({ localExists: !!existing, projectedHash: this.data.files[remote.path]?.hash, currentHash: capture?.hash, remoteHash: remote.hash });
         if (decision === "conflict") {
           replaceDecision({ path: remote.path, decision: "conflict", reason: "应用前复查发现本地与远端内容均已变化" });
-          this.recordV1Conflict(
+          const id = this.recordV1Conflict(
             remote.path,
             this.data.files[remote.path]?.hash ?? null,
             capture?.hash ?? null,
             remote.hash,
             remote.size,
             remote.heads,
+          );
+          await this.saveSyncData();
+          await this.materializeConflictCopies(
+            state,
+            service,
+            id,
+            remote.path,
+            remote.heads.map((versionId) => ({
+              kind: "put" as const,
+              versionId,
+              hash: remote.hash,
+              size: remote.size,
+            })),
           );
           skipped += 1;
           continue;
@@ -2263,6 +2301,16 @@ export default class S3SyncPlugin extends Plugin {
           if (decision === "create") created += 1;
           else updated += 1;
         } else {
+          if (result.status === "local-change-frozen") {
+            const id = conflictId(state.repositoryId, "vault", [remote.path], remote.heads);
+            for (const versionId of remote.heads) {
+              await this.writeConflictCopy(
+                conflictVersionCopyPath(id, versionId, remote.path),
+                binary,
+                remote,
+              );
+            }
+          }
           replaceDecision({
             path: remote.path,
             decision: result.status === "local-change-frozen" ? "conflict" : "unknown",
@@ -2396,11 +2444,8 @@ export default class S3SyncPlugin extends Plugin {
         remote.heads,
         remote.candidates,
       );
-      for (const candidate of remote.candidates) {
-        if (candidate.kind !== "put") continue;
-        const bytes = await service.downloadVaultBlob(state.repositoryId, candidate);
-        await this.writeConflictCopy(conflictVersionCopyPath(id, candidate.versionId), bytes);
-      }
+      await this.saveSyncData();
+      await this.materializeConflictCopies(state, service, id, remote.path, remote.candidates);
       materialized += 1;
     }
 
@@ -2416,10 +2461,19 @@ export default class S3SyncPlugin extends Plugin {
         remote.size,
         remote.heads,
       );
-      const bytes = await service.downloadVaultBlob(state.repositoryId, remote);
-      for (const versionId of remote.heads) {
-        await this.writeConflictCopy(conflictVersionCopyPath(id, versionId), bytes);
-      }
+      await this.saveSyncData();
+      await this.materializeConflictCopies(
+        state,
+        service,
+        id,
+        remote.path,
+        remote.heads.map((versionId) => ({
+          kind: "put" as const,
+          versionId,
+          hash: remote.hash,
+          size: remote.size,
+        })),
+      );
       materialized += 1;
     }
 
@@ -2446,13 +2500,84 @@ export default class S3SyncPlugin extends Plugin {
     return materialized;
   }
 
-  private async writeConflictCopy(path: string, bytes: Uint8Array): Promise<void> {
-    if (this.app.vault.getAbstractFileByPath(path)) return;
+  private async materializeConflictCopies(
+    state: NonNullable<S3SyncData["v1"]>,
+    service: V1RepositoryService,
+    conflictIdValue: string,
+    logicalPath: string,
+    candidates: readonly RemoteVaultConflictCandidate[],
+  ): Promise<void> {
+    const downloaded = new Map<string, Uint8Array>();
+    for (const candidate of candidates) {
+      if (candidate.kind !== "put") continue;
+      const contentKey = `${candidate.hash}:${candidate.size}`;
+      let bytes = downloaded.get(contentKey);
+      if (!bytes) {
+        bytes = await service.downloadVaultBlob(state.repositoryId, candidate);
+        downloaded.set(contentKey, bytes);
+      }
+      await this.writeConflictCopy(
+        conflictVersionCopyPath(conflictIdValue, candidate.versionId, logicalPath),
+        bytes,
+        candidate,
+      );
+    }
+  }
+
+  private async writeConflictCopy(
+    path: string,
+    bytes: Uint8Array,
+    expected: { hash: string; size: number },
+  ): Promise<void> {
+    if (!conflictCopyContentMatches(bytes, expected)) {
+      throw new DiagnosticError(
+        "CONFLICT_COPY_SOURCE_MISMATCH",
+        "integrity",
+        "downloaded conflict candidate does not match its verified Hash and size",
+      );
+    }
+    if (this.app.vault.getAbstractFileByPath(path)) {
+      await this.assertConflictCopyContent(path, expected);
+      return;
+    }
     await ensureParentFolder(this.app.vault, path);
     try {
       await this.app.vault.createBinary(path, toArrayBuffer(bytes));
     } catch (error) {
       if (!this.app.vault.getAbstractFileByPath(path)) throw error;
+    }
+    await this.assertConflictCopyContent(path, expected);
+  }
+
+  private async assertConflictCopyContent(
+    path: string,
+    expected: { hash: string; size: number },
+  ): Promise<void> {
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (!(existing instanceof TFile)) {
+      throw new DiagnosticError(
+        "CONFLICT_COPY_PATH_OCCUPIED",
+        "local-path",
+        "conflict candidate path is occupied by a non-file entry",
+      );
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = new Uint8Array(await this.app.vault.readBinary(existing));
+    } catch (cause) {
+      throw new DiagnosticError(
+        "CONFLICT_COPY_READ_FAILED",
+        "local-path",
+        "existing conflict candidate copy could not be read for verification",
+        cause,
+      );
+    }
+    if (!conflictCopyContentMatches(bytes, expected)) {
+      throw new DiagnosticError(
+        "CONFLICT_COPY_CONTENT_MISMATCH",
+        "local-path",
+        "existing conflict candidate copy was changed and cannot represent the verified remote version",
+      );
     }
   }
 
