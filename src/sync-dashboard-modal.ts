@@ -19,6 +19,7 @@ import { writeClipboardText } from "./clipboard";
 export class SyncDashboardModal extends Modal {
   private refreshTimer: number | null = null;
   private operationRunning = false;
+  private showDetails = false;
 
   constructor(private readonly plugin: S3SyncPlugin) { super(plugin.app); }
 
@@ -44,9 +45,11 @@ export class SyncDashboardModal extends Modal {
 
     const overview = this.contentEl.createDiv({ cls: "s3-sync-dashboard-overview" });
     const phase = overview.createDiv({ cls: "s3-sync-dashboard-phase" });
-    phase.createSpan({ cls: "s3-sync-dashboard-phase-label", text: operationalPhaseLabel(status.phase) });
-    phase.createSpan({ cls: `s3-sync-health s3-sync-health-${health}`, text: repositoryHealthDisplayLabel(status) });
-    if (mayClaimRepositoryFullyHealthy(status)) phase.createSpan({ cls: "s3-sync-audit-verified", text: "闭包完整" });
+    phase.createSpan({ cls: "s3-sync-dashboard-phase-label", text: userStatusMessage(!!this.plugin.data.v1, status) });
+    if (this.showDetails) {
+      phase.createSpan({ cls: `s3-sync-health s3-sync-health-${health}`, text: `${operationalPhaseLabel(status.phase)} · ${repositoryHealthDisplayLabel(status)}` });
+      if (mayClaimRepositoryFullyHealthy(status)) phase.createSpan({ cls: "s3-sync-audit-verified", text: "闭包完整" });
+    }
 
     if (!mutatingAllowed) {
       const banner = overview.createDiv({ cls: "s3-sync-diagnostics-banner" });
@@ -59,15 +62,8 @@ export class SyncDashboardModal extends Modal {
 
     const summary = this.contentEl.createDiv({ cls: "s3-sync-status-grid" });
     for (const [label, value] of [
-      ["最后成功拉取", formatTime(status.lastSuccessfulPull)],
-      ["最后成功发布", formatTime(status.lastSuccessfulPublish)],
-      ["最后完整审计", formatTime(status.lastSuccessfulAudit)],
-      ["待应用", String(status.pendingApply)],
-      ["Outbox", String(status.outbox)],
-      ["本地并发记录", String(status.localConcurrentRecords)],
-      ["恢复文件 / 捕获后编辑", `${status.recoveryFiles} / ${status.postCaptureEdits}`],
-      ["提交缺口", String(status.commitGaps)],
-      ["Vault 冲突", String(status.conflicts)],
+      ["最近同步", formatTime(latestSuccessfulSync(status))],
+      ["需要处理", userPendingSummary(status)],
     ]) {
       summary.createDiv({ cls: "s3-sync-status-label", text: label });
       summary.createDiv({ cls: "s3-sync-status-value", text: value });
@@ -97,6 +93,17 @@ export class SyncDashboardModal extends Modal {
     }
 
     this.renderActions(status, mutatingAllowed, busy);
+    new Setting(this.contentEl)
+      .setName("诊断与高级功能")
+      .setDesc("完整校验、逐文件决策、仓库空间和开发排查信息。")
+      .addButton((button) => button
+        .setButtonText(this.showDetails ? "收起" : "展开")
+        .onClick(() => {
+          this.showDetails = !this.showDetails;
+          this.render();
+        }));
+    if (!this.showDetails) return;
+    this.renderTechnicalSummary(status);
     this.renderAudit(status);
     this.renderRepositorySpace(status);
     this.renderSecurityBoundary();
@@ -115,7 +122,28 @@ export class SyncDashboardModal extends Modal {
         disabled: busy || !mutatingAllowed,
         cta: true,
         onClick: () => this.run(() => this.plugin.runManualSyncV1()),
-      }))
+      }));
+    if (status.conflicts > 0) primary.addButton((button) => this.actionButton(button, {
+        label: "Vault 冲突",
+        icon: "git-merge",
+        tooltip: "比较并选择需要保留的文件版本",
+        disabled: busy,
+        onClick: () => this.plugin.openConflictModal(),
+      }));
+    if (status.retryAt !== undefined || status.lastError !== undefined) {
+      primary.addButton((button) => this.actionButton(button, {
+        label: "重试",
+        icon: "rotate-ccw",
+        tooltip: "跳过当前倒计时并立即重试",
+        disabled: busy || !mutatingAllowed,
+        onClick: () => this.run(() => this.plugin.retryManualSyncV1()),
+      }));
+    }
+
+    if (!this.showDetails) return;
+
+    const secondary = new Setting(section).setClass("s3-sync-action-row");
+    secondary
       .addButton((button) => this.actionButton(button, {
         label: "仅预览",
         icon: "scan-search",
@@ -131,36 +159,20 @@ export class SyncDashboardModal extends Modal {
         onClick: () => this.run(() => this.plugin.runFullAuditV1()),
       }))
       .addButton((button) => this.actionButton(button, {
-        label: "Vault 冲突",
-        icon: "git-merge",
-        tooltip: "查看并处理 Vault 冲突",
-        disabled: busy,
-        onClick: () => this.plugin.openConflictModal(),
-      }))
-      .addButton((button) => this.actionButton(button, {
-        label: "配置中心",
+        label: "同步 Obsidian 设置",
         icon: "sliders-horizontal",
-        tooltip: "查看 ConfigTree、逐文件差异和信任确认",
+        tooltip: "查看设置快照、逐文件差异和信任确认",
         disabled: busy,
         onClick: () => this.plugin.openConfigCenter(),
       }));
-
-    const secondary = new Setting(section).setClass("s3-sync-action-row");
-    secondary
-      .addButton((button) => this.actionButton(button, {
+    if (status.audit.state === "running") secondary.addButton((button) => this.actionButton(button, {
         label: "取消校验",
         icon: "circle-stop",
         tooltip: "停止当前完整校验；部分覆盖率不会成为删除依据",
-        disabled: status.audit.state !== "running",
+        disabled: false,
         onClick: () => this.plugin.cancelFullAuditV1(),
-      }))
-      .addButton((button) => this.actionButton(button, {
-        label: "手动重试",
-        icon: "rotate-ccw",
-        tooltip: "跳过当前倒计时并立即重试",
-        disabled: busy || !mutatingAllowed || (status.retryAt === undefined && status.lastError === undefined),
-        onClick: () => this.run(() => this.plugin.retryManualSyncV1()),
-      }))
+      }));
+    secondary
       .addButton((button) => this.actionButton(button, {
         label: "复制脱敏诊断包",
         icon: "clipboard-copy",
@@ -178,6 +190,24 @@ export class SyncDashboardModal extends Modal {
         disabled: busy,
         onClick: () => this.run(() => this.plugin.runDesktopRuntimeContract()),
       }));
+  }
+
+  private renderTechnicalSummary(status: OperationalStatus): void {
+    const summary = this.contentEl.createDiv({ cls: "s3-sync-status-grid" });
+    for (const [label, value] of [
+      ["最后成功拉取", formatTime(status.lastSuccessfulPull)],
+      ["最后成功发布", formatTime(status.lastSuccessfulPublish)],
+      ["最后完整校验", formatTime(status.lastSuccessfulAudit)],
+      ["待应用", String(status.pendingApply)],
+      ["Outbox", String(status.outbox)],
+      ["本地并发记录", String(status.localConcurrentRecords)],
+      ["恢复文件 / 捕获后编辑", `${status.recoveryFiles} / ${status.postCaptureEdits}`],
+      ["提交缺口", String(status.commitGaps)],
+      ["Vault 冲突", String(status.conflicts)],
+    ]) {
+      summary.createDiv({ cls: "s3-sync-status-label", text: label });
+      summary.createDiv({ cls: "s3-sync-status-value", text: value });
+    }
   }
 
   private renderAudit(status: OperationalStatus): void {
@@ -293,6 +323,37 @@ export class SyncDashboardModal extends Modal {
 
 function formatTime(value: number | undefined): string {
   return value === undefined ? "从未" : new Date(value).toLocaleString();
+}
+
+function latestSuccessfulSync(status: OperationalStatus): number | undefined {
+  const values = [status.lastSuccessfulPull, status.lastSuccessfulPublish]
+    .filter((value): value is number => value !== undefined);
+  return values.length > 0 ? Math.max(...values) : undefined;
+}
+
+function userStatusMessage(connected: boolean, status: OperationalStatus): string {
+  if (!connected) return "尚未连接 S3 仓库";
+  if (!["idle", "read-only", "waiting-retry", "stopped"].includes(status.phase)) {
+    return `正在${operationalPhaseLabel(status.phase)}`;
+  }
+  if (status.conflicts > 0) return `有 ${status.conflicts} 个文件冲突需要选择版本`;
+  if (status.recoveryBlockers.some((blocker) => blocker.disposition === "manual")) return "需要完成本地恢复后才能继续同步";
+  if (status.lastError) return "上次同步没有完成，请查看错误并重试";
+  if (status.outbox > 0 || status.pendingApply > 0 || status.localConcurrentRecords > 0
+    || status.recoveryFiles > 0 || status.commitGaps > 0) return "有同步内容正在等待处理";
+  if (latestSuccessfulSync(status) === undefined) return "已连接，尚未完成首次同步";
+  return "同步状态正常";
+}
+
+function userPendingSummary(status: OperationalStatus): string {
+  const parts: string[] = [];
+  if (status.conflicts > 0) parts.push(`${status.conflicts} 个冲突`);
+  const waiting = status.pendingApply + status.localConcurrentRecords;
+  if (waiting > 0) parts.push(`${waiting} 项等待处理`);
+  if (status.outbox > 0) parts.push(`${status.outbox} 项等待上传`);
+  const recovery = status.recoveryBlockers.length + status.recoveryFiles + status.commitGaps;
+  if (recovery > 0) parts.push(`${recovery} 项等待恢复或验证`);
+  return parts.length > 0 ? parts.join("，") : "无";
 }
 
 function formatBytes(value: number): string {

@@ -11,7 +11,7 @@ import { resolveEffectivePrefix } from "./connection-prefix";
 import { captureStableVaultFile, captureStableVaultFileToStaging } from "./vault-stable-capture";
 import { reserveWriterCommit } from "../core/writer-session";
 import { decideResolvedRemotePut } from "../core/pull-decision";
-import { conflictId } from "../core/conflict-id";
+import { vaultConflictId } from "../core/conflict-id";
 import { conflictCopyContentMatches, conflictVersionCopyPath } from "../core/conflict-copy";
 import { findCaseAliasConflicts, findStructuralConflicts } from "../core/structural-conflict";
 import { vaultPathCaseFoldKey } from "../core/path";
@@ -49,7 +49,12 @@ import {
 } from "../core/durable-outbox";
 import { localConcurrentRecordBlocksAutomaticWork } from "../core/local-concurrent-resolution";
 import { SyncDashboardModal } from "./sync-dashboard-modal";
-import { buildRedactedDiagnosticBundle } from "../core/diagnostic-bundle";
+import {
+  appendDiagnosticErrorHistory,
+  buildRedactedDiagnosticBundle,
+  type DiagnosticErrorHistoryEntry,
+  type DiagnosticEvent,
+} from "../core/diagnostic-bundle";
 import { DiagnosticError, diagnosticCategory, type SyncDiagnosticCategory } from "../core/diagnostics";
 import {
   logSafeError,
@@ -99,7 +104,7 @@ import { buildConfigTreeObject, type ProtocolConfigTree } from "../core/config-t
 import { buildConfigSnapshotPublishEnvelope } from "../core/config-publish-envelope";
 import type { RepositoryOperationOwner } from "../core/repository-operation-lock";
 import { buildVaultDeleteControlEnvelope, buildVaultPutControlEnvelope } from "../core/vault-publish-envelope";
-import { ImmutableContentStaging } from "../core/content-staging";
+import { ContentStagingIntegrityError, ImmutableContentStaging } from "../core/content-staging";
 import { NodeContentStagingAdapter } from "../adapters/node-content-staging-adapter";
 import type { StableStreamCaptureResult } from "../core/streaming-capture";
 import { BoundedExecutor } from "../core/bounded-executor";
@@ -143,6 +148,10 @@ export default class S3SyncPlugin extends Plugin {
   private autoSyncScheduler: AutoSyncScheduler | undefined;
   private statusEl: HTMLElement | null = null;
   private readonly runtimeContractSessionId = crypto.randomUUID();
+  private readonly diagnosticErrorHistory: DiagnosticErrorHistoryEntry[] = [];
+  private readonly runtimeDiagnosticEvents: DiagnosticEvent[] = [];
+  private conflictModalOpenCount = 0;
+  private lastConflictModalOpenedAt: number | undefined;
   private editorChangeObserved = false;
   private causalStatePersistence = Promise.resolve();
   private readonly v1ApplyOperations = new Map<string, string>();
@@ -279,6 +288,7 @@ export default class S3SyncPlugin extends Plugin {
 
   async resolveConflict(conflictId: string, mode: "local" | "remote", candidateVersionId?: string): Promise<void> {
     this.beginRepositoryOperation("vault");
+    let resolved = false;
     try {
       const conflict = this.data.conflicts[conflictId];
       if (!conflict) {
@@ -289,6 +299,39 @@ export default class S3SyncPlugin extends Plugin {
         );
       }
       await this.resolveV1Conflict(conflict, mode, candidateVersionId);
+      resolved = true;
+    } finally {
+      this.endRepositoryOperation("vault");
+    }
+    if (resolved && !Object.values(this.data.conflicts).some((conflict) => !conflict.resolved)) {
+      await this.runV1SyncRound(false);
+    }
+  }
+
+  async openConflictCandidateCopy(conflictIdValue: string, candidateVersionId: string): Promise<void> {
+    this.beginRepositoryOperation("vault");
+    try {
+      const state = this.data.v1;
+      const conflict = this.data.conflicts[conflictIdValue];
+      if (!state || !conflict || conflict.resolved) {
+        throw new DiagnosticError(
+          "CONFLICT_NOT_FOUND",
+          "conflict",
+          "the selected conflict no longer exists",
+        );
+      }
+      const candidate = conflict.remoteCandidates.find((item) => item.versionId === candidateVersionId);
+      if (!candidate || candidate.kind !== "put") {
+        throw new DiagnosticError(
+          "CONFLICT_COPY_CANDIDATE_UNAVAILABLE",
+          "conflict",
+          "the selected conflict candidate has no file content to preview",
+        );
+      }
+      await this.assertV1RepositoryBinding(state);
+      const service = this.createRepositoryService(this.settings, state.locator.normalizedPrefix);
+      await this.materializeConflictCopies(state, service, conflict.id, conflict.path, [candidate]);
+      await this.openFile(conflictVersionCopyPath(conflict.id, candidate.versionId, conflict.path));
     } finally {
       this.endRepositoryOperation("vault");
     }
@@ -396,6 +439,18 @@ export default class S3SyncPlugin extends Plugin {
   }
 
   openConflictModal(): void { new ConflictModal(this).open(); }
+
+  recordConflictModalOpened(): void {
+    const at = Date.now();
+    this.conflictModalOpenCount += 1;
+    this.lastConflictModalOpenedAt = at;
+    this.appendRuntimeDiagnosticEvent({
+      at,
+      category: "conflict",
+      stage: "conflict-modal-open",
+      message: "冲突窗口已打开",
+    });
+  }
 
   openConfigCenter(): void { new ConfigCenterModal(this).open(); }
 
@@ -1882,17 +1937,12 @@ export default class S3SyncPlugin extends Plugin {
       const pull = await this.pullMissingFilesV1(false);
       if (pull.status === "failed") throw pull.error;
       if (pull.status === "blocked") {
-        const message = `拉取发现 ${pull.conflicts} 项冲突和 ${pull.pending} 项待处理状态；本轮未上传。`;
         this.cancelV1Retry(true);
-        this.updateOperationalStatus({ phase: "idle" });
-        this.reportActionBlocker(
-          "SYNC_BLOCKED_BY_UNRESOLVED_PATHS",
-          "conflict",
-          message,
-          "sync-conflict-check",
-          !fromRetry,
-        );
+        this.updateOperationalStatus({ phase: "idle", lastError: undefined });
         this.queueCausalStatePersistence();
+        if (!fromRetry) {
+          new Notice(`S3 Sync：无冲突路径已自动处理；还有 ${pull.conflicts} 项冲突和 ${pull.pending} 项待确认，解决后将继续上传。`);
+        }
         return;
       }
       this.repositoryOperation.throwIfAborted("vault");
@@ -2017,7 +2067,15 @@ export default class S3SyncPlugin extends Plugin {
         decisions.push({ path, decision: "unknown", reason: "已发布变更仍等待本地对账" });
         continue;
       }
-      decisions.push(derivePathDecision({ path, ignored, localState, localHash, localIntent, remote }));
+      decisions.push(derivePathDecision({
+        path,
+        ignored,
+        localState,
+        localHash,
+        localIntent,
+        projectedHash: projected?.hash,
+        remote,
+      }));
     }
     return decisions;
   }
@@ -2135,6 +2193,7 @@ export default class S3SyncPlugin extends Plugin {
   }
 
   exportRedactedDiagnostics(): string {
+    const generatedAt = Date.now();
     const status = this.getOperationalStatus();
     const knownPaths = new Set<string>([
       ...Object.keys(this.data.files),
@@ -2152,11 +2211,22 @@ export default class S3SyncPlugin extends Plugin {
       this.data.v1?.locator.normalizedPrefix ?? "",
     ]);
     return JSON.stringify(buildRedactedDiagnosticBundle({
-      generatedAt: Date.now(),
+      generatedAt,
       repositoryId: this.data.v1?.repositoryId,
       normalizedPrefix: this.data.v1?.locator.normalizedPrefix,
       pathSalt: this.data.v1?.repositoryId ?? this.runtimeContractSessionId,
       sensitiveValues: [this.settings.accessKeyId, this.settings.secretAccessKey, ...knownPaths],
+      runtime: {
+        pluginVersion: this.manifest.version,
+        obsidianVersion: apiVersion,
+        platform: process.platform,
+        architecture: process.arch,
+        isDesktop: Platform.isDesktop,
+        conflictModalOpenCount: this.conflictModalOpenCount,
+        ...(this.lastConflictModalOpenedAt !== undefined
+          ? { lastConflictModalOpenedAt: this.lastConflictModalOpenedAt }
+          : {}),
+      },
       status: {
         ...(status as unknown as Record<string, unknown>),
         performance: {
@@ -2164,10 +2234,8 @@ export default class S3SyncPlugin extends Plugin {
           hashExecutor: this.vaultHashExecutor.metrics(),
         },
       },
-      events: [
-        ...status.decisions.map((decision) => ({ at: Date.now(), category: decision.decision === "conflict" ? "conflict" as const : "local-path" as const, stage: decision.decision, message: decision.reason, path: decision.path })),
-        ...(status.lastError ? [{ at: Date.now(), category: status.lastError.category, stage: status.phase, message: status.lastError.message }] : []),
-      ],
+      errorHistory: this.diagnosticErrorHistory,
+      events: this.runtimeDiagnosticEvents,
     }), null, 2);
   }
 
@@ -2298,7 +2366,6 @@ export default class S3SyncPlugin extends Plugin {
           remote.candidates,
         );
         await this.saveSyncData();
-        await this.materializeConflictCopies(state, service, id, path, remote.candidates);
         new ConflictModal(this).open();
         throw new DiagnosticError("REMOTE_REGISTER_CONCURRENT", "conflict", "remote register is not resolved");
       }
@@ -2328,7 +2395,6 @@ export default class S3SyncPlugin extends Plugin {
           remote.candidates,
         );
         await this.saveSyncData();
-        await this.materializeConflictCopies(state, service, id, path, remote.candidates);
         new ConflictModal(this).open();
         throw new DiagnosticError("LOCAL_REMOTE_DIVERGED", "conflict", "remote heads changed after the local generation was captured");
       }
@@ -2413,15 +2479,6 @@ export default class S3SyncPlugin extends Plugin {
       this.recoverVerifiedRepositoryIdentityLock();
       const service = this.createRepositoryService(this.settings, state.locator.normalizedPrefix);
       let inspected = await this.inspectAndMaterializeVaultV1(state, service);
-      let blocked = this.v1PullBlockSummary(inspected.decisions);
-      if (blocked.conflicts > 0 || blocked.pending > 0) {
-        return this.finishV1Pull(inspected.decisions, {
-          created: 0,
-          updated: 0,
-          deleted: 0,
-          skipped: inspected.materializedConflicts,
-        }, notify);
-      }
 
       syncStage = "preflight";
       this.assertV1SyncPreflight();
@@ -2431,15 +2488,6 @@ export default class S3SyncPlugin extends Plugin {
       await this.drainDurableOutboxIfPresent(inspected.state);
       if (hadOutbox) {
         inspected = await this.inspectAndMaterializeVaultV1(this.data.v1!, service);
-        blocked = this.v1PullBlockSummary(inspected.decisions);
-        if (blocked.conflicts > 0 || blocked.pending > 0) {
-          return this.finishV1Pull(inspected.decisions, {
-            created: 0,
-            updated: 0,
-            deleted: 0,
-            skipped: inspected.materializedConflicts,
-          }, notify);
-        }
       }
 
       this.updateOperationalStatus({ lastError: undefined });
@@ -2457,7 +2505,7 @@ export default class S3SyncPlugin extends Plugin {
       let created = 0;
       let updated = 0;
       let deleted = 0;
-      let skipped = inspected.materializedConflicts;
+      let skipped = 0;
       syncStage = "local-apply";
       this.updateOperationalStatus({ phase: "applying" });
       for (const remote of files) {
@@ -2483,7 +2531,7 @@ export default class S3SyncPlugin extends Plugin {
         const decision = decideResolvedRemotePut({ localExists: !!existing, projectedHash: this.data.files[remote.path]?.hash, currentHash: capture?.hash, remoteHash: remote.hash });
         if (decision === "conflict") {
           replaceDecision({ path: remote.path, decision: "conflict", reason: "应用前复查发现本地与远端内容均已变化" });
-          const id = this.recordV1Conflict(
+          this.recordV1Conflict(
             remote.path,
             this.data.files[remote.path]?.hash ?? null,
             capture?.hash ?? null,
@@ -2492,18 +2540,6 @@ export default class S3SyncPlugin extends Plugin {
             remote.heads,
           );
           await this.saveSyncData();
-          await this.materializeConflictCopies(
-            state,
-            service,
-            id,
-            remote.path,
-            remote.heads.map((versionId) => ({
-              kind: "put" as const,
-              versionId,
-              hash: remote.hash,
-              size: remote.size,
-            })),
-          );
           skipped += 1;
           continue;
         }
@@ -2513,8 +2549,28 @@ export default class S3SyncPlugin extends Plugin {
           delete this.data.v1PendingApply[remote.path];
           continue;
         }
-        const binary = await service.downloadVaultBlob(state.repositoryId, remote);
-        const staged = await this.repositoryContentStaging(state).stage(oneChunk(binary), remote.size);
+        let binary: Uint8Array;
+        try {
+          binary = await service.downloadVaultBlob(state.repositoryId, remote);
+        } catch (cause) {
+          throw localApplyDiagnostic(
+            "VAULT_PULL_DOWNLOAD_FAILED",
+            "integrity",
+            "remote Vault content could not be downloaded and verified",
+            cause,
+          );
+        }
+        let staged: Awaited<ReturnType<ImmutableContentStaging["stage"]>>;
+        try {
+          staged = await this.repositoryContentStaging(state).stage(oneChunk(binary), remote.size);
+        } catch (cause) {
+          throw localApplyDiagnostic(
+            "VAULT_PULL_STAGING_FAILED",
+            cause instanceof ContentStagingIntegrityError ? "integrity" : "local-path",
+            "downloaded Vault content could not be stored in local staging",
+            cause,
+          );
+        }
         const stateRoot = localStateRoot(state.configDir, state.repositoryId);
         const candidate: RemoteVaultConflictCandidate = {
           kind: "put",
@@ -2528,20 +2584,23 @@ export default class S3SyncPlugin extends Plugin {
           size: remote.size,
           stagedRef: `${stateRoot}/${staged.ref}`,
         });
-        const result = await this.createVaultApplicator(state, { heads: remote.heads, candidate }).apply(plan);
+        let result: Awaited<ReturnType<SafeLocalApplicator["apply"]>>;
+        try {
+          result = await this.createVaultApplicator(state, { heads: remote.heads, candidate }).apply(plan);
+        } catch (cause) {
+          throw localApplyDiagnostic(
+            "VAULT_PULL_WRITE_FAILED",
+            "local-path",
+            "verified remote Vault content could not be applied locally",
+            cause,
+          );
+        }
         if (result.status === "accounted" || result.status === "adopted-without-write") {
           if (decision === "create") created += 1;
           else updated += 1;
         } else {
           if (result.status === "local-change-frozen") {
-            const id = conflictId(state.repositoryId, "vault", [remote.path], remote.heads);
-            for (const versionId of remote.heads) {
-              await this.writeConflictCopy(
-                conflictVersionCopyPath(id, versionId, remote.path),
-                binary,
-                remote,
-              );
-            }
+            this.openConflictModal();
           }
           replaceDecision({
             path: remote.path,
@@ -2578,13 +2637,23 @@ export default class S3SyncPlugin extends Plugin {
           continue;
         }
         if (!(existing instanceof TFile)) {
-          replaceDecision({ path: remote.path, decision: "unknown", reason: "墓碑目标被非文件条目占用" });
+          replaceDecision({ path: remote.path, decision: "unknown", reason: "远端删除目标被目录或其他非文件条目占用" });
           skipped += 1;
           continue;
         }
         const candidate: RemoteVaultConflictCandidate = { kind: "delete", versionId: remote.heads[0] };
         const plan = this.buildVaultApplyPlan(state, remote.path, remote.heads, { kind: "delete" });
-        const result = await this.createVaultApplicator(state, { heads: remote.heads, candidate }).apply(plan);
+        let result: Awaited<ReturnType<SafeLocalApplicator["apply"]>>;
+        try {
+          result = await this.createVaultApplicator(state, { heads: remote.heads, candidate }).apply(plan);
+        } catch (cause) {
+          throw localApplyDiagnostic(
+            "VAULT_PULL_DELETE_FAILED",
+            "local-path",
+            "verified remote deletion could not be applied locally",
+            cause,
+          );
+        }
         if (result.status === "accounted" || result.status === "adopted-without-write") deleted += 1;
         else {
           replaceDecision({
@@ -2598,7 +2667,17 @@ export default class S3SyncPlugin extends Plugin {
       syncStage = "local-persistence";
       return this.finishV1Pull(decisions, { created, updated, deleted, skipped }, notify);
     } catch (error) {
-      const stagedError = withSyncFlowStage("pull", syncStage, error);
+      const failure = safeErrorRecord(error);
+      const unknownLocalApply = failure.category === "internal"
+        && (syncStage === "local-apply" || failure.syncStage === "local-apply");
+      const stagedError = unknownLocalApply
+        ? withSyncFlowStage("pull", "local-apply", new DiagnosticError(
+          "VAULT_PULL_LOCAL_APPLY_FAILED",
+          "local-path",
+          "Vault pull reached an unexpected local apply failure without overwriting the active file",
+          error,
+        ))
+        : withSyncFlowStage("pull", syncStage, error);
       if (notify) this.recordOperationalError(stagedError, true);
       logSafeError("S3 Sync Vault pull failed", stagedError);
       return { status: "failed", error: stagedError };
@@ -2614,7 +2693,6 @@ export default class S3SyncPlugin extends Plugin {
     state: NonNullable<S3SyncData["v1"]>;
     pulled: V1VaultPullDiagnostics;
     decisions: PathDecisionRecord[];
-    materializedConflicts: number;
   }> {
     let pulled: V1VaultPullDiagnostics;
     try {
@@ -2640,52 +2718,50 @@ export default class S3SyncPlugin extends Plugin {
     } catch (error) {
       throw withSyncFlowStage("pull", "path-planning", error);
     }
-    let materializedConflicts: number;
     try {
-      materializedConflicts = await this.materializeV1ConflictCandidates(state, service, pulled, decisions);
-      await this.saveSyncData();
+      await this.recordV1ConflictCandidates(pulled, decisions);
     } catch (error) {
       throw withSyncFlowStage("pull", "local-apply", error);
+    }
+    try {
+      await this.saveSyncData();
+    } catch (error) {
+      if (Object.values(this.data.conflicts).some((conflict) => !conflict.resolved)) this.openConflictModal();
+      throw withSyncFlowStage("pull", "local-persistence", error);
     }
     if (pulled.blockedCommitKeys.length > 0) {
       if (Object.values(this.data.conflicts).some((conflict) => !conflict.resolved)) new ConflictModal(this).open();
       throw withSyncFlowStage("pull", "remote-list", pulled.blockedCommitKeys[0].reason);
     }
-    return { state, pulled, decisions, materializedConflicts };
+    return { state, pulled, decisions };
   }
 
-  private async materializeV1ConflictCandidates(
-    state: NonNullable<S3SyncData["v1"]>,
-    service: V1RepositoryService,
+  private async recordV1ConflictCandidates(
     pulled: V1VaultPullDiagnostics,
     decisions: readonly PathDecisionRecord[],
-  ): Promise<number> {
+  ): Promise<void> {
     const decisionByPath = new Map(decisions.map((decision) => [decision.path, decision.decision]));
     const activeConcurrentPaths = new Set<string>();
-    let materialized = 0;
 
     for (const remote of pulled.conflicts) {
       if (decisionByPath.get(remote.path) === "ignored") continue;
       activeConcurrentPaths.add(remote.path);
       const existing = getTFile(this.app.vault, remote.path);
       const capture = existing ? await this.captureVaultFileHash(remote.path) : undefined;
-      const id = this.recordV1ConcurrentConflict(
+      this.recordV1ConcurrentConflict(
         remote.path,
         this.data.files[remote.path]?.hash ?? null,
         capture?.hash ?? null,
         remote.heads,
         remote.candidates,
       );
-      await this.saveSyncData();
-      await this.materializeConflictCopies(state, service, id, remote.path, remote.candidates);
-      materialized += 1;
     }
 
     for (const remote of pulled.files) {
       if (decisionByPath.get(remote.path) !== "conflict" || activeConcurrentPaths.has(remote.path)) continue;
       const existing = getTFile(this.app.vault, remote.path);
       const capture = existing ? await this.captureVaultFileHash(remote.path) : undefined;
-      const id = this.recordV1Conflict(
+      this.recordV1Conflict(
         remote.path,
         this.data.files[remote.path]?.hash ?? null,
         capture?.hash ?? null,
@@ -2693,20 +2769,6 @@ export default class S3SyncPlugin extends Plugin {
         remote.size,
         remote.heads,
       );
-      await this.saveSyncData();
-      await this.materializeConflictCopies(
-        state,
-        service,
-        id,
-        remote.path,
-        remote.heads.map((versionId) => ({
-          kind: "put" as const,
-          versionId,
-          hash: remote.hash,
-          size: remote.size,
-        })),
-      );
-      materialized += 1;
     }
 
     for (const observation of pulled.observations) {
@@ -2722,14 +2784,12 @@ export default class S3SyncPlugin extends Plugin {
         capture?.hash ?? null,
         observation.heads,
       );
-      materialized += 1;
     }
 
     for (const conflict of Object.values(this.data.conflicts)) {
       if (!conflict.resolved && conflict.remoteDisposition === "concurrent"
         && !activeConcurrentPaths.has(conflict.path)) conflict.resolved = true;
     }
-    return materialized;
   }
 
   private async materializeConflictCopies(
@@ -2745,14 +2805,34 @@ export default class S3SyncPlugin extends Plugin {
       const contentKey = `${candidate.hash}:${candidate.size}`;
       let bytes = downloaded.get(contentKey);
       if (!bytes) {
-        bytes = await service.downloadVaultBlob(state.repositoryId, candidate);
+        try {
+          bytes = await service.downloadVaultBlob(state.repositoryId, candidate);
+        } catch (cause) {
+          const category = diagnosticCategory(cause);
+          throw new DiagnosticError(
+            "CONFLICT_COPY_DOWNLOAD_FAILED",
+            category === "internal" ? "integrity" : category,
+            "remote conflict candidate could not be downloaded and verified",
+            cause,
+          );
+        }
         downloaded.set(contentKey, bytes);
       }
-      await this.writeConflictCopy(
-        conflictVersionCopyPath(conflictIdValue, candidate.versionId, logicalPath),
-        bytes,
-        candidate,
-      );
+      try {
+        await this.writeConflictCopy(
+          conflictVersionCopyPath(conflictIdValue, candidate.versionId, logicalPath),
+          bytes,
+          candidate,
+        );
+      } catch (cause) {
+        if (cause instanceof DiagnosticError) throw cause;
+        throw new DiagnosticError(
+          "CONFLICT_COPY_WRITE_FAILED",
+          "local-path",
+          "verified remote conflict candidate could not be written locally",
+          cause,
+        );
+      }
     }
   }
 
@@ -2839,7 +2919,7 @@ export default class S3SyncPlugin extends Plugin {
     await this.saveSyncData();
     if (notify) {
       new Notice(blocked.conflicts > 0 || blocked.pending > 0
-        ? `S3 Sync：检查完成；新增 ${counts.created}，更新 ${counts.updated}，删除 ${counts.deleted}，冲突 ${blocked.conflicts}，待处理 ${blocked.pending}，已跳过 ${counts.skipped}。`
+        ? `S3 Sync：无冲突项已自动合并；新增 ${counts.created}，更新 ${counts.updated}，删除 ${counts.deleted}；剩余冲突 ${blocked.conflicts}，待确认 ${blocked.pending}。`
         : `S3 Sync：拉取完成；新增 ${counts.created}，更新 ${counts.updated}，删除 ${counts.deleted}，已跳过 ${counts.skipped}。`);
     }
     if (blocked.conflicts > 0 && Object.values(this.data.conflicts).some((conflict) => !conflict.resolved)) {
@@ -2916,9 +2996,16 @@ export default class S3SyncPlugin extends Plugin {
       "repository state was archived and reset after strict restore validation failed",
       restored.error,
     );
+    const lastError = this.operationalError("local-path", message, "durable-state-restore", error);
+    this.rememberDiagnosticError({
+      category: "local-path",
+      message,
+      report: lastError.report,
+      stage: "durable-state-restore",
+    });
     this.data.v1OperationalStatus = {
       ...this.data.v1OperationalStatus,
-      lastError: this.operationalError("local-path", message, "durable-state-restore", error),
+      lastError,
     };
     showCopyableNotice(message, safeGenericErrorReport(error, "durable-state-restore"));
   }
@@ -2990,6 +3077,7 @@ export default class S3SyncPlugin extends Plugin {
     const record = safeErrorRecord(error);
     const message = this.errorMessage(error);
     const report = safeGenericErrorReport(error, context);
+    this.rememberDiagnosticError({ category: record.category, message, report, stage: context });
     this.updateOperationalStatus({
       phase: this.repositoryOperation.isRunning() ? this.data.v1OperationalStatus.phase : "read-only",
       lastError: {
@@ -3012,6 +3100,7 @@ export default class S3SyncPlugin extends Plugin {
   ): void {
     const error = new DiagnosticError(code, category, message);
     const report = safeGenericErrorReport(error, context);
+    this.rememberDiagnosticError({ category, message, report, stage: context });
     this.updateOperationalStatus({
       lastError: { category, message, report, syncStage: context },
     });
@@ -3048,6 +3137,29 @@ export default class S3SyncPlugin extends Plugin {
     this.updateStatus();
   }
 
+  private rememberDiagnosticError(entry: {
+    category: SyncDiagnosticCategory;
+    message: string;
+    report: string;
+    stage: string;
+  }): void {
+    const at = Date.now();
+    appendDiagnosticErrorHistory(this.diagnosticErrorHistory, { ...entry, at });
+    this.appendRuntimeDiagnosticEvent({
+      at,
+      category: entry.category,
+      stage: entry.stage,
+      message: entry.message,
+    });
+  }
+
+  private appendRuntimeDiagnosticEvent(event: DiagnosticEvent): void {
+    this.runtimeDiagnosticEvents.push({ ...event });
+    if (this.runtimeDiagnosticEvents.length > 32) {
+      this.runtimeDiagnosticEvents.splice(0, this.runtimeDiagnosticEvents.length - 32);
+    }
+  }
+
   private recordOperationalError(error: unknown, allowAutoRetry = false): void {
     const record = safeErrorRecord(error);
     const category: SyncDiagnosticCategory = record.category;
@@ -3055,6 +3167,17 @@ export default class S3SyncPlugin extends Plugin {
     const report = safeSyncErrorReport(error);
     const identityInvalid = category === "repository-identity" && record.syncStage !== "preflight";
     const manualRecovery = hasManualRecoveryBlocker(this.getOperationalStatus());
+    this.rememberDiagnosticError({
+      category,
+      message,
+      report,
+      stage: record.syncStage
+        ?? record.connectionStage
+        ?? record.outboxStage
+        ?? record.persistenceStep
+        ?? record.operation
+        ?? "operation",
+    });
     this.updateOperationalStatus({
       phase: manualRecovery || identityInvalid ? "read-only" : "idle",
       retryAt: undefined,
@@ -3223,6 +3346,18 @@ export default class S3SyncPlugin extends Plugin {
         "repository state could not be restored safely",
         cause,
       );
+      const lastError = this.operationalError(
+        "local-path",
+        "本地仓库状态读取失败；为避免覆盖因果状态，本次不会访问 S3。",
+        "durable-state-restore",
+        error,
+      );
+      this.rememberDiagnosticError({
+        category: "local-path",
+        message: lastError.message,
+        report: lastError.report,
+        stage: "durable-state-restore",
+      });
       this.data.v1OperationalStatus = {
         ...this.data.v1OperationalStatus,
         phase: "read-only",
@@ -3232,12 +3367,7 @@ export default class S3SyncPlugin extends Plugin {
           disposition: "manual",
           message: "本地仓库状态读取失败；修复本地存储并重新加载插件后可自动重试。",
         }],
-        lastError: this.operationalError(
-          "local-path",
-          "本地仓库状态读取失败；为避免覆盖因果状态，本次不会访问 S3。",
-          "durable-state-restore",
-          error,
-        ),
+        lastError,
       };
       showCopyableErrorNotice("S3 Sync：本地仓库状态读取失败", error, "durable-state-restore");
     }
@@ -3252,6 +3382,7 @@ export default class S3SyncPlugin extends Plugin {
     if (resetSettings) this.settings = structuredClone(DEFAULT_SETTINGS);
     this.data = createDefaultData();
     const report = safeGenericErrorReport(error, context);
+    this.rememberDiagnosticError({ category: error.category, message, report, stage: context });
     this.data.v1OperationalStatus = {
       ...this.data.v1OperationalStatus,
       phase: "read-only",
@@ -3359,7 +3490,11 @@ export default class S3SyncPlugin extends Plugin {
     heads: string[];
     candidates: RemoteVaultConflictCandidate[];
   }): string {
-    const id = conflictId(this.data.v1?.repositoryId ?? "unknown", "vault", [input.path], input.heads);
+    const id = vaultConflictId(
+      this.data.v1?.repositoryId ?? "unknown",
+      [input.path],
+      input.heads,
+    );
     for (const [existingId, existing] of Object.entries(this.data.conflicts)) {
       if (existingId !== id && !existing.resolved && existing.path === input.path) delete this.data.conflicts[existingId];
     }
@@ -3509,29 +3644,48 @@ export default class S3SyncPlugin extends Plugin {
         );
       }
     } else {
-      const capture = await this.captureVaultFileToStaging(state, conflict.path);
-      if (capture.status !== "captured" || capture.hash !== conflict.localHash) {
-        throw new DiagnosticError(
-          "CONFLICT_LOCAL_VERSION_CHANGED",
-          "conflict",
-          capture.status === "captured"
-            ? "local conflict content changed before resolution"
-            : vaultCaptureFailureMessage(conflict.path, capture),
-        );
+      const captureGeneration = Math.max(
+        this.data.v1DirtyIntents[conflict.path]?.generation ?? 0,
+        latestVaultEvent(this.data.v1VaultEvents, conflict.path)?.generation ?? 0,
+        this.data.v1VaultGenerations[conflict.path] ?? 0,
+      );
+      if (conflict.localHash === null) {
+        if (conflict.baseHash === null || this.app.vault.getAbstractFileByPath(conflict.path) !== null) {
+          throw new DiagnosticError(
+            "CONFLICT_LOCAL_VERSION_CHANGED",
+            "conflict",
+            "local delete conflict is no longer a verified tracked deletion",
+          );
+        }
+        const published = await this.freezePublishAndReconcileVaultDelete({
+          state,
+          path: conflict.path,
+          parents: remote.heads,
+          captureGeneration,
+        });
+        delete this.data.files[conflict.path];
+        this.data.v1ProjectedHeads[conflict.path] = [published.versionId];
+      } else {
+        const capture = await this.captureVaultFileToStaging(state, conflict.path);
+        if (capture.status !== "captured" || capture.hash !== conflict.localHash) {
+          throw new DiagnosticError(
+            "CONFLICT_LOCAL_VERSION_CHANGED",
+            "conflict",
+            capture.status === "captured"
+              ? "local conflict content changed before resolution"
+              : vaultCaptureFailureMessage(conflict.path, capture),
+          );
+        }
+        const published = await this.freezePublishAndReconcileVaultPut({
+          state,
+          path: conflict.path,
+          parents: remote.heads,
+          capture,
+          captureGeneration,
+        });
+        this.data.files[conflict.path] = { hash: capture.hash, size: capture.size, updatedAt: new Date().toISOString() };
+        this.data.v1ProjectedHeads[conflict.path] = [published.versionId];
       }
-      const published = await this.freezePublishAndReconcileVaultPut({
-        state,
-        path: conflict.path,
-        parents: remote.heads,
-        capture,
-        captureGeneration: Math.max(
-          this.data.v1DirtyIntents[conflict.path]?.generation ?? 0,
-          latestVaultEvent(this.data.v1VaultEvents, conflict.path)?.generation ?? 0,
-          this.data.v1VaultGenerations[conflict.path] ?? 0,
-        ),
-      });
-      this.data.files[conflict.path] = { hash: capture.hash, size: capture.size, updatedAt: new Date().toISOString() };
-      this.data.v1ProjectedHeads[conflict.path] = [published.versionId];
       delete this.data.v1PendingApply[conflict.path];
     }
     this.data.conflicts[conflict.id] = { ...conflict, resolved: true };
@@ -3726,7 +3880,7 @@ export default class S3SyncPlugin extends Plugin {
     message: string,
     stage: string,
     error?: unknown,
-  ): OperationalStatus["lastError"] {
+  ): NonNullable<OperationalStatus["lastError"]> {
     return {
       category,
       message,
@@ -3736,6 +3890,17 @@ export default class S3SyncPlugin extends Plugin {
       syncStage: stage,
     };
   }
+}
+
+function localApplyDiagnostic(
+  code: string,
+  fallbackCategory: SyncDiagnosticCategory,
+  message: string,
+  cause: unknown,
+): DiagnosticError {
+  if (cause instanceof DiagnosticError) return cause;
+  const category = diagnosticCategory(cause);
+  return new DiagnosticError(code, category === "internal" ? fallbackCategory : category, message, cause);
 }
 
 function sameHeads(left: readonly string[], right: readonly string[]): boolean {

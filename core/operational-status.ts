@@ -145,7 +145,7 @@ export function pathDecisionLabel(decision: PathDecisionKind): string {
     same: "相同",
     "local-put": "本地上传",
     "remote-put": "远端写入",
-    tombstone: "墓碑",
+    tombstone: "删除",
     conflict: "冲突",
     ignored: "忽略",
     unknown: "未知",
@@ -207,6 +207,7 @@ export function derivePathDecision(input: {
   localState: PreviewLocalState;
   localHash?: string;
   localIntent: PreviewLocalIntent;
+  projectedHash?: string;
   remote: PreviewRemoteState;
 }): PathDecisionRecord {
   if (input.ignored) return { path: input.path, decision: "ignored", reason: "路径在冻结排除范围或用户忽略规则内" };
@@ -217,13 +218,22 @@ export function derivePathDecision(input: {
       : "本地或远端状态无法完整确认" };
   }
   if (input.remote.kind === "delete") {
-    if (input.localIntent === "put") return { path: input.path, decision: "conflict", reason: "本地写入意图与远端墓碑并发" };
-    return { path: input.path, decision: "tombstone", reason: "远端解析结果为墓碑；应用前仍需缺失和前像守卫" };
+    if (input.localIntent === "put") return { path: input.path, decision: "conflict", reason: "本地修改与远端删除同时发生" };
+    return { path: input.path, decision: "tombstone", reason: "远端版本已删除；应用前会保留本地恢复副本" };
   }
   if (input.remote.kind === "put") {
-    if (input.localIntent !== "none") return { path: input.path, decision: "conflict", reason: "本地未发布意图与远端值并发" };
     if (input.localState === "present" && input.localHash === input.remote.hash) {
       return { path: input.path, decision: "same", reason: "本地与远端字节 Hash 相同" };
+    }
+    if (input.localIntent === "put") {
+      return input.projectedHash !== undefined && input.remote.hash === input.projectedHash
+        ? { path: input.path, decision: "local-put", reason: "仅本地内容偏离共同基线；等待发布" }
+        : { path: input.path, decision: "conflict", reason: "本地与远端内容均偏离共同基线" };
+    }
+    if (input.localIntent === "delete") {
+      return input.projectedHash !== undefined && input.remote.hash === input.projectedHash
+        ? { path: input.path, decision: "tombstone", reason: "仅本地删除偏离共同基线；等待发布" }
+        : { path: input.path, decision: "conflict", reason: "本地删除与远端内容变化并发" };
     }
     return { path: input.path, decision: "remote-put", reason: input.localState === "absent"
       ? "本地缺失；仅计划安全创建"

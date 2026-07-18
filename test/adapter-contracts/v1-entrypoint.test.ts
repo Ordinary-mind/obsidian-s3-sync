@@ -64,7 +64,7 @@ describe("v1 plugin entrypoint contract", () => {
     expect(controller).toContain("连接成功；已自动创建并接入仓库。");
     expect(settings).toContain('.setButtonText("检测并应用")');
     expect(settings).not.toMatch(/发现并检查|选择唯一仓库|创建新仓库/);
-    expect(settings.match(/\.setName\("配置中心"\)/g) ?? []).toHaveLength(1);
+    expect(settings.match(/\.setName\("同步 Obsidian 设置"\)/g) ?? []).toHaveLength(1);
     expect(settings).not.toContain("configSyncEnabled");
     expect(copyableNotice).toContain('setIcon(button, "copy")');
     expect(copyableNotice).toContain("safeGenericErrorReport(error, context)");
@@ -82,6 +82,36 @@ describe("v1 plugin entrypoint contract", () => {
     expect(onload).not.toMatch(/上传当前文件|创建仓库|选择仓库/);
   });
 
+  it("uses progressive disclosure without removing advanced capabilities", () => {
+    const main = readFileSync(new URL("../../src/main.ts", import.meta.url), "utf8");
+    const settings = readFileSync(new URL("../../src/settings-tab.ts", import.meta.url), "utf8");
+    const dashboard = readFileSync(new URL("../../src/sync-dashboard-modal.ts", import.meta.url), "utf8");
+    const conflict = readFileSync(new URL("../../src/conflict-modal.ts", import.meta.url), "utf8");
+    const config = readFileSync(new URL("../../src/config-center-modal.ts", import.meta.url), "utf8");
+
+    expect(settings).toContain("private editConnection: boolean");
+    expect(settings).toContain('.setButtonText("修改连接")');
+    expect(settings).toContain("private showOptional = false");
+    expect(settings).toContain('.setName("同步 Obsidian 设置")');
+    expect(settings).toContain('.setName("Vault 文件忽略规则")');
+    expect(dashboard).toContain("private showDetails = false");
+    expect(dashboard).toContain('.setName("诊断与高级功能")');
+    expect(dashboard).toContain("if (status.conflicts > 0)");
+    expect(dashboard).toContain('label: "完整校验"');
+    expect(conflict).toContain('.setName("这台设备的版本")');
+    expect(conflict).toContain("groupRemoteConflictCandidates(");
+    expect(conflict).toContain("confirmDeleteResolution(");
+    expect(conflict).toContain('.setName("技术详情与诊断")');
+    const resolution = main.slice(main.indexOf("private async resolveV1Conflict"), main.indexOf("private configWorkspaceRuntime"));
+    expect(resolution).toContain("if (conflict.localHash === null)");
+    expect(resolution).toContain("await this.freezePublishAndReconcileVaultDelete({");
+    expect(config).toContain('this.snapshot?.state.status === "conflict"');
+    expect(config).toContain("private showProfileAdvanced = false");
+    expect(config).toContain("private showPluginScope = false");
+    expect(config).toContain("private showTechnicalDetails = false");
+    expect(config).toContain('["merge", "解决设置冲突", "git-merge"]');
+  });
+
   it("pulls before publishing every pending path and stops on conflicts or pending decisions", () => {
     const main = readFileSync(new URL("../../src/main.ts", import.meta.url), "utf8");
     const start = main.indexOf("private async runV1SyncRound");
@@ -95,6 +125,8 @@ describe("v1 plugin entrypoint contract", () => {
     expect(blockedIndex).toBeGreaterThan(pullIndex);
     expect(pushIndex).toBeGreaterThan(blockedIndex);
     expect(syncRound.slice(blockedIndex, pushIndex)).toContain("return;");
+    expect(syncRound.slice(blockedIndex, pushIndex)).not.toContain("reportActionBlocker(");
+    expect(syncRound).toContain("无冲突路径已自动处理");
 
     const publishStart = main.indexOf("private async publishPendingPathsV1");
     const publishEnd = main.indexOf("private async publishPathV1", publishStart);
@@ -106,12 +138,14 @@ describe("v1 plugin entrypoint contract", () => {
     const pullEnd = main.indexOf("async runDesktopRuntimeContract", pullStart);
     const pull = main.slice(pullStart, pullEnd);
     expect(pull).toContain("return this.finishV1Pull(");
+    expect(pull.match(/return this\.finishV1Pull\(/g) ?? []).toHaveLength(1);
     expect(pull).toContain("new ConflictModal(this).open()");
     expect(pull).toContain("new SyncDashboardModal(this).open()");
     expect(pull).toContain('? { status: "blocked", conflicts: blocked.conflicts, pending: blocked.pending }');
+    expect(pull).toContain('"VAULT_PULL_LOCAL_APPLY_FAILED"');
     expect(main).toContain('"REMOTE_STRUCTURAL_PATH_CONFLICT"');
     expect(main.indexOf("findStructuralConflicts(occupiedPaths)")).toBeLessThan(
-      main.indexOf("materializeV1ConflictCandidates(state, service, pulled, decisions)"),
+      main.indexOf("recordV1ConflictCandidates(pulled, decisions)"),
     );
   });
 
@@ -147,7 +181,7 @@ describe("v1 plugin entrypoint contract", () => {
     expect(service).toContain('withDurableOutboxReplayStage("terminal-remote-verify", error)');
   });
 
-  it("recovers every unfinished Outbox and verifies conflict candidate copies before opening them", () => {
+  it("records conflicts immediately and materializes verified candidate copies only when the user opens one", () => {
     const main = readFileSync(new URL("../../src/main.ts", import.meta.url), "utf8");
     const modal = readFileSync(new URL("../../src/conflict-modal.ts", import.meta.url), "utf8");
     const drainStart = main.indexOf("private async drainDurableOutboxIfPresent");
@@ -158,10 +192,19 @@ describe("v1 plugin entrypoint contract", () => {
     expect(main).toContain('"DURABLE_OUTBOX_WRITER_MISMATCH"');
     expect(main).toContain("input.service.inspectRepositoryState(");
     expect(main).toContain("conflictCopyContentMatches(bytes, expected)");
-    expect(main).toContain("await this.materializeConflictCopies(state, service, id, path, remote.candidates)");
-    expect(main).toContain("conflictId(state.repositoryId, \"vault\", [remote.path], remote.heads)");
-    expect(main).toContain("conflictVersionCopyPath(id, versionId, remote.path)");
-    expect(modal).toContain("candidate.versionId, conflict.path");
+    expect(main).toContain("await this.recordV1ConflictCandidates(pulled, decisions)");
+    expect(main).toContain("await this.materializeConflictCopies(state, service, conflict.id, conflict.path, [candidate])");
+    expect(main).toContain("vaultConflictId(");
+    expect(main).not.toContain('conflictId(this.data.v1?.repositoryId ?? "unknown", "vault", [input.path]');
+    const recordStart = main.indexOf("private async recordV1ConflictCandidates");
+    const recordEnd = main.indexOf("private async materializeConflictCopies", recordStart);
+    expect(main.slice(recordStart, recordEnd)).not.toContain("materializeConflictCopies(");
+    const materializeStart = main.indexOf("private async materializeConflictCopies");
+    const materializeEnd = main.indexOf("private async writeConflictCopy", materializeStart);
+    const materialize = main.slice(materializeStart, materializeEnd);
+    expect(materialize).toContain('"CONFLICT_COPY_DOWNLOAD_FAILED"');
+    expect(materialize).toContain('"CONFLICT_COPY_WRITE_FAILED"');
+    expect(modal).toContain("openConflictCandidateCopy(conflict.id, candidate.versionId)");
   });
 
   it("keeps startup, conflict, and configuration action failures diagnostic", () => {

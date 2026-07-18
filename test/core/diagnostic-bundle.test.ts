@@ -1,6 +1,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { buildRedactedDiagnosticBundle, redactEndpoint } from "../../core/diagnostic-bundle";
+import {
+  appendDiagnosticErrorHistory,
+  buildRedactedDiagnosticBundle,
+  redactEndpoint,
+  type DiagnosticErrorHistoryEntry,
+} from "../../core/diagnostic-bundle";
 
 describe("redacted diagnostics and policies", () => {
   it("hashes paths and Prefix while removing credentials, bodies and supplied secrets", () => {
@@ -10,6 +15,15 @@ describe("redacted diagnostics and policies", () => {
       normalizedPrefix: "private/vault",
       pathSalt: "salt",
       sensitiveValues: ["super-secret"],
+      runtime: {
+        pluginVersion: "0.1.0",
+        obsidianVersion: "1.7.7",
+        platform: "win32",
+        architecture: "x64",
+        isDesktop: true,
+        conflictModalOpenCount: 1,
+        lastConflictModalOpenedAt: 1,
+      },
       status: {
         accessKeyId: "AKIA1234567890123456",
         body: "vault bytes",
@@ -21,6 +35,15 @@ describe("redacted diagnostics and policies", () => {
         endpoint: "https://user:pass@s3.example.com?token=value",
         bucket: "private-bucket",
       },
+      errorHistory: [{
+        firstAt: 1,
+        lastAt: 1,
+        occurrences: 1,
+        category: "internal",
+        stage: "local-apply",
+        message: "token=super-secret",
+        report: "password=super-secret https://user:pass@s3.example.com?token=x",
+      }],
       events: [{ at: 1, category: "authentication", stage: "GET", message: "password=super-secret https://user:pass@s3.example.com?token=x", path: "private/note.md" }],
     });
     const source = JSON.stringify(bundle);
@@ -35,12 +58,50 @@ describe("redacted diagnostics and policies", () => {
     expect(source).not.toContain("s3.example.com");
     expect(bundle.repositoryIdHash).toMatch(/^[0-9a-f]{64}$/);
     expect(bundle.events[0].pathHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(bundle.runtime).toMatchObject({ pluginVersion: "0.1.0", platform: "win32", conflictModalOpenCount: 1 });
+    expect(bundle.errorHistory).toHaveLength(1);
     expect(bundle.status).toMatchObject({
       decisions: [{ pathHash: expect.stringMatching(/^[0-9a-f]{64}$/), decision: "conflict", reason: "local change" }],
       missingClosure: [expect.stringMatching(/^[0-9a-f]{64}$/)],
       recoveryLocationHash: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
     expect(redactEndpoint("https://user:pass@s3.example.com?token=x#secret")).toBe("https://s3.example.com");
+  });
+
+  it("deduplicates repeated errors while retaining a bounded first-error history", () => {
+    const history: DiagnosticErrorHistoryEntry[] = [];
+    const first = { category: "internal" as const, stage: "local-apply", message: "拉取失败", report: "report-one" };
+    appendDiagnosticErrorHistory(history, { ...first, at: 10 }, 2);
+    appendDiagnosticErrorHistory(history, { ...first, at: 20 }, 2);
+    appendDiagnosticErrorHistory(history, {
+      at: 30,
+      category: "local-path",
+      stage: "causal-state-persistence",
+      message: "保存失败",
+      report: "report-two",
+    }, 2);
+
+    expect(history).toEqual([
+      { firstAt: 10, lastAt: 20, occurrences: 2, ...first },
+      {
+        firstAt: 30,
+        lastAt: 30,
+        occurrences: 1,
+        category: "local-path",
+        stage: "causal-state-persistence",
+        message: "保存失败",
+        report: "report-two",
+      },
+    ]);
+
+    appendDiagnosticErrorHistory(history, {
+      at: 40,
+      category: "network",
+      stage: "remote-list",
+      message: "网络失败",
+      report: "report-three",
+    }, 2);
+    expect(history.map((entry) => entry.report)).toEqual(["report-two", "report-three"]);
   });
 
   it("keeps normal and probe cleanup capabilities in separate scoped policies", () => {

@@ -4,11 +4,29 @@
   gap: 8px;
 }
 
+.s3-sync-conflict-intro,
+.s3-sync-conflict-guidance {
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.s3-sync-conflict-intro {
+  margin: 0 0 12px;
+}
+
+.s3-sync-conflict-guidance {
+  margin: 5px 0 8px;
+}
+
 .s3-sync-conflict-item {
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;
   padding: 8px;
   overflow-wrap: anywhere;
+}
+
+.s3-sync-conflict-item > .setting-item {
+  padding: 10px 0;
 }
 
 .s3-sync-conflict-actions {

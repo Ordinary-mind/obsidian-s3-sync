@@ -262,6 +262,46 @@ describe("safe runtime errors", () => {
     ))).toBe("配置已发布，但发布后的本地复查未完成；请保留本地状态并安全重试。");
   });
 
+  it("keeps a detected Vault divergence actionable when conflict-copy materialization fails", () => {
+    const download = withSyncFlowStage(
+      "pull",
+      "local-apply",
+      new DiagnosticError(
+        "CONFLICT_COPY_DOWNLOAD_FAILED",
+        "integrity",
+        "candidate download failed",
+        new Error("private remote detail"),
+      ),
+    );
+    const write = withSyncFlowStage(
+      "pull",
+      "local-apply",
+      new DiagnosticError(
+        "CONFLICT_COPY_WRITE_FAILED",
+        "local-path",
+        "candidate write failed",
+        new Error("private local path"),
+      ),
+    );
+
+    expect(safeSyncErrorMessage(download)).toContain("分歧已记录并打开冲突窗口，但远端候选下载或校验失败");
+    expect(safeSyncErrorMessage(write)).toContain("分歧已记录并打开冲突窗口，但候选副本无法写入本地");
+    expect(safeErrorRecord(download)).toMatchObject({ reasonCode: "CONFLICT_COPY_DOWNLOAD_FAILED", category: "integrity" });
+    expect(safeErrorRecord(write)).toMatchObject({ reasonCode: "CONFLICT_COPY_WRITE_FAILED", category: "local-path" });
+    expect(safeSyncErrorReport(download)).not.toContain("private remote detail");
+    expect(safeSyncErrorReport(write)).not.toContain("private local path");
+    expect(safeSyncErrorMessage(withSyncFlowStage(
+      "pull",
+      "local-apply",
+      new DiagnosticError("VAULT_PULL_STAGING_FAILED", "local-path", "staging failed"),
+    ))).toContain("无法安全写入本地暂存区");
+    expect(safeSyncErrorMessage(withSyncFlowStage(
+      "pull",
+      "local-apply",
+      new DiagnosticError("VAULT_PULL_LOCAL_APPLY_FAILED", "local-path", "unexpected apply failure"),
+    ))).toContain("没有选择任一版本，也没有覆盖活动文件");
+  });
+
   it("explains lower-level configuration and repository diagnostics", () => {
     expect(safeErrorMessage(new DiagnosticError(
       "CONFIG_TREE_STAGED_BLOB_MISMATCH",

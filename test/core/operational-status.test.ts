@@ -67,7 +67,7 @@ describe("operational status", () => {
       "准备上传", "上传", "验证发布", "完整校验", "预览", "等待重试", "只读", "已停止",
     ]);
     expect(["same", "local-put", "remote-put", "tombstone", "conflict", "ignored", "unknown"].map((decision) => pathDecisionLabel(decision as never)))
-      .toEqual(["相同", "本地上传", "远端写入", "墓碑", "冲突", "忽略", "未知"]);
+      .toEqual(["相同", "本地上传", "远端写入", "删除", "冲突", "忽略", "未知"]);
     expect(diagnosticCategoryLabel("repository-identity")).toBe("仓库身份");
   });
 
@@ -81,9 +81,24 @@ describe("operational status", () => {
     expect(derivePathDecision({ ...base, localState: "absent", localHash: undefined, localIntent: "delete", remote: { kind: "none" } }).decision).toBe("tombstone");
     expect(derivePathDecision({ ...base, localState: "absent", localHash: undefined, remote: { kind: "delete" } }).decision).toBe("tombstone");
     expect(derivePathDecision({ ...base, localIntent: "put", remote: { kind: "put", hash: "remote" } }).decision).toBe("conflict");
+    expect(derivePathDecision({ ...base, localIntent: "put", projectedHash: "remote", remote: { kind: "put", hash: "remote" } }).decision).toBe("local-put");
+    expect(derivePathDecision({ ...base, localIntent: "delete", projectedHash: "remote", remote: { kind: "put", hash: "remote" } }).decision).toBe("tombstone");
+    expect(derivePathDecision({ ...base, localIntent: "put", localHash: "remote", remote: { kind: "put", hash: "remote" } }).decision).toBe("same");
     expect(derivePathDecision({ ...base, remote: { kind: "conflict", reason: "two heads" } })).toMatchObject({ decision: "conflict", reason: "two heads" });
     expect(derivePathDecision({ ...base, remote: { kind: "unknown", reason: "pending parent" } })).toMatchObject({ decision: "unknown", reason: "pending parent" });
     expect(derivePathDecision({ ...base, localState: "unknown", remote: { kind: "none" } }).decision).toBe("unknown");
+  });
+
+  it("implements the Git-like empty, one-sided, equal and divergent path matrix", () => {
+    const decide = (input: Parameters<typeof derivePathDecision>[0]) => derivePathDecision(input).decision;
+    expect(decide({ path: "empty", ignored: false, localState: "absent", localIntent: "none", remote: { kind: "none" } })).toBe("same");
+    expect(decide({ path: "local-only", ignored: false, localState: "present", localIntent: "none", remote: { kind: "none" } })).toBe("local-put");
+    expect(decide({ path: "remote-only", ignored: false, localState: "absent", localIntent: "none", remote: { kind: "put", hash: "remote" } })).toBe("remote-put");
+    expect(decide({ path: "equal", ignored: false, localState: "present", localHash: "same", localIntent: "none", remote: { kind: "put", hash: "same" } })).toBe("same");
+    expect(decide({ path: "local-changed", ignored: false, localState: "present", localHash: "local", localIntent: "put", projectedHash: "base", remote: { kind: "put", hash: "base" } })).toBe("local-put");
+    expect(decide({ path: "remote-changed", ignored: false, localState: "present", localHash: "base", localIntent: "none", projectedHash: "base", remote: { kind: "put", hash: "remote" } })).toBe("remote-put");
+    expect(decide({ path: "both-changed", ignored: false, localState: "present", localHash: "local", localIntent: "put", projectedHash: "base", remote: { kind: "put", hash: "remote" } })).toBe("conflict");
+    expect(decide({ path: "no-base", ignored: false, localState: "present", localHash: "local", localIntent: "put", remote: { kind: "put", hash: "remote" } })).toBe("conflict");
   });
 
   it("persists space totals without retaining individual orphan object keys", () => {

@@ -85,22 +85,22 @@ export function deriveConfigRegisterUiState(input: {
   }
   if (input.loadError) return state("load-failed", input.loadError, remoteHeads, pendingVersions, invalidVersions);
   if (input.remoteDisposition === "pending") {
-    return state("pending", "配置快照仍在等待父版本、ConfigTree 或 Blob。", remoteHeads, pendingVersions, invalidVersions);
+    return state("pending", "云端设置仍在等待相关版本或文件验证。", remoteHeads, pendingVersions, invalidVersions);
   }
   if (input.remoteDisposition === "invalid") {
     return state("incompatible", "远端配置寄存器包含无效版本，不能应用。", remoteHeads, pendingVersions, invalidVersions);
   }
   if (input.remoteDisposition === "conflict") {
-    return state("conflict", "远端包含不同的并发 ConfigTree，需要显式选树或合并。", remoteHeads, pendingVersions, invalidVersions);
+    return state("conflict", "多台设备上传了不同设置；请选择保留本机、使用云端或逐文件合并。", remoteHeads, pendingVersions, invalidVersions);
   }
   if (input.compatible === false) {
-    return state("incompatible", "目标 ConfigTree 与当前设备或 Obsidian 版本不兼容。", remoteHeads, pendingVersions, invalidVersions);
+    return state("incompatible", "云端设置与当前设备或 Obsidian 版本不兼容。", remoteHeads, pendingVersions, invalidVersions);
   }
   if (input.localTreeHash !== undefined && input.projectedTreeHash !== undefined
     && input.localTreeHash !== input.projectedTreeHash) {
-    return state("local-changes", "本地配置已偏离已投影 ConfigTree。", remoteHeads, pendingVersions, invalidVersions);
+    return state("local-changes", "本机设置已经变化，尚未上传。", remoteHeads, pendingVersions, invalidVersions);
   }
-  return state("ready", input.remoteDisposition === "empty" ? "远端尚无配置快照。" : "配置快照已验证，可预览。", remoteHeads, pendingVersions, invalidVersions);
+  return state("ready", input.remoteDisposition === "empty" ? "云端尚无设置版本。" : "云端设置已验证，可以检查差异。", remoteHeads, pendingVersions, invalidVersions);
 }
 
 export function summarizeConfigProfileTransition(input: {

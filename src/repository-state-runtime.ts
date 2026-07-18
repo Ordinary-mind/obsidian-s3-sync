@@ -75,7 +75,7 @@ export class RepositoryStateRuntime {
       applyJournals: data.v1ApplyJournals,
       files: data.files,
       conflicts: data.conflicts,
-      operationalStatus: data.v1OperationalStatus,
+      operationalStatus: encodeOperationalStatus(data.v1OperationalStatus),
       configSync: data.v1ConfigSync,
     })) as StateJsonValue;
     await writeRepositoryStateTransaction(await this.store(state), payload);
@@ -182,7 +182,7 @@ function decodeRuntimeState(
   const configSync = cloneRequiredRecord<PersistedConfigSyncState>(record.configSync, "configSync");
   const rawOperationalStatus = requireRecord(record.operationalStatus, "operationalStatus");
   requireRecord(rawOperationalStatus.audit, "operationalStatus.audit");
-  const operationalStatus = structuredClone(rawOperationalStatus) as unknown as OperationalStatus;
+  const operationalStatus = decodeOperationalStatus(rawOperationalStatus);
   if (!Array.isArray(operationalStatus.recoveryBlockers)) {
     throw new DiagnosticError("DURABLE_STATE_STATUS_INVALID", "local-path", "repository operational status is invalid");
   }
@@ -221,6 +221,66 @@ function decodeRuntimeState(
       ? { configProfile: configProfileFromTree(normalizedConfigSync.projectedTree) }
       : {}),
   };
+}
+
+function encodeOperationalStatus(status: OperationalStatus): StateJsonValue {
+  const encoded = JSON.parse(JSON.stringify(status)) as Record<string, unknown>;
+  transformRequestCostFields(encoded, (value, name) => {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+      throw new DiagnosticError("DURABLE_STATE_STATUS_INVALID", "local-path", `${name} is not a finite non-negative number`);
+    }
+    return value.toString();
+  });
+  return encoded as StateJsonValue;
+}
+
+function decodeOperationalStatus(status: Record<string, StateJsonValue>): OperationalStatus {
+  const decoded = structuredClone(status) as unknown as Record<string, unknown>;
+  transformRequestCostFields(decoded, (value, name) => {
+    const number = typeof value === "number"
+      ? value
+      : typeof value === "string" && /^(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value)
+        ? Number(value)
+        : Number.NaN;
+    if (!Number.isFinite(number) || number < 0) {
+      throw new DiagnosticError("DURABLE_STATE_STATUS_INVALID", "local-path", `${name} is not a valid decimal value`);
+    }
+    return number;
+  });
+  return decoded as unknown as OperationalStatus;
+}
+
+function transformRequestCostFields(
+  status: Record<string, unknown>,
+  transform: (value: unknown, name: string) => unknown,
+): void {
+  const audit = optionalRecord(status.audit);
+  const space = optionalRecord(audit?.space);
+  if (!space) return;
+  if (space.estimatedRequestCost !== undefined) {
+    space.estimatedRequestCost = transform(space.estimatedRequestCost, "operationalStatus.audit.space.estimatedRequestCost");
+  }
+  const estimate = optionalRecord(space.requestEstimate);
+  if (!estimate) return;
+  if (estimate.amount !== undefined) {
+    estimate.amount = transform(estimate.amount, "operationalStatus.audit.space.requestEstimate.amount");
+  }
+  const pricing = optionalRecord(estimate.pricePerThousand);
+  if (!pricing) return;
+  for (const operation of ["list", "get", "put"] as const) {
+    if (pricing[operation] !== undefined) {
+      pricing[operation] = transform(
+        pricing[operation],
+        `operationalStatus.audit.space.requestEstimate.pricePerThousand.${operation}`,
+      );
+    }
+  }
+}
+
+function optionalRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 function applyDecodedRuntimeState(data: S3SyncData, decoded: DecodedRuntimeState): void {

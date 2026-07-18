@@ -31,6 +31,9 @@ export class ConfigCenterModal extends Modal {
   private mergeEnabledSourceId = "local";
   private mergeCandidate?: ConfigTreeSourceView;
   private mergeError?: { message: string; report: string };
+  private showProfileAdvanced = false;
+  private showPluginScope = false;
+  private showTechnicalDetails = false;
 
   constructor(private readonly plugin: S3SyncPlugin) {
     super(plugin.app);
@@ -38,7 +41,7 @@ export class ConfigCenterModal extends Modal {
   }
 
   onOpen(): void {
-    this.setTitle("S3 Sync 配置中心");
+    this.setTitle("S3 Sync · 同步 Obsidian 设置");
     this.modalEl.addClass("s3-sync-config-modal");
     this.render();
     void this.refresh();
@@ -61,6 +64,7 @@ export class ConfigCenterModal extends Modal {
       const sourceIds = new Set(["local", ...this.snapshot.remote.map((source) => source.id)]);
       if (!sourceIds.has(this.mergeProfileSourceId)) this.mergeProfileSourceId = "local";
       if (!sourceIds.has(this.mergeEnabledSourceId)) this.mergeEnabledSourceId = "local";
+      if (this.snapshot.state.status !== "conflict" && this.activeTab === "merge") this.activeTab = "snapshots";
     } catch (error) {
       showCopyableErrorNotice("S3 Sync：配置中心刷新失败", error, "config-center-refresh");
     } finally {
@@ -80,11 +84,12 @@ export class ConfigCenterModal extends Modal {
 
   private renderTabs(): void {
     const tabs = this.contentEl.createDiv({ cls: "s3-sync-config-tabs", attr: { role: "tablist" } });
-    for (const [id, label, icon] of [
-      ["profile", "同步范围", "sliders-horizontal"],
-      ["snapshots", "快照与差异", "git-compare-arrows"],
-      ["merge", "冲突合并", "git-merge"],
-    ] as Array<[ConfigCenterTab, string, IconName]>) {
+    const visibleTabs: Array<[ConfigCenterTab, string, IconName]> = [
+      ["profile", "同步内容", "sliders-horizontal"],
+      ["snapshots", "检查更改", "git-compare-arrows"],
+    ];
+    if (this.snapshot?.state.status === "conflict") visibleTabs.push(["merge", "解决设置冲突", "git-merge"]);
+    for (const [id, label, icon] of visibleTabs) {
       const button = tabs.createEl("button", {
         cls: `s3-sync-config-tab${this.activeTab === id ? " is-active" : ""}`,
         attr: { type: "button", role: "tab", "aria-selected": String(this.activeTab === id) },
@@ -101,8 +106,8 @@ export class ConfigCenterModal extends Modal {
   private renderStatus(): void {
     const status = this.snapshot?.state;
     const banner = this.contentEl.createDiv({ cls: `s3-sync-config-status s3-sync-config-status-${status?.status ?? "loading"}` });
-    banner.createEl("strong", { text: this.busy ? "正在验证配置快照" : configStatusLabel(status?.status) });
-    banner.createSpan({ text: this.busy ? "正在执行本地双扫描和远端依赖验证。" : status?.message ?? "尚未读取配置状态。" });
+    banner.createEl("strong", { text: this.busy ? "正在检查设置" : configStatusLabel(status?.status) });
+    banner.createSpan({ text: this.busy ? "正在扫描本机设置并验证云端版本。" : status?.message ?? "尚未读取设置状态。" });
     if (this.snapshot?.errorReport) appendCopyableReportButton(banner, this.snapshot.errorReport);
     if (this.plugin.getConfigSyncState().reloadRequired) {
       banner.createSpan({ cls: "s3-sync-config-reload", text: "配置已写入；请停用受影响插件或重载 Obsidian 后再继续编辑。" });
@@ -111,32 +116,15 @@ export class ConfigCenterModal extends Modal {
 
   private renderProfile(): void {
     const section = this.contentEl.createDiv({ cls: "s3-sync-config-section" });
-    section.createEl("h3", { text: "配置同步范围" });
+    section.createEl("h3", { text: "同步哪些设置" });
     section.createDiv({
       cls: "s3-sync-config-scope-note",
-      text: "这里是配置通道的允许列表，与设置页的 Vault 文件忽略规则互不影响。未列入范围的配置只保留在本机。",
+      text: "这里只决定哪些 Obsidian 设置可以同步，不影响笔记和附件。未选内容始终只保留在本机。",
     });
 
     new Setting(section)
-      .setName("最低目标 Obsidian 版本")
-      .setDesc("目标设备集合中最低的 MAJOR.MINOR.PATCH 版本。")
-      .addText((text) => text
-        .setPlaceholder("1.8.0")
-        .setValue(this.profileDraft.minimumTargetAppVersion ?? "")
-        .onChange((value) => {
-          this.profileDraft.minimumTargetAppVersion = value.trim();
-        }));
-
-    new Setting(section)
-      .setName("同步的根级配置文件")
-      .setDesc("每行填写一个直接位于 configDir 下的文件名，不能填写目录。默认管理 app.json、appearance.json、hotkeys.json；workspace、core-plugins 和插件启用列表始终只留在本机。")
-      .addTextArea((text) => {
-        text.inputEl.rows = 5;
-        text.inputEl.cols = 42;
-        text.setValue(this.profileDraft.baseFiles.join("\n")).onChange((value) => {
-          this.profileDraft.baseFiles = canonicalLines(value);
-        });
-      });
+      .setName("基础设置")
+      .setDesc(`当前同步界面、编辑器和快捷键等 ${this.profileDraft.baseFiles.length} 个基础设置文件。`);
 
     new Setting(section)
       .setName("主题")
@@ -153,18 +141,61 @@ export class ConfigCenterModal extends Modal {
         this.render();
       }));
 
-    const dataWarning = section.createDiv({ cls: "s3-sync-config-warning" });
-    dataWarning.createEl("strong", { text: "plugin data 明文风险" });
-    dataWarning.createSpan({ text: detectSensitivePluginData(new Uint8Array()).limitation });
-    dataWarning.createSpan({ text: "远端 Bucket 管理员能够读取 data.json 原文；关键字、路径和设备标识检测都不能证明内容安全。" });
-    new Setting(dataWarning)
-      .setName("允许新增 plugin data 范围")
-      .addToggle((toggle) => toggle.setValue(this.pluginDataAcknowledged).onChange((value) => {
-        this.pluginDataAcknowledged = value;
-        this.render();
-      }));
+    new Setting(section)
+      .setName("高级同步范围")
+      .setDesc("自定义根级配置文件和最低 Obsidian 版本。大多数用户不需要修改。")
+      .addButton((button) => button
+        .setButtonText(this.showProfileAdvanced ? "收起" : "展开")
+        .onClick(() => {
+          this.showProfileAdvanced = !this.showProfileAdvanced;
+          this.render();
+        }));
+    if (this.showProfileAdvanced) {
+      new Setting(section)
+        .setName("最低目标 Obsidian 版本")
+        .setDesc("只在需要兼容更旧设备时修改。格式为 MAJOR.MINOR.PATCH。")
+        .addText((text) => text
+          .setPlaceholder("1.8.0")
+          .setValue(this.profileDraft.minimumTargetAppVersion ?? "")
+          .onChange((value) => {
+            this.profileDraft.minimumTargetAppVersion = value.trim();
+          }));
 
-    this.renderPluginScope(section);
+      new Setting(section)
+        .setName("自定义根级配置文件")
+        .setDesc("每行一个 configDir 根级文件名。workspace、core-plugins 和插件启用列表始终只留在本机。")
+        .addTextArea((text) => {
+          text.inputEl.rows = 5;
+          text.inputEl.cols = 42;
+          text.setValue(this.profileDraft.baseFiles.join("\n")).onChange((value) => {
+            this.profileDraft.baseFiles = canonicalLines(value);
+          });
+        });
+    }
+
+    new Setting(section)
+      .setName("社区插件同步（高级）")
+      .setDesc("可选择同步插件启用状态、插件包或 data.json。默认全部关闭。")
+      .addButton((button) => button
+        .setButtonText(this.showPluginScope ? "收起" : "展开")
+        .onClick(() => {
+          this.showPluginScope = !this.showPluginScope;
+          this.render();
+        }));
+
+    if (this.showPluginScope) {
+      const dataWarning = section.createDiv({ cls: "s3-sync-config-warning" });
+      dataWarning.createEl("strong", { text: "plugin data 明文风险" });
+      dataWarning.createSpan({ text: detectSensitivePluginData(new Uint8Array()).limitation });
+      dataWarning.createSpan({ text: "远端 Bucket 管理员能够读取 data.json 原文；关键字、路径和设备标识检测都不能证明内容安全。" });
+      new Setting(dataWarning)
+        .setName("允许新增 plugin data 范围")
+        .addToggle((toggle) => toggle.setValue(this.pluginDataAcknowledged).onChange((value) => {
+          this.pluginDataAcknowledged = value;
+          this.render();
+        }));
+      this.renderPluginScope(section);
+    }
     this.renderProfileTransition(section);
 
     const actions = new Setting(section).setClass("s3-sync-config-actions");
@@ -239,13 +270,16 @@ export class ConfigCenterModal extends Modal {
       syncPluginId: this.plugin.manifest.id,
     });
     const summary = container.createDiv({ cls: "s3-sync-profile-transition" });
-    summary.createEl("h4", { text: "范围变更结果" });
-    summary.createDiv({ text: `停止管理：${transition.stopManaging.length} 个路径（保留本地文件，不发布墓碑）` });
-    summary.createDiv({ text: "传播删除：0 个路径（Profile 编辑器不会把范围移除转换为删除）" });
-    if (transition.stopManaging.length > 0) this.renderPathList(summary, transition.stopManaging);
+    summary.createEl("h4", { text: "保存后的影响" });
+    summary.createDiv({ text: transition.stopManaging.length > 0
+      ? `将停止同步 ${transition.stopManaging.length} 个设置文件；本机文件会保留，也不会向云端发布删除。`
+      : "不会停止同步现有设置文件。" });
+    if (transition.stopManaging.length > 0 && (this.showProfileAdvanced || this.showPluginScope)) {
+      this.renderPathList(summary, transition.stopManaging);
+    }
     if (transition.violations.length > 0) {
       const error = summary.createDiv({ cls: "s3-sync-error" });
-      error.createSpan({ text: `Profile 校验：${transition.violations.join(", ")}` });
+      error.createSpan({ text: `同步内容校验：${transition.violations.join(", ")}` });
       appendCopyableReportButton(error, JSON.stringify({
         type: "s3-sync-config-profile-error",
         schemaVersion: 3,
@@ -262,9 +296,19 @@ export class ConfigCenterModal extends Modal {
     actions.addButton((button) => this.actionButton(button, {
       label: "刷新",
       icon: "refresh-cw",
-      tooltip: "重新扫描本地并验证远端 ConfigTree",
+      tooltip: "重新扫描本机设置并验证云端版本",
       disabled: this.busy,
       onClick: () => this.refresh(),
+    }));
+    actions.addButton((button) => this.actionButton(button, {
+      label: this.showTechnicalDetails ? "隐藏技术详情" : "显示技术详情",
+      icon: "braces",
+      tooltip: "显示 Hash、writer、版本 ID 和协议术语",
+      disabled: this.busy,
+      onClick: () => {
+        this.showTechnicalDetails = !this.showTechnicalDetails;
+        this.render();
+      },
     }));
     if (!snapshot) {
       this.contentEl.createDiv({ cls: "s3-sync-empty-state", text: "正在读取快照。" });
@@ -278,39 +322,44 @@ export class ConfigCenterModal extends Modal {
     this.renderSnapshotActions(snapshot, target);
     if (snapshot.blockedDetails.length > 0) {
       const blocked = this.contentEl.createDiv({ cls: "s3-sync-config-section" });
-      blocked.createEl("h3", { text: "等待依赖" });
+      blocked.createEl("h3", { text: "等待云端版本验证" });
       this.renderPathList(blocked, snapshot.blockedDetails);
     }
   }
 
   private renderTreeOverview(snapshot: ConfigCenterSnapshot): void {
     const section = this.contentEl.createDiv({ cls: "s3-sync-config-section" });
-    section.createEl("h3", { text: "ConfigTree" });
+    section.createEl("h3", { text: "本机与云端设置" });
     const grid = section.createDiv({ cls: "s3-sync-config-tree-grid" });
     if (snapshot.local) this.renderTreeSummary(grid, snapshot.local, snapshot.projectedTreeHash === snapshot.local.treeHash);
-    else grid.createDiv({ cls: "s3-sync-empty-state", text: "本地 Tree 不可用。" });
+    else grid.createDiv({ cls: "s3-sync-empty-state", text: "本机设置暂时不可用。" });
     const remoteList = grid.createDiv({ cls: "s3-sync-config-tree-column" });
-    remoteList.createEl("h4", { text: `远端快照头（${snapshot.state.remoteHeads.length}）` });
-    if (snapshot.remote.length === 0) remoteList.createDiv({ cls: "s3-sync-empty-state", text: "远端尚无完整 ConfigTree。" });
-    for (const source of snapshot.remote) {
+    remoteList.createEl("h4", { text: `云端设置（${snapshot.remote.length}）` });
+    if (snapshot.remote.length === 0) remoteList.createDiv({ cls: "s3-sync-empty-state", text: "云端尚无设置版本。" });
+    for (const [index, source] of snapshot.remote.entries()) {
       const item = remoteList.createDiv({ cls: `s3-sync-config-head${source.id === this.selectedRemoteId ? " is-selected" : ""}` });
-      const select = item.createEl("button", { text: source.label, attr: { type: "button" } });
+      const select = item.createEl("button", { text: `云端设置 ${index + 1}`, attr: { type: "button" } });
       select.addEventListener("click", () => { this.selectedRemoteId = source.id; this.render(); });
-      item.createEl("code", { text: source.treeHash });
-      item.createSpan({ text: `writer：${source.writerIds.join(", ") || "未知"}` });
-      item.createSpan({ text: `版本：${source.versionIds.length}，文件项：${source.items.length}` });
+      item.createSpan({ text: `设置文件：${source.items.length}` });
       item.createSpan({ cls: source.compatibility.status === "compatible" ? "s3-sync-ok" : "s3-sync-error", text: source.compatibility.status === "compatible" ? "兼容" : "不兼容" });
+      if (this.showTechnicalDetails) {
+        item.createEl("code", { text: source.treeHash });
+        item.createSpan({ text: `writer：${source.writerIds.join(", ") || "未知"}` });
+        item.createSpan({ text: `版本头：${source.versionIds.length}` });
+      }
     }
   }
 
   private renderTreeSummary(container: HTMLElement, source: ConfigTreeSourceView, projected: boolean): void {
     const column = container.createDiv({ cls: "s3-sync-config-tree-column" });
-    column.createEl("h4", { text: source.label });
-    column.createEl("code", { text: source.treeHash });
-    column.createSpan({ text: `文件项：${source.items.length}` });
-    column.createSpan({ text: `最低 Obsidian：${source.tree.profile.minimumTargetAppVersion}` });
-    column.createSpan({ text: `便携插件：${source.tree.profile.portablePluginIds.length}` });
-    column.createSpan({ text: projected ? "当前已投影 Tree" : "未投影或已有本地变化" });
+    column.createEl("h4", { text: "这台设备的设置" });
+    column.createSpan({ text: `设置文件：${source.items.length}` });
+    column.createSpan({ text: projected ? "与当前同步基准一致" : "存在尚未发布的本机变化" });
+    if (this.showTechnicalDetails) {
+      column.createEl("code", { text: source.treeHash });
+      column.createSpan({ text: `最低 Obsidian：${source.tree.profile.minimumTargetAppVersion}` });
+      column.createSpan({ text: `便携插件：${source.tree.profile.portablePluginIds.length}` });
+    }
   }
 
   private renderPluginChanges(source: ConfigTreeSourceView): void {
@@ -321,7 +370,7 @@ export class ConfigCenterModal extends Modal {
       const row = section.createDiv({ cls: "s3-sync-plugin-change" });
       row.createEl("code", { text: plugin.pluginId });
       row.createSpan({ text: plugin.version ? `v${plugin.version}` : "版本未知" });
-      row.createSpan({ text: `来源 writer：${plugin.sourceWriters.join(", ") || "未知"}` });
+      if (this.showTechnicalDetails) row.createSpan({ text: `来源 writer：${plugin.sourceWriters.join(", ") || "未知"}` });
       row.createSpan({ text: plugin.compatibility === "compatible" ? "兼容" : plugin.compatibility === "incompatible" ? "不兼容" : "兼容性未知" });
       if (plugin.codePaths.length > 0) row.createSpan({ text: `代码文件：${plugin.codePaths.length}` });
       if (plugin.dataPaths.length > 0) row.createSpan({ text: `plugin data：${plugin.dataPaths.length}` });
@@ -330,10 +379,10 @@ export class ConfigCenterModal extends Modal {
 
   private renderDiff(diff: readonly ConfigDiffEntry[]): void {
     const section = this.contentEl.createDiv({ cls: "s3-sync-config-section" });
-    section.createEl("h3", { text: `逐文件 diff（${diff.filter((entry) => entry.kind !== "unchanged").length}）` });
+    section.createEl("h3", { text: `设置文件变化（${diff.filter((entry) => entry.kind !== "unchanged").length}）` });
     const changed = diff.filter((entry) => entry.kind !== "unchanged");
     if (changed.length === 0) {
-      section.createDiv({ cls: "s3-sync-empty-state", text: "本地与所选远端 Tree 相同。" });
+      section.createDiv({ cls: "s3-sync-empty-state", text: "本机与所选云端设置相同。" });
       return;
     }
     const list = section.createDiv({ cls: "s3-sync-config-diff" });
@@ -350,7 +399,7 @@ export class ConfigCenterModal extends Modal {
 
   private renderSnapshotActions(snapshot: ConfigCenterSnapshot, target: ConfigTreeSourceView | undefined): void {
     const section = this.contentEl.createDiv({ cls: "s3-sync-config-section" });
-    section.createEl("h3", { text: "快照操作" });
+    section.createEl("h3", { text: "选择要执行的操作" });
     const actions = new Setting(section).setClass("s3-sync-config-actions");
     if (snapshot.state.status === "recovery-required" && this.plugin.getConfigSyncState().batchJournal) {
       actions.addButton((button) => this.actionButton(button, {
@@ -372,32 +421,32 @@ export class ConfigCenterModal extends Modal {
     }
     if (snapshot.local && (snapshot.state.status === "ready" || snapshot.state.status === "local-changes" || snapshot.state.status === "conflict")) {
       actions.addButton((button) => this.actionButton(button, {
-        label: snapshot.state.status === "conflict" ? "选本地树解决" : "发布本地 Tree",
+        label: snapshot.state.status === "conflict" ? "保留本机设置" : "上传本机设置",
         icon: "upload",
-        tooltip: "重新核对全部配置头后发布本地完整 Tree",
+        tooltip: "重新核对云端版本后上传完整的本机设置快照",
         disabled: this.busy,
         onClick: () => this.confirmAndPublish(snapshot.local!, snapshot.state.remoteHeads, true, snapshot.state.status === "conflict"),
       }));
     }
     if (target && snapshot.state.status === "conflict") {
       actions.addButton((button) => this.actionButton(button, {
-        label: "选所选远端树解决",
+        label: "使用所选云端设置",
         icon: "git-commit-horizontal",
         tooltip: "发布覆盖全部已观察头的选树解决版本",
         disabled: this.busy,
         onClick: () => this.confirmAndPublish(target, snapshot.state.remoteHeads, false, true),
       }));
       actions.addButton((button) => this.actionButton(button, {
-        label: "生成合并树",
+        label: "逐文件合并",
         icon: "git-merge",
-        tooltip: "逐文件选择来源并生成新的完整 Tree",
+        tooltip: "逐文件选择来源并生成新的完整设置结果",
         disabled: this.busy,
         onClick: () => { this.activeTab = "merge"; this.render(); },
       }));
     }
     if (target && snapshot.resolvedRemoteId === target.id && target.treeHash !== snapshot.local?.treeHash) {
       actions.addButton((button) => this.actionButton(button, {
-        label: "应用所选远端 Tree",
+        label: "应用云端设置",
         icon: "download",
         tooltip: "生成恢复快照并按安全批次应用",
         disabled: this.busy || target.compatibility.status !== "compatible",
@@ -420,18 +469,22 @@ export class ConfigCenterModal extends Modal {
   private renderMerge(): void {
     const snapshot = this.snapshot;
     if (!snapshot || snapshot.state.status !== "conflict" || !snapshot.local || snapshot.remote.length < 1) {
-      this.contentEl.createDiv({ cls: "s3-sync-empty-state", text: "当前没有可合并的 ConfigTree 冲突。" });
+      this.contentEl.createDiv({ cls: "s3-sync-empty-state", text: "当前没有需要合并的设置冲突。" });
       return;
     }
     const section = this.contentEl.createDiv({ cls: "s3-sync-config-section" });
-    section.createEl("h3", { text: "生成合并 ConfigTree" });
+    section.createEl("h3", { text: "逐文件合并设置" });
+    section.createDiv({ text: "为每个设置文件选择保留本机还是某个云端版本，然后生成一个新的合并结果。" });
     const sources = [snapshot.local, ...snapshot.remote];
-    new Setting(section).setName("Profile 来源").addDropdown((dropdown) => {
-      for (const source of sources) dropdown.addOption(source.id, source.label);
+    const sourceLabel = (source: ConfigTreeSourceView): string => source.kind === "local"
+      ? "这台设备"
+      : `云端设置 ${snapshot.remote.findIndex((candidate) => candidate.id === source.id) + 1}`;
+    new Setting(section).setName("同步内容范围来源").addDropdown((dropdown) => {
+      for (const source of sources) dropdown.addOption(source.id, sourceLabel(source));
       dropdown.setValue(this.mergeProfileSourceId).onChange((value) => { this.mergeProfileSourceId = value; this.mergeCandidate = undefined; });
     });
-    new Setting(section).setName("便携启用列表来源").addDropdown((dropdown) => {
-      for (const source of sources) dropdown.addOption(source.id, source.label);
+    new Setting(section).setName("社区插件启用列表来源").addDropdown((dropdown) => {
+      for (const source of sources) dropdown.addOption(source.id, sourceLabel(source));
       dropdown.setValue(this.mergeEnabledSourceId).onChange((value) => { this.mergeEnabledSourceId = value; this.mergeCandidate = undefined; });
     });
 
@@ -441,10 +494,10 @@ export class ConfigCenterModal extends Modal {
       const available = sources.filter((source) => source.items.some((item) => item.path === path));
       new Setting(rows)
         .setName(path)
-        .setDesc(available.map((source) => `${source.label}: ${itemSummary(source, path)}`).join(" | "))
+        .setDesc(available.map((source) => `${sourceLabel(source)}：${itemSummary(source, path)}`).join(" | "))
         .addDropdown((dropdown) => {
           dropdown.addOption("", "请选择来源");
-          for (const source of available) dropdown.addOption(source.id, source.label);
+          for (const source of available) dropdown.addOption(source.id, sourceLabel(source));
           dropdown.addOption("stop-managing", "停止管理（不删除）");
           dropdown.setValue(this.mergeSelections[path] ?? "").onChange((value) => {
             if (value) this.mergeSelections[path] = value;
@@ -456,9 +509,9 @@ export class ConfigCenterModal extends Modal {
     }
     const actions = new Setting(section).setClass("s3-sync-config-actions");
     actions.addButton((button) => this.actionButton(button, {
-      label: "生成候选",
+      label: "生成合并结果",
       icon: "combine",
-      tooltip: "验证每个路径选择并构建完整 ConfigTree",
+      tooltip: "验证每个文件选择并构建完整设置快照",
       disabled: this.busy || paths.some((path) => !this.mergeSelections[path]),
       onClick: () => {
         try {
@@ -486,13 +539,13 @@ export class ConfigCenterModal extends Modal {
     }
     if (this.mergeCandidate) {
       const candidate = section.createDiv({ cls: "s3-sync-config-merge-result" });
-      candidate.createEl("code", { text: this.mergeCandidate.treeHash });
-      candidate.createSpan({ text: `文件项：${this.mergeCandidate.items.length}` });
+      if (this.showTechnicalDetails) candidate.createEl("code", { text: this.mergeCandidate.treeHash });
+      candidate.createSpan({ text: `设置文件：${this.mergeCandidate.items.length}` });
       candidate.createSpan({ text: this.mergeCandidate.compatibility.status === "compatible" ? "当前设备兼容" : "当前设备不兼容" });
       new Setting(candidate).addButton((button) => this.actionButton(button, {
-        label: "发布合并 Tree",
+        label: "发布合并结果",
         icon: "upload",
-        tooltip: "发布覆盖操作时全部已观察头的合并版本",
+        tooltip: "发布覆盖当前全部设置冲突版本的合并结果",
         disabled: this.busy || this.mergeCandidate?.compatibility.status !== "compatible",
         cta: true,
         onClick: () => this.confirmAndPublish(this.mergeCandidate!, snapshot.state.remoteHeads, false, true),
@@ -510,7 +563,7 @@ export class ConfigCenterModal extends Modal {
     if (!confirmation) return;
     await this.run(async () => {
       await this.plugin.publishConfigCandidate({ candidate: source, observedHeads, confirmation, projectLocal, resolveObservedConflict });
-      new Notice("S3 Sync：ConfigTree 已发布并验证。 ");
+      new Notice("S3 Sync：设置快照已发布并验证。 ");
       this.mergeCandidate = undefined;
       await this.refreshAfterRun();
     });
@@ -525,7 +578,7 @@ export class ConfigCenterModal extends Modal {
       if (outcome.result.status === "accounted" || outcome.result.status === "adopted-without-write") {
         new Notice(outcome.state.reloadRequired
           ? "S3 Sync：配置已应用。请停用受影响插件或重载 Obsidian。"
-          : "S3 Sync：配置 Tree 已采用，无需写入文件。 ");
+          : "S3 Sync：云端设置已采用，无需写入文件。 ");
       } else {
         this.showConfigBatchResult(outcome.result);
       }
@@ -601,16 +654,15 @@ class PublicationConfirmationModal extends Modal {
   onClose(): void { if (!this.settled) this.resolveResult(undefined); }
 
   private render(): void {
-    this.setTitle("确认发布 ConfigTree");
+    this.setTitle("确认上传设置");
     this.contentEl.empty();
     const diff = diffManagedConfigItems([], this.source.items);
     const needsCode = diff.some((entry) => entry.codeChange);
     const needsData = diff.some((entry) => entry.sensitive);
-    this.contentEl.createEl("code", { text: this.source.treeHash });
-    this.contentEl.createDiv({ text: `文件项：${this.source.items.length}，来源 writer：${this.source.writerIds.join(", ") || "本机"}` });
-    if (needsCode) this.contentEl.createDiv({ cls: "s3-sync-config-warning", text: "该 Tree 包含可执行插件代码；接收设备应用后代码可在 Obsidian 中运行。" });
+    this.contentEl.createDiv({ text: `将上传 ${this.source.items.length} 个设置文件。上传前会再次确认云端版本没有变化。` });
+    if (needsCode) this.contentEl.createDiv({ cls: "s3-sync-config-warning", text: "该设置快照包含可执行插件代码；其他设备应用后代码可在 Obsidian 中运行。" });
     if (needsData) this.contentEl.createDiv({ cls: "s3-sync-config-warning", text: detectSensitivePluginData(new Uint8Array()).limitation });
-    new Setting(this.contentEl).setName("确认发布完整 Tree").addToggle((toggle) => toggle.setValue(this.general).onChange((value) => { this.general = value; this.render(); }));
+    new Setting(this.contentEl).setName("确认上传完整设置快照").addToggle((toggle) => toggle.setValue(this.general).onChange((value) => { this.general = value; this.render(); }));
     if (needsCode) new Setting(this.contentEl).setName("接受插件代码风险").addToggle((toggle) => toggle.setValue(this.code).onChange((value) => { this.code = value; this.render(); }));
     if (needsData) new Setting(this.contentEl).setName("接受 plugin data 明文存储").addToggle((toggle) => toggle.setValue(this.data).onChange((value) => { this.data = value; this.render(); }));
     new Setting(this.contentEl).addButton((button) => button
@@ -642,7 +694,7 @@ class ApplyConfirmationModal extends Modal {
   onClose(): void { if (!this.settled) this.resolveResult(undefined); }
 
   private render(): void {
-    this.setTitle("确认应用 ConfigTree");
+    this.setTitle("确认应用云端设置");
     this.contentEl.empty();
     const writes = this.preview.plan.operations.filter((operation) => operation.target.kind === "put").length;
     const deletes = this.preview.plan.operations.filter((operation) => operation.target.kind === "delete").length;
@@ -650,7 +702,7 @@ class ApplyConfirmationModal extends Modal {
     const summary = this.contentEl.createDiv({ cls: "s3-sync-status-grid" });
     for (const [label, value] of [
       ["写入", String(writes)], ["删除", String(deletes)], ["停止管理", String(stops)],
-      ["恢复位置", this.preview.recoveryLocation], ["目标 Tree", this.preview.target.treeHash],
+      ["恢复位置", this.preview.recoveryLocation],
     ]) {
       summary.createDiv({ cls: "s3-sync-status-label", text: label });
       summary.createDiv({ cls: "s3-sync-status-value", text: value });
@@ -713,12 +765,12 @@ class RecoveryConfirmationModal extends Modal {
     this.contentEl.createDiv({
       cls: "s3-sync-config-warning",
       text: continuing
-        ? "继续前会重新验证仓库、远端 ConfigTree 头和每个本地前后像；任一变化都会停止并保留恢复副本。"
+        ? "继续前会重新验证仓库、云端设置版本和每个本地前后像；任一变化都会停止并保留恢复副本。"
         : "回滚只会移动仍匹配本批次后像的文件；检测到并发编辑时会停止并保留当前文件。",
     });
     this.contentEl.createDiv({ cls: "s3-sync-config-recovery", text: `恢复位置：${this.recoveryLocation}` });
     new Setting(this.contentEl)
-      .setName(continuing ? "确认继续原批次" : "确认按 Journal 回滚")
+      .setName(continuing ? "确认继续原批次" : "确认按恢复记录回滚")
       .addToggle((toggle) => toggle.setValue(this.confirmed).onChange((value) => {
         this.confirmed = value;
         this.render();
@@ -773,7 +825,7 @@ function sortedUnique(values: readonly string[]): string[] { return [...new Set(
 function configStatusLabel(status: ConfigCenterSnapshot["state"]["status"] | "loading" | undefined): string {
   const labels: Record<ConfigCenterSnapshot["state"]["status"] | "loading", string> = {
     loading: "读取中", unbound: "未连接仓库", ready: "可预览",
-    "local-changes": "本地配置变化", pending: "配置依赖待定", conflict: "ConfigTree 冲突",
+    "local-changes": "本机设置有变化", pending: "云端设置等待验证", conflict: "设置冲突",
     incompatible: "配置不兼容", "apply-failed": "配置应用失败", "recovery-required": "需要配置恢复", "load-failed": "配置读取失败",
   };
   return labels[status ?? "loading"];
@@ -794,5 +846,5 @@ function applyResultLabel(status: Awaited<ReturnType<S3SyncPlugin["applyConfigPr
 
 function itemSummary(source: ConfigTreeSourceView, path: string): string {
   const item = source.items.find((candidate) => candidate.path === path);
-  return item?.kind === "put" ? `put ${item.hash.slice(0, 8)}` : "delete";
+  return item?.kind === "put" ? "保留内容" : "删除";
 }

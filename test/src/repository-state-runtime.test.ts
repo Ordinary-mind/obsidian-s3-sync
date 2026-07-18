@@ -73,6 +73,49 @@ describe("repository state runtime", () => {
     expect(restored.v1VaultGenerations).toEqual({ "a.md": 3 });
   });
 
+  it("persists fractional audit request costs through the integer-only durable JSON boundary", async () => {
+    const paths = new MemoryPaths();
+    const first = boundData();
+    const category = () => ({
+      objects: 0,
+      bytes: 0,
+      byKind: { blob: 0, "config-tree": 0, "change-chunk": 0, commit: 0 },
+    });
+    first.v1OperationalStatus.audit = {
+      state: "complete",
+      completedObjects: 22,
+      totalObjects: 22,
+      missingClosure: [],
+      resumable: false,
+      completedAt: 1_784_355_508_012,
+      space: {
+        categories: { active: category(), conflict: category(), history: category(), orphan: category() },
+        uniqueBytes: 0,
+        reachableBytes: 0,
+        uniqueReferencedBlobBytes: 0,
+        logicalReferencedBytes: 0,
+        dedupSavedBytes: 0,
+        historyGrowthBytes: 0,
+        requestEstimate: {
+          currency: "USD",
+          amount: 0.0000188,
+          counts: { list: 2, get: 22, put: 0 },
+          pricePerThousand: { list: 0.005, get: 0.0004, put: 0.005 },
+        },
+        estimatedRequestCost: 0.0000188,
+      },
+    };
+
+    await expect(new RepositoryStateRuntime(paths, ".obsidian").persist(first)).resolves.toBeUndefined();
+
+    const restored = boundData();
+    await expect(new RepositoryStateRuntime(paths, ".obsidian").restore(restored)).resolves.toMatchObject({ status: "restored" });
+    expect(restored.v1OperationalStatus.audit.space?.requestEstimate).toEqual(
+      first.v1OperationalStatus.audit.space?.requestEstimate,
+    );
+    expect(restored.v1OperationalStatus.audit.space?.estimatedRequestCost).toBe(0.0000188);
+  });
+
   it("restores ingested and observed state while one path remains pending across restart", async () => {
     const paths = new MemoryPaths();
     const first = boundData();

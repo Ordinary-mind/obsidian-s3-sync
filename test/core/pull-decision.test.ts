@@ -7,5 +7,6 @@ describe("resolved remote put decision", () => {
     expect(decideResolvedRemotePut({ localExists: true, projectedHash: "old", currentHash: "remote", remoteHash: "remote" })).toBe("adopt");
     expect(decideResolvedRemotePut({ localExists: true, projectedHash: "old", currentHash: "old", remoteHash: "remote" })).toBe("replace");
     expect(decideResolvedRemotePut({ localExists: true, projectedHash: "old", currentHash: "local", remoteHash: "remote" })).toBe("conflict");
+    expect(decideResolvedRemotePut({ localExists: true, projectedHash: undefined, currentHash: "local", remoteHash: "remote" })).toBe("conflict");
   });
 });

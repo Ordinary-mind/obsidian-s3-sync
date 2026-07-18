@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canonicalConflictIdentity, conflictId } from "../../core/conflict-id";
+import { canonicalConflictIdentity, conflictId, vaultConflictId } from "../../core/conflict-id";
 
 describe("stable conflict IDs", () => {
   const repositoryId = "123e4567-e89b-42d3-a456-426614174000";
@@ -20,6 +20,11 @@ describe("stable conflict IDs", () => {
   it("uses UTF-8 ordering rather than locale ordering", () => {
     expect(conflictId(repositoryId, "vault", ["vault:ä", "vault:z"], [head("2"), head("1")])).toBe(
       conflictId(repositoryId, "vault", ["vault:z", "vault:ä"], [head("1"), head("2")]),
+    );
+  });
+  it("converts user-facing Vault paths to canonical conflict logical keys", () => {
+    expect(vaultConflictId(repositoryId, ["notes/a.md"], [head("1")])).toBe(
+      conflictId(repositoryId, "vault", ["vault:notes/a.md"], [head("1")]),
     );
   });
   it("rejects non-canonical repository, logical-key, and Version ID input", () => {

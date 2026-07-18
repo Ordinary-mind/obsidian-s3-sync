@@ -42,6 +42,10 @@ export function conflictId(repositoryId: string, channel: ConflictChannel, logic
   return sha256Hex(new TextEncoder().encode(source));
 }
 
+export function vaultConflictId(repositoryId: string, logicalPaths: readonly string[], heads: readonly string[]): string {
+  return conflictId(repositoryId, "vault", logicalPaths.map((path) => conflictLogicalKey("vault", path)), heads);
+}
+
 export function conflictLogicalKey(channel: ConflictChannel, logicalPath: string): string {
   if (channel === "config") {
     if (logicalPath !== "portable") throw new Error("config conflict logical path is invalid");

@@ -11,12 +11,34 @@ export interface DiagnosticEvent {
   retryAttempt?: number;
 }
 
+export interface DiagnosticRuntimeInfo {
+  pluginVersion: string;
+  obsidianVersion: string;
+  platform: string;
+  architecture: string;
+  isDesktop: boolean;
+  conflictModalOpenCount: number;
+  lastConflictModalOpenedAt?: number;
+}
+
+export interface DiagnosticErrorHistoryEntry {
+  firstAt: number;
+  lastAt: number;
+  occurrences: number;
+  category: SyncDiagnosticCategory;
+  stage: string;
+  message: string;
+  report: string;
+}
+
 export interface DiagnosticBundle {
   schemaVersion: 1;
   generatedAt: number;
   repositoryIdHash?: string;
   normalizedPrefix?: string;
+  runtime: DiagnosticRuntimeInfo;
   status: Record<string, unknown>;
+  errorHistory: DiagnosticErrorHistoryEntry[];
   events: Array<Omit<DiagnosticEvent, "path"> & { pathHash?: string }>;
 }
 
@@ -24,7 +46,9 @@ export function buildRedactedDiagnosticBundle(input: {
   generatedAt: number;
   repositoryId?: string;
   normalizedPrefix?: string;
+  runtime: DiagnosticRuntimeInfo;
   status: Record<string, unknown>;
+  errorHistory: readonly DiagnosticErrorHistoryEntry[];
   events: readonly DiagnosticEvent[];
   pathSalt: string;
   sensitiveValues?: readonly string[];
@@ -36,7 +60,13 @@ export function buildRedactedDiagnosticBundle(input: {
     generatedAt: input.generatedAt,
     ...(input.repositoryId ? { repositoryIdHash: hashPrivateValue(input.repositoryId, input.pathSalt) } : {}),
     ...(input.normalizedPrefix !== undefined ? { normalizedPrefix: redactPrefix(input.normalizedPrefix, input.pathSalt) } : {}),
+    runtime: redactRecord(input.runtime as unknown as Record<string, unknown>, sensitive, input.pathSalt) as unknown as DiagnosticRuntimeInfo,
     status: redactRecord(input.status, sensitive, input.pathSalt),
+    errorHistory: input.errorHistory.map((entry) => redactRecord(
+      entry as unknown as Record<string, unknown>,
+      sensitive,
+      input.pathSalt,
+    ) as unknown as DiagnosticErrorHistoryEntry),
     events: input.events.map((event) => ({
       at: event.at,
       category: event.category,
@@ -47,6 +77,29 @@ export function buildRedactedDiagnosticBundle(input: {
       ...(event.retryAttempt !== undefined ? { retryAttempt: event.retryAttempt } : {}),
     })),
   };
+}
+
+export function appendDiagnosticErrorHistory(
+  history: DiagnosticErrorHistoryEntry[],
+  entry: Omit<DiagnosticErrorHistoryEntry, "firstAt" | "lastAt" | "occurrences"> & { at: number },
+  maximumEntries = 12,
+): void {
+  const previous = history.at(-1);
+  if (previous && previous.category === entry.category && previous.stage === entry.stage && previous.report === entry.report) {
+    previous.lastAt = entry.at;
+    previous.occurrences += 1;
+    return;
+  }
+  history.push({
+    firstAt: entry.at,
+    lastAt: entry.at,
+    occurrences: 1,
+    category: entry.category,
+    stage: entry.stage,
+    message: entry.message,
+    report: entry.report,
+  });
+  if (history.length > maximumEntries) history.splice(0, history.length - maximumEntries);
 }
 
 export function hashPrivateValue(value: string, salt: string): string {
