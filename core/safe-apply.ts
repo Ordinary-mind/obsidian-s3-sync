@@ -63,6 +63,7 @@ export interface SafeApplyStateStore {
 export interface SafeApplyOptions {
   now(): number;
   recoveryRef(plan: BoundApplyPlan): string;
+  recoveryContentRef(plan: BoundApplyPlan): string;
   conservativeCandidateRef(plan: BoundApplyPlan): string;
   verifyStaged(target: Extract<ApplyTarget, { kind: "put" }>): Promise<void>;
 }
@@ -72,6 +73,29 @@ export type SafeApplyResult =
   | { status: "adopted-without-write"; journal: SafeApplyJournal }
   | { status: "conservative-candidate"; candidateRef: string }
   | { status: "stale-plan" | "local-change-frozen" | "pending" | "recovery-required"; journal?: SafeApplyJournal };
+
+export function rebindSafeApplyJournal(
+  journal: SafeApplyJournal,
+  input: Pick<BoundApplyPlan,
+    "repositoryFingerprint" | "targetHeads" | "projectedHeads" | "target" | "projectionGeneration" | "dirtyGeneration">,
+): SafeApplyJournal {
+  const targetChanged = !sameApplyTarget(journal.target, input.target);
+  if (targetChanged && !["prepared", "recovery-moved"].includes(journal.state)) {
+    throw new Error("installed safe apply Journal cannot change target");
+  }
+  const rebound: SafeApplyJournal = {
+    ...journal,
+    repositoryFingerprint: input.repositoryFingerprint,
+    targetHeads: [...input.targetHeads],
+    projectedHeads: [...input.projectedHeads],
+    target: { ...input.target },
+    projectionGeneration: input.projectionGeneration,
+    dirtyGeneration: input.dirtyGeneration,
+  };
+  if (targetChanged) delete rebound.verifiedAfter;
+  validatePlan(rebound);
+  return rebound;
+}
 
 export class SafeLocalApplicator {
   constructor(
@@ -116,7 +140,7 @@ export class SafeLocalApplicator {
       }
       const recoveryRecord = createRecoveryRecord({
         id: plan.operationId,
-        contentRef: recoveryRef,
+        contentRef: this.options.recoveryContentRef(plan),
         logicalPath: plan.path,
         source: "apply-before-image",
         hash: recovered.hash,
@@ -174,7 +198,6 @@ export class SafeLocalApplicator {
 
   async resume(journal: SafeApplyJournal): Promise<SafeApplyResult> {
     if (journal.state === "accounted") return { status: "accounted", journal };
-    if (journal.state === "recovery-required") return { status: "recovery-required", journal };
     const plan = copyPlan(journal);
     const guard = await this.state.guard(plan.path);
     if (!guardMatches(plan, guard)) return this.failJournal(journal, "stale-plan");
@@ -191,7 +214,7 @@ export class SafeLocalApplicator {
         }
         const recoveryRecord = createRecoveryRecord({
           id: plan.operationId,
-          contentRef: recoveryRef,
+          contentRef: this.options.recoveryContentRef(plan),
           logicalPath: plan.path,
           source: "apply-before-image",
           hash: recovered.hash,
@@ -209,6 +232,7 @@ export class SafeLocalApplicator {
       }
       return this.verifyAndAccountResumed(resumable, active);
     }
+    if (journal.state === "recovery-required") return { status: "recovery-required", journal };
     if (!sameLocalValue(plan.expectedLocal, guard.projectedValue)) {
       await this.state.freezeLocalChange(plan.path, active, plan.projectedHeads);
       return this.failJournal(journal, "local-change-frozen");
@@ -226,7 +250,7 @@ export class SafeLocalApplicator {
       && active.kind === "absent") {
       let recoveryRecord = journal.recoveryRecord ?? createRecoveryRecord({
         id: plan.operationId,
-        contentRef: recoveryRef,
+        contentRef: this.options.recoveryContentRef(plan),
         logicalPath: plan.path,
         source: "apply-before-image",
         hash: recovered.hash,
@@ -492,6 +516,11 @@ function observationMatchesTarget(observation: Exclude<LocalFileObservation, { k
   return target.kind === "delete"
     ? observation.kind === "absent"
     : observation.kind === "present" && observation.hash === target.hash && observation.size === target.size;
+}
+
+function sameApplyTarget(left: ApplyTarget, right: ApplyTarget): boolean {
+  return left.kind === "delete" ? right.kind === "delete"
+    : right.kind === "put" && left.hash === right.hash && left.size === right.size;
 }
 
 function sameSet(left: readonly string[], right: readonly string[]): boolean {

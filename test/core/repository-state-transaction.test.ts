@@ -197,6 +197,44 @@ describe("atomic repository state transaction", () => {
     });
   });
 
+  it("confirms a non-bootstrap Commit when the verified frontier already contains it", async () => {
+    const store = new DurableStateStore<StateJsonValue>(new Files());
+    const firstHash = "1".repeat(64);
+    const secondHash = "2".repeat(64);
+    const firstAnchor = {
+      key: "commit-first",
+      writerId,
+      sequence: "00000000000000000001",
+      hash: firstHash,
+      previousCommitHash: null,
+    };
+    const initial = payload("00000000000000000002", 1) as Record<string, StateJsonValue>;
+    initial.previousCommitHash = firstHash;
+    initial.writerFrontiers = { [writerId]: [firstAnchor] };
+    await writeRepositoryStateTransaction(store, initial);
+    const frozen = outbox(secondHash, "00000000000000000002", firstHash);
+    await freezeDurableOutboxStateTransaction(store, frozen);
+    await beginDurableOutboxPublicationTransaction(store, frozen.id);
+    const publishedAnchor = {
+      key: frozen.objects.at(-1)!.key,
+      writerId,
+      sequence: frozen.sequence,
+      hash: frozen.commitHash,
+      previousCommitHash: firstHash,
+    };
+
+    const confirmed = await confirmDurableOutboxPublishedTransaction(store, frozen.id, frozen.commitHash, {
+      ...verifiedPatch(frozen),
+      writerFrontiers: { [writerId]: [publishedAnchor] },
+      sparseSeenCommits: {},
+    });
+
+    expect(confirmed.payload).toMatchObject({
+      durableOutbox: [{ state: "published" }],
+      writerFrontiers: { [writerId]: [{ hash: secondHash, sequence: frozen.sequence }] },
+    });
+  });
+
   it("atomically confirms a terminal Outbox only after an exact remote proof", async () => {
     const store = new DurableStateStore<StateJsonValue>(new Files());
     await writeRepositoryStateTransaction(store, payload("00000000000000000001", 1));

@@ -495,10 +495,14 @@ function connectionConfigurationMessage(record: SafeErrorRecord): string | undef
 }
 
 function genericReasonMessage(record: SafeErrorRecord): string | undefined {
+  if (record.reasonCode === "CONFLICT_APPLY_RECOVERY_REQUIRED") {
+    return "冲突版本已进入本地安全应用，但最终校验或对账被文件事件打断；原文件前像和恢复记录均已保留。请保持当前文件不变，并重新选择同一远端版本继续。";
+  }
   if (record.reasonCode?.startsWith("CONFLICT_APPLY_")) {
     return "所选冲突候选未能安全应用；原文件前像和冲突状态均已保留。";
   }
   return {
+    "commit-envelope-invalid": "插件生成的待上传提交未通过内部协议校验；本地 Outbox 尚未写入，S3 也未开始发布。无需删除文件或仓库状态，请升级插件后重试并复制诊断报告。",
     PLUGIN_DATA_READ_FAILED: "Obsidian 无法读取插件 data.json；插件已进入未连接只读状态，原文件未被改写。",
     PLUGIN_DATA_SCHEMA_INVALID: "插件 data.json 未通过当前严格 schema；插件已进入未连接只读状态，原文件未被改写。",
     SAVED_REPOSITORY_BINDING_INVALID: "保存的仓库绑定与当前 Vault 配置目录不一致；本次不会访问 S3，请使用新 Prefix 重新执行“检测并应用”。",
@@ -508,11 +512,25 @@ function genericReasonMessage(record: SafeErrorRecord): string | undefined {
     CONFLICT_REPOSITORY_NOT_CONNECTED: "当前未连接仓库，不能解决冲突；请先执行“检测并应用”。",
     CONFLICT_REMOTE_CHANGED: "远端冲突头或候选已经变化；未应用所选版本，请重新检查并选择。",
     CONFLICT_CANDIDATE_REQUIRED: "尚未选择有效的远端冲突候选。",
+    CONFLICT_INTERRUPTED_APPLY_MISMATCH: "检测到上次未完成的冲突应用，但它与当前选择不一致；原文件恢复副本仍保留，请重新选择上次的远端版本。",
+    CONFLICT_INTERRUPTED_APPLY_REVIEW_REQUIRED: "上次冲突应用已经安装了另一个候选；请先打开当前主文件和原本机恢复副本核对，插件不会自动覆盖。",
+    CONFLICT_MULTIPLE_INTERRUPTED_APPLIES: "同一文件存在多个旧的安全应用记录；所有恢复副本均保留，插件不会猜测并覆盖，请复制诊断包。",
+    CONFLICT_INTERRUPTED_APPLY_INVALID: "旧的安全应用记录与当前仓库不一致；恢复副本仍保留，本次不会覆盖文件。",
+    CONFLICT_SELECTED_REMOTE_DOWNLOAD_FAILED: "无法下载并校验当前选择的远端版本；本机主文件和恢复副本均未被覆盖。",
+    CONFLICT_SELECTED_REMOTE_STAGING_FAILED: "当前选择的远端版本无法写入本地安全暂存区；本机主文件和恢复副本均未被覆盖。",
+    CONFLICT_RECOVERY_NOT_FOUND: "没有找到该冲突保留的本机恢复副本；当前主文件未被修改。",
+    CONFLICT_RECOVERY_READ_FAILED: "无法读取该冲突保留的本机恢复副本；当前主文件未被修改。",
+    CONFLICT_RECOVERY_CONTENT_MISMATCH: "本机恢复副本未通过 Hash/大小校验；为避免展示错误内容，当前主文件未被修改。",
     CONFLICT_LOCAL_PATH_OCCUPIED: "冲突路径被目录或其他非文件条目占用；未覆盖现有内容。",
     CONFLICT_LOCAL_CAPTURE_CHANGED: "读取本地冲突文件期间内容再次变化；未发布解决结果，请重试。",
     CONFLICT_SELECTED_REMOTE_CHANGED: "所选远端候选应用后发生了新的本地变化；未发布解决结果，请重新检查。",
     CONFLICT_LOCAL_VERSION_CHANGED: "本地冲突版本已经变化或无法稳定读取；未发布解决结果，请重新检查。",
     CONFLICT_COPY_CANDIDATE_UNAVAILABLE: "所选冲突候选表示删除或已失效，没有可打开的文件内容。",
+    CONFLICT_PREVIEW_LOCAL_CHANGED: "本地文件在冲突产生后已经变化；为避免展示过期内容，请重新同步后再比较。",
+    CONFLICT_PREVIEW_LOCAL_READ_FAILED: "无法读取本地冲突文件用于左右对照；文件未被修改。",
+    CONFLICT_PREVIEW_REMOTE_DOWNLOAD_FAILED: "无法下载远端冲突候选用于左右对照；本地文件未被修改。",
+    CONFLICT_PREVIEW_SIZE_INVALID: "冲突预览收到无效文件大小；未读取或修改文件，请复制诊断包。",
+    CONFLICT_PREVIEW_LIMITS_INVALID: "冲突预览限制参数无效；未读取或修改文件，请复制诊断包。",
     CONFLICT_COPY_DOWNLOAD_FAILED: "本地与远端分歧已记录并打开冲突窗口，但远端候选下载或校验失败；现有文件未被覆盖。",
     CONFLICT_COPY_WRITE_FAILED: "本地与远端分歧已记录并打开冲突窗口，但候选副本无法写入本地；现有文件未被覆盖。",
     REPOSITORY_OPERATION_BUSY: "已有同步、检查或配置操作正在运行；本次操作尚未开始。",

@@ -4,11 +4,13 @@ import {
   derivePathDecision,
   destructiveRepositoryResetAvailable,
   diagnosticCategoryLabel,
+  hasPendingSyncWork,
   mayClaimRepositoryFullyHealthy,
   mayRunMutatingSync,
   operationalPhaseLabel,
   operationalStatusBarText,
   pathDecisionLabel,
+  pendingRecoveryVerificationCount,
   repositoryHealthDisplayLabel,
   repositoryHealthLabel,
   retryCountdownSeconds,
@@ -39,6 +41,15 @@ describe("operational status", () => {
     expect(repositoryHealthLabel({ ...healthy, audit: { state: "never", completedObjects: 0, totalObjects: 0, missingClosure: [], resumable: false } })).toBe("attention");
     expect(repositoryHealthDisplayLabel({ ...healthy, audit: { state: "never", completedObjects: 0, totalObjects: 0, missingClosure: [], resumable: false } })).toBe("待完整校验");
     expect(auditCoveragePercent(healthy.audit)).toBe(100);
+  });
+
+  it("treats retained recovery copies as passive safety history rather than pending work", () => {
+    const retained = { ...healthy, recoveryFiles: 1 };
+    expect(repositoryHealthLabel(retained)).toBe("healthy");
+    expect(hasPendingSyncWork(retained)).toBe(false);
+    expect(pendingRecoveryVerificationCount(retained)).toBe(0);
+    expect(hasPendingSyncWork({ ...retained, commitGaps: 1 })).toBe(true);
+    expect(pendingRecoveryVerificationCount({ ...retained, commitGaps: 1 })).toBe(1);
   });
 
   it("shows retry countdown and never exposes a destructive reset", () => {

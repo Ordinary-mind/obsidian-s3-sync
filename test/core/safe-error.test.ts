@@ -5,6 +5,7 @@ import { DiagnosticError } from "../../core/diagnostics";
 import { RepositoryConfigurationError } from "../../core/locator";
 import { withDurableOutboxReplayStage } from "../../core/durable-outbox";
 import { SyncPreflightError } from "../../core/sync-preflight";
+import { ProtocolValidationError } from "../../protocol/validation";
 import {
   logSafeError,
   safeConnectionErrorMessage,
@@ -224,6 +225,21 @@ describe("safe runtime errors", () => {
       "conflict",
       "apply stopped",
     ))).toBe("所选冲突候选未能安全应用；原文件前像和冲突状态均已保留。");
+    expect(safeErrorMessage(new DiagnosticError(
+      "CONFLICT_APPLY_RECOVERY_REQUIRED",
+      "local-path",
+      "apply verification interrupted",
+    ))).toBe("冲突版本已进入本地安全应用，但最终校验或对账被文件事件打断；原文件前像和恢复记录均已保留。请保持当前文件不变，并重新选择同一远端版本继续。");
+    expect(safeErrorMessage(new DiagnosticError(
+      "CONFLICT_INTERRUPTED_APPLY_MISMATCH",
+      "conflict",
+      "interrupted selection mismatch",
+    ))).toBe("检测到上次未完成的冲突应用，但它与当前选择不一致；原文件恢复副本仍保留，请重新选择上次的远端版本。");
+    expect(safeErrorMessage(new DiagnosticError(
+      "CONFLICT_RECOVERY_CONTENT_MISMATCH",
+      "integrity",
+      "recovery mismatch",
+    ))).toBe("本机恢复副本未通过 Hash/大小校验；为避免展示错误内容，当前主文件未被修改。");
   });
 
   it("distinguishes expected configuration action failures", () => {
@@ -260,6 +276,25 @@ describe("safe runtime errors", () => {
       "local-path",
       "local recheck failed",
     ))).toBe("配置已发布，但发布后的本地复查未完成；请保留本地状态并安全重试。");
+  });
+
+  it("explains a locally generated invalid Commit without asking the user to repair storage", () => {
+    const error = withSyncFlowStage(
+      "push",
+      "outbox-freeze",
+      new ProtocolValidationError("commit-envelope-invalid", "bootstrap-parents"),
+    );
+
+    expect(safeErrorRecord(error)).toMatchObject({
+      category: "internal",
+      reasonCode: "commit-envelope-invalid",
+      syncAction: "push",
+      syncStage: "outbox-freeze",
+    });
+    expect(safeSyncErrorMessage(error)).toContain(
+      "插件生成的待上传提交未通过内部协议校验；本地 Outbox 尚未写入，S3 也未开始发布。无需删除文件或仓库状态",
+    );
+    expect(safeSyncErrorReport(error)).not.toContain("bootstrap-parents");
   });
 
   it("keeps a detected Vault divergence actionable when conflict-copy materialization fails", () => {
@@ -300,6 +335,16 @@ describe("safe runtime errors", () => {
       "local-apply",
       new DiagnosticError("VAULT_PULL_LOCAL_APPLY_FAILED", "local-path", "unexpected apply failure"),
     ))).toContain("没有选择任一版本，也没有覆盖活动文件");
+    expect(safeErrorMessage(new DiagnosticError(
+      "CONFLICT_PREVIEW_LOCAL_CHANGED",
+      "conflict",
+      "local changed",
+    ))).toContain("本地文件在冲突产生后已经变化");
+    expect(safeErrorMessage(new DiagnosticError(
+      "CONFLICT_PREVIEW_REMOTE_DOWNLOAD_FAILED",
+      "network",
+      "remote preview failed",
+    ))).toContain("无法下载远端冲突候选用于左右对照");
   });
 
   it("explains lower-level configuration and repository diagnostics", () => {

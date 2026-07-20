@@ -2,6 +2,8 @@ import { Notice, setIcon } from "obsidian";
 import { safeErrorMessage, safeGenericErrorReport } from "../core/safe-error";
 import { writeClipboardText } from "./clipboard";
 
+const COPYABLE_NOTICE_DURATION_MS = 5_000;
+
 export function showCopyableNotice(message: string, report: string): void {
   const fragment = document.createDocumentFragment();
   const row = document.createElement("span");
@@ -13,7 +15,7 @@ export function showCopyableNotice(message: string, report: string): void {
   row.append(text, copyButton);
   fragment.append(row);
 
-  const notice = new Notice(fragment, 0);
+  const notice = new Notice(fragment, COPYABLE_NOTICE_DURATION_MS);
   copyButton.addEventListener("pointerdown", (event) => event.stopPropagation());
   copyButton.addEventListener("s3-sync-report-copied", () => window.setTimeout(() => notice.hide(), 800));
 }

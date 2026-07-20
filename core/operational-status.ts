@@ -184,6 +184,20 @@ export function hasManualRecoveryBlocker(status: Pick<OperationalStatus, "recove
   return status.recoveryBlockers.some((blocker) => blocker.disposition === "manual");
 }
 
+export function pendingRecoveryVerificationCount(
+  status: Pick<OperationalStatus, "recoveryBlockers" | "commitGaps">,
+): number {
+  return status.recoveryBlockers.length + status.commitGaps;
+}
+
+export function hasPendingSyncWork(
+  status: Pick<OperationalStatus,
+    "conflicts" | "pendingApply" | "outbox" | "localConcurrentRecords" | "recoveryBlockers" | "commitGaps">,
+): boolean {
+  return status.conflicts > 0 || status.pendingApply > 0 || status.outbox > 0 || status.localConcurrentRecords > 0
+    || pendingRecoveryVerificationCount(status) > 0;
+}
+
 export function operationalStatusBarText(status: OperationalStatus): string {
   const details: string[] = [operationalPhaseLabel(status.phase), repositoryHealthDisplayLabel(status)];
   if (status.conflicts > 0) details.push(`冲突 ${status.conflicts}`);

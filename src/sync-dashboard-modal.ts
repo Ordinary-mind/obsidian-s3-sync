@@ -3,9 +3,11 @@ import type S3SyncPlugin from "./main";
 import {
   auditCoveragePercent,
   diagnosticCategoryLabel,
+  hasPendingSyncWork,
   mayClaimRepositoryFullyHealthy,
   operationalPhaseLabel,
   pathDecisionLabel,
+  pendingRecoveryVerificationCount,
   repositoryHealthDisplayLabel,
   repositoryHealthLabel,
   retryCountdownSeconds,
@@ -61,10 +63,14 @@ export class SyncDashboardModal extends Modal {
     }
 
     const summary = this.contentEl.createDiv({ cls: "s3-sync-status-grid" });
-    for (const [label, value] of [
+    const summaryRows: Array<[string, string]> = [
       ["最近同步", formatTime(latestSuccessfulSync(status))],
       ["需要处理", userPendingSummary(status)],
-    ]) {
+    ];
+    if (status.recoveryFiles > 0) {
+      summaryRows.push(["安全保留", `${status.recoveryFiles} 个本机恢复副本（不影响同步）`]);
+    }
+    for (const [label, value] of summaryRows) {
       summary.createDiv({ cls: "s3-sync-status-label", text: label });
       summary.createDiv({ cls: "s3-sync-status-value", text: value });
     }
@@ -124,12 +130,19 @@ export class SyncDashboardModal extends Modal {
         onClick: () => this.run(() => this.plugin.runManualSyncV1()),
       }));
     if (status.conflicts > 0) primary.addButton((button) => this.actionButton(button, {
-        label: "Vault 冲突",
+      label: "Vault 冲突",
         icon: "git-merge",
         tooltip: "比较并选择需要保留的文件版本",
         disabled: busy,
-        onClick: () => this.plugin.openConflictModal(),
-      }));
+      onClick: () => this.plugin.openConflictModal(),
+    }));
+    else if (status.recoveryFiles > 0) primary.addButton((button) => this.actionButton(button, {
+      label: "本地安全副本",
+      icon: "archive-restore",
+      tooltip: "查看并清理已解决且不再用于恢复的本地副本",
+      disabled: busy,
+      onClick: () => this.plugin.openConflictModal(),
+    }));
     if (status.retryAt !== undefined || status.lastError !== undefined) {
       primary.addButton((button) => this.actionButton(button, {
         label: "重试",
@@ -164,6 +177,13 @@ export class SyncDashboardModal extends Modal {
         tooltip: "查看设置快照、逐文件差异和信任确认",
         disabled: busy,
         onClick: () => this.plugin.openConfigCenter(),
+      }))
+      .addButton((button) => this.actionButton(button, {
+        label: "管理本地副本",
+        icon: "archive-restore",
+        tooltip: "查看本地恢复副本和已解决冲突目录；不会操作 S3 历史",
+        disabled: busy || !this.plugin.data.v1,
+        onClick: () => this.plugin.openConflictModal(),
       }));
     if (status.audit.state === "running") secondary.addButton((button) => this.actionButton(button, {
         label: "取消校验",
@@ -201,7 +221,7 @@ export class SyncDashboardModal extends Modal {
       ["待应用", String(status.pendingApply)],
       ["Outbox", String(status.outbox)],
       ["本地并发记录", String(status.localConcurrentRecords)],
-      ["恢复文件 / 捕获后编辑", `${status.recoveryFiles} / ${status.postCaptureEdits}`],
+      ["保留恢复副本 / 捕获后编辑", `${status.recoveryFiles} / ${status.postCaptureEdits}`],
       ["提交缺口", String(status.commitGaps)],
       ["Vault 冲突", String(status.conflicts)],
     ]) {
@@ -339,8 +359,7 @@ function userStatusMessage(connected: boolean, status: OperationalStatus): strin
   if (status.conflicts > 0) return `有 ${status.conflicts} 个文件冲突需要选择版本`;
   if (status.recoveryBlockers.some((blocker) => blocker.disposition === "manual")) return "需要完成本地恢复后才能继续同步";
   if (status.lastError) return "上次同步没有完成，请查看错误并重试";
-  if (status.outbox > 0 || status.pendingApply > 0 || status.localConcurrentRecords > 0
-    || status.recoveryFiles > 0 || status.commitGaps > 0) return "有同步内容正在等待处理";
+  if (hasPendingSyncWork(status)) return "有同步内容正在等待处理";
   if (latestSuccessfulSync(status) === undefined) return "已连接，尚未完成首次同步";
   return "同步状态正常";
 }
@@ -351,7 +370,7 @@ function userPendingSummary(status: OperationalStatus): string {
   const waiting = status.pendingApply + status.localConcurrentRecords;
   if (waiting > 0) parts.push(`${waiting} 项等待处理`);
   if (status.outbox > 0) parts.push(`${status.outbox} 项等待上传`);
-  const recovery = status.recoveryBlockers.length + status.recoveryFiles + status.commitGaps;
+  const recovery = pendingRecoveryVerificationCount(status);
   if (recovery > 0) parts.push(`${recovery} 项等待恢复或验证`);
   return parts.length > 0 ? parts.join("，") : "无";
 }

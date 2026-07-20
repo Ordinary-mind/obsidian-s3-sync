@@ -28,6 +28,16 @@ describe("Commit frontier integrity anchors", () => {
     expect(() => advanceWriterFrontiers({}, [{ ...second, previousCommitHash: "d".repeat(64) }])).toThrow("not continuous");
   });
 
+  it("advances incrementally from a persisted non-bootstrap tip", () => {
+    const first = anchor("00000000000000000001", null).anchor;
+    const second = anchor("00000000000000000002", first.hash).anchor;
+    const third = anchor("00000000000000000003", second.hash).anchor;
+    const current = advanceWriterFrontiers({}, [first, second]);
+
+    expect(advanceWriterFrontiers(current, [third])[writerId]).toEqual([third]);
+    expect(advanceWriterFrontiers({ [writerId]: [second] }, [second])).toEqual({ [writerId]: [second] });
+  });
+
   it("directly GETs and hashes every persisted tip even when List is unavailable", async () => {
     const current = anchor("00000000000000000001", null);
     let gets = 0;

@@ -5,6 +5,7 @@ import {
   SafeLocalApplicator,
   consumeOwnApplyEvent,
   orderShapeTransformPlans,
+  rebindSafeApplyJournal,
   type ApplyGuardState,
   type BoundApplyPlan,
   type SafeApplyJournal,
@@ -190,6 +191,61 @@ describe("safe local applicator", () => {
     expect(state.accounted).toBe(1);
   });
 
+  it("separates the Vault recovery path from the repository-relative durable reference", async () => {
+    const plan = putPlan();
+    const files = seededFiles();
+    const state = new MemoryApplyState(plan);
+    const physicalRef = `.obsidian/.obsidian-s3-sync-local/repository/recovery/${plan.operationId}`;
+
+    const result = await applicator(files, state, {
+      recoveryRef: () => physicalRef,
+      recoveryContentRef: () => `recovery/${plan.operationId}`,
+    }).apply(plan);
+
+    expect(result.status).toBe("accounted");
+    if (result.status !== "accounted") throw new Error("expected accounted result");
+    expect(text(files.recovery.get(physicalRef)!)).toBe("old");
+    expect(state.recoveries.at(-1)?.contentRef).toBe(`recovery/${plan.operationId}`);
+    expect(result.journal.recoveryRef).toBe(physicalRef);
+    expect(result.journal.recoveryRecord?.contentRef).toBe(`recovery/${plan.operationId}`);
+  });
+
+  it("rebinds an unfinished apply to the currently verified remote choice without changing its before-image", () => {
+    const plan = putPlan();
+    const recoveryMoved: SafeApplyJournal = {
+      ...structuredClone(plan),
+      state: "recovery-moved",
+      recoveryRef: "vault-state/recovery/op",
+    };
+    const rebound = rebindSafeApplyJournal(recoveryMoved, {
+      repositoryFingerprint: plan.repositoryFingerprint,
+      targetHeads: ["new-remote"],
+      projectedHeads: ["new-projected"],
+      target: { kind: "put", hash: hash("new"), size: 3, stagedRef: "staged/new" },
+      projectionGeneration: 2,
+      dirtyGeneration: 3,
+    });
+
+    expect(rebound).toMatchObject({
+      operationId: plan.operationId,
+      expectedLocal: plan.expectedLocal,
+      recoveryRef: "vault-state/recovery/op",
+      targetHeads: ["new-remote"],
+      projectedHeads: ["new-projected"],
+      target: { hash: hash("new"), stagedRef: "staged/new" },
+      projectionGeneration: 2,
+      dirtyGeneration: 3,
+    });
+    expect(() => rebindSafeApplyJournal({ ...recoveryMoved, state: "installed" }, {
+      repositoryFingerprint: plan.repositoryFingerprint,
+      targetHeads: ["new-remote"],
+      projectedHeads: ["new-projected"],
+      target: { kind: "delete" },
+      projectionGeneration: 2,
+      dirtyGeneration: 3,
+    })).toThrow("cannot change target");
+  });
+
   it("never overwrites a path that reappears before no-clobber install", async () => {
     const plan = putPlan();
     const files = seededFiles();
@@ -222,6 +278,27 @@ describe("safe local applicator", () => {
     const result = await applicator(files, state).apply(plan);
     expect(result.status).toBe("recovery-required");
     expect(state.accounted).toBe(0);
+    expect(text(files.active.get(plan.path)!)).toBe("remote");
+    expect(text(files.recovery.get("recovery/op")!)).toBe("old");
+  });
+
+  it("finishes a recovery-required apply when the selected target is already installed and reverified", async () => {
+    const plan = putPlan();
+    const files = seededFiles();
+    const state = new MemoryApplyState(plan);
+    state.mutateGuardAfterJournalState = "installed";
+    const interrupted = await applicator(files, state).apply(plan);
+    expect(interrupted.status).toBe("recovery-required");
+    if (interrupted.status !== "recovery-required" || !interrupted.journal) {
+      throw new Error("expected interrupted journal");
+    }
+
+    state.guardValue.hasDirtyIntent = false;
+    state.mutateGuardAfterJournalState = undefined;
+    const resumed = await applicator(files, state).resume(interrupted.journal);
+
+    expect(resumed.status).toBe("accounted");
+    expect(state.accounted).toBe(1);
     expect(text(files.active.get(plan.path)!)).toBe("remote");
     expect(text(files.recovery.get("recovery/op")!)).toBe("old");
   });
@@ -466,10 +543,15 @@ describe("safe local applicator", () => {
   });
 });
 
-function applicator(files: MemoryLocalFiles, state: MemoryApplyState): SafeLocalApplicator {
+function applicator(
+  files: MemoryLocalFiles,
+  state: MemoryApplyState,
+  references: Partial<Pick<ConstructorParameters<typeof SafeLocalApplicator>[2], "recoveryRef" | "recoveryContentRef">> = {},
+): SafeLocalApplicator {
   return new SafeLocalApplicator(files, state, {
     now: () => 1,
-    recoveryRef: (plan) => `recovery/${plan.operationId}`,
+    recoveryRef: references.recoveryRef ?? ((plan) => `recovery/${plan.operationId}`),
+    recoveryContentRef: references.recoveryContentRef ?? ((plan) => `recovery/${plan.operationId}`),
     conservativeCandidateRef: (plan) => `candidate/${plan.operationId}`,
     verifyStaged: async (target) => {
       files.step?.();

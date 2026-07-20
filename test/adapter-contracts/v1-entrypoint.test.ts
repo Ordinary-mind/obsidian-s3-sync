@@ -68,6 +68,8 @@ describe("v1 plugin entrypoint contract", () => {
     expect(settings).not.toContain("configSyncEnabled");
     expect(copyableNotice).toContain('setIcon(button, "copy")');
     expect(copyableNotice).toContain("safeGenericErrorReport(error, context)");
+    expect(copyableNotice).toContain("COPYABLE_NOTICE_DURATION_MS = 5_000");
+    expect(copyableNotice).not.toContain("new Notice(fragment, 0)");
   });
 
   it("exposes three low-friction commands and a one-click sync ribbon", () => {
@@ -97,9 +99,22 @@ describe("v1 plugin entrypoint contract", () => {
     expect(dashboard).toContain("private showDetails = false");
     expect(dashboard).toContain('.setName("诊断与高级功能")');
     expect(dashboard).toContain("if (status.conflicts > 0)");
+    expect(dashboard).toContain('label: "本地安全副本"');
+    expect(dashboard).toContain('label: "管理本地副本"');
     expect(dashboard).toContain('label: "完整校验"');
-    expect(conflict).toContain('.setName("这台设备的版本")');
+    expect(conflict).toContain('.setClass("s3-sync-conflict-summary-row")');
+    const primaryRow = conflict.slice(
+      conflict.indexOf("private renderConflictRow"),
+      conflict.indexOf("private selectedRemoteCandidate"),
+    );
+    expect(primaryRow.match(/row\.addButton/g) ?? []).toHaveLength(3);
+    for (const label of ["左右对照", "使用本地版本", "使用远端版本"]) {
+      expect(primaryRow).toContain(`"${label}"`);
+    }
+    expect(primaryRow.match(/\.setTooltip\(/g) ?? []).toHaveLength(3);
+    expect(primaryRow).not.toContain("setIcon(");
     expect(conflict).toContain("groupRemoteConflictCandidates(");
+    expect(conflict).toContain("if (groups.length > 1) this.renderRemoteChooser");
     expect(conflict).toContain("confirmDeleteResolution(");
     expect(conflict).toContain('.setName("技术详情与诊断")');
     const resolution = main.slice(main.indexOf("private async resolveV1Conflict"), main.indexOf("private configWorkspaceRuntime"));
@@ -143,6 +158,13 @@ describe("v1 plugin entrypoint contract", () => {
     expect(pull).toContain("new SyncDashboardModal(this).open()");
     expect(pull).toContain('? { status: "blocked", conflicts: blocked.conflicts, pending: blocked.pending }');
     expect(pull).toContain('"VAULT_PULL_LOCAL_APPLY_FAILED"');
+    expect(pull.indexOf("await this.drainDurableOutboxIfPresent")).toBeLessThan(
+      pull.indexOf("await this.routeInterruptedApplyRecovery"),
+    );
+    expect(pull.indexOf("await this.routeInterruptedApplyRecovery")).toBeLessThan(
+      pull.indexOf("this.assertV1SyncPreflight()"),
+    );
+    expect(main).toContain('blocker === "apply-journal-recovery"');
     expect(main).toContain('"REMOTE_STRUCTURAL_PATH_CONFLICT"');
     expect(main.indexOf("findStructuralConflicts(occupiedPaths)")).toBeLessThan(
       main.indexOf("recordV1ConflictCandidates(pulled, decisions)"),
@@ -194,6 +216,9 @@ describe("v1 plugin entrypoint contract", () => {
     expect(main).toContain("conflictCopyContentMatches(bytes, expected)");
     expect(main).toContain("await this.recordV1ConflictCandidates(pulled, decisions)");
     expect(main).toContain("await this.materializeConflictCopies(state, service, conflict.id, conflict.path, [candidate])");
+    expect(main).toContain("async openConflictRecoveryCopy(");
+    expect(modal).toContain('setButtonText("打开原本机副本")');
+    expect(modal).toContain("openConflictRecoveryCopy(conflict.id, recoveryId)");
     expect(main).toContain("vaultConflictId(");
     expect(main).not.toContain('conflictId(this.data.v1?.repositoryId ?? "unknown", "vault", [input.path]');
     const recordStart = main.indexOf("private async recordV1ConflictCandidates");
@@ -205,6 +230,36 @@ describe("v1 plugin entrypoint contract", () => {
     expect(materialize).toContain('"CONFLICT_COPY_DOWNLOAD_FAILED"');
     expect(materialize).toContain('"CONFLICT_COPY_WRITE_FAILED"');
     expect(modal).toContain("openConflictCandidateCopy(conflict.id, candidate.versionId)");
+    expect(main).toContain("async cleanupResolvedLocalCopies(");
+    expect(main).toContain("selectCleanableRecoveryRecords({");
+    expect(modal).toContain('"清理已解决副本"');
+    expect(modal).toContain("不会删除当前 Vault 文件，不会删除 S3 对象或历史");
+  });
+
+  it("loads bounded whole-file conflict comparisons without adding hunk-level selection", () => {
+    const main = readFileSync(new URL("../../src/main.ts", import.meta.url), "utf8");
+    const modal = readFileSync(new URL("../../src/conflict-modal.ts", import.meta.url), "utf8");
+    const preview = readFileSync(new URL("../../src/conflict-preview.ts", import.meta.url), "utf8");
+
+    expect(main).toContain("async loadConflictTextComparison(");
+    expect(modal).toContain('.setButtonText(activeComparison?.status === "loading"');
+    expect(modal).toContain("loadConflictTextComparison(conflict.id, candidate.versionId)");
+    expect(modal).toContain("当前为整文件左右对照，不标注行级增删");
+    expect(preview).toContain("maximumBytes: 1024 * 1024");
+    expect(preview).toContain("maximumLines: 20_000");
+    expect(modal).not.toMatch(/选择.*行|选择.*段|applyHunk|selectHunk/);
+  });
+
+  it("resumes an interrupted remote conflict choice with repository-relative recovery metadata", () => {
+    const main = readFileSync(new URL("../../src/main.ts", import.meta.url), "utf8");
+    const resolution = main.slice(main.indexOf("private async resolveV1Conflict"), main.indexOf("private configWorkspaceRuntime"));
+    const applicator = main.slice(main.indexOf("private createVaultApplicator"), main.indexOf("private buildVaultApplyPlan"));
+
+    expect(resolution).toContain("this.interruptedConflictApplyJournal(");
+    expect(resolution).toContain("rebindSafeApplyJournal(interrupted");
+    expect(resolution).toContain(").resume(rebound)");
+    expect(applicator).toContain('recoveryRef: (plan) => `${stateRoot}/recovery/${plan.operationId}`');
+    expect(applicator).toContain('recoveryContentRef: (plan) => `recovery/${plan.operationId}`');
   });
 
   it("keeps startup, conflict, and configuration action failures diagnostic", () => {

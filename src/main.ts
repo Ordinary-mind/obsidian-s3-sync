@@ -18,7 +18,8 @@ import { vaultPathCaseFoldKey } from "../core/path";
 import { mayApplyRemoteWithEditorIntent } from "../core/editor-latch";
 import { sha256Hex } from "../protocol/hash";
 import { bindRootDeletePredecessor, bindVaultEventsAfterPublication, clearVaultEventsThroughGeneration, latestVaultEvent, mergeVaultEventsAfterPublication, recordVaultEvent } from "../core/vault-event";
-import { isVaultPathExcluded, localStateRoot } from "../core/scope";
+import { isVaultPathExcluded, localStateRoot, VAULT_CONFLICT_ROOT } from "../core/scope";
+import { normalizeRepositoryStateReference } from "../core/local-state-layout";
 import { createRepositoryLocator, type RepositoryLocator } from "../core/locator";
 import { assertPersistedRepositoryBinding, createPersistedRepositoryBinding } from "../core/repository-binding";
 import type { CommitFrontierAnchor } from "../core/commit-frontier";
@@ -31,6 +32,7 @@ import {
   confirmTerminalDurableOutboxPublishedTransaction,
   failDurableOutboxPublicationTransaction,
   freezeDurableOutboxStateTransaction,
+  persistRecoveryRecordTransaction,
   validateRepositoryStatePayload,
 } from "../core/repository-state-transaction";
 import { advanceIngestedCommitState } from "../core/ingested-state";
@@ -109,8 +111,14 @@ import { NodeContentStagingAdapter } from "../adapters/node-content-staging-adap
 import type { StableStreamCaptureResult } from "../core/streaming-capture";
 import { BoundedExecutor } from "../core/bounded-executor";
 import { NodeLocalFileAdapter } from "../adapters/node-local-file-adapter";
-import { SafeLocalApplicator, type BoundApplyPlan, type SafeApplyJournal } from "../core/safe-apply";
-import type { RecoveryRecord } from "../core/recovery-record";
+import { SafeLocalApplicator, rebindSafeApplyJournal, type BoundApplyPlan, type SafeApplyJournal } from "../core/safe-apply";
+import {
+  markRecoveryCleaned,
+  observeRecoveryContent,
+  requestRecoveryCleanup,
+  type RecoveryRecord,
+} from "../core/recovery-record";
+import { selectCleanableRecoveryRecords } from "../core/local-copy-cleanup";
 import { repositoryPerformanceProfile } from "../core/performance-profile";
 import type { RemoteVaultConflictCandidate } from "../core/remote-vault-conflict";
 import { showCopyableErrorNotice, showCopyableNotice } from "./copyable-notice";
@@ -132,6 +140,15 @@ import {
 } from "./connection-controller";
 import { VaultEventTracker } from "./vault-event-tracker";
 import { compareUtf8 } from "../protocol/utf8";
+import {
+  defaultConflictPreviewLimits,
+  mayLoadConflictPreview,
+  missingConflictPreview,
+  oversizedConflictPreview,
+  previewConflictBytes,
+  type ConflictPreviewSide,
+  type ConflictTextComparison,
+} from "./conflict-preview";
 
 type V1OperationResult =
   | { status: "success" }
@@ -139,6 +156,17 @@ type V1OperationResult =
   | { status: "failed"; error: unknown };
 type V1VaultPullDiagnostics = Awaited<ReturnType<V1RepositoryService["listResolvedVaultPutsWithDiagnostics"]>>;
 interface V1PullCounts { created: number; updated: number; deleted: number; skipped: number }
+export interface LocalCopyCleanupSummary {
+  recoveryFiles: number;
+  recoveryBytes: number;
+  conflictFolders: number;
+  protectedFiles: number;
+}
+
+export interface LocalCopyCleanupResult extends LocalCopyCleanupSummary {
+  modifiedFilesPreserved: number;
+}
+const RECENT_APPLY_EVENT_WINDOW_MS = 30_000;
 
 export default class S3SyncPlugin extends Plugin {
   settings: S3SyncSettings = { ...DEFAULT_SETTINGS };
@@ -155,6 +183,7 @@ export default class S3SyncPlugin extends Plugin {
   private editorChangeObserved = false;
   private causalStatePersistence = Promise.resolve();
   private readonly v1ApplyOperations = new Map<string, string>();
+  private readonly recentV1ApplyEvents = new Map<string, { targetHash: string | undefined; expiresAt: number }>();
   private readonly repositoryState = new RepositoryStateRuntime(this.app.vault.adapter, this.app.vault.configDir);
   private readonly repositoryOperation = new RepositoryOperationRuntime();
   private readonly vaultHashExecutor = new BoundedExecutor(repositoryPerformanceProfile.hashConcurrency);
@@ -163,6 +192,7 @@ export default class S3SyncPlugin extends Plugin {
     isManagedPath: (path) => this.isV1ManagedVaultPath(path),
     capturePathHash: (path) => this.captureVaultFileHash(path),
     currentApplyOperation: (path) => this.v1ApplyOperations.get(path),
+    isRecentApplyEvent: (path, actualHash) => this.isRecentV1ApplyEvent(path, actualHash),
     persistSoon: () => this.queueCausalStatePersistence(),
     notifyChange: () => this.autoSyncScheduler?.notifyChange(),
   });
@@ -337,6 +367,339 @@ export default class S3SyncPlugin extends Plugin {
     }
   }
 
+  async openConflictRecoveryCopy(conflictIdValue: string, recoveryId: string): Promise<void> {
+    this.beginRepositoryOperation("vault");
+    try {
+      const state = this.data.v1;
+      const conflict = this.data.conflicts[conflictIdValue];
+      const recovery = this.data.v1RecoveryRecords[recoveryId];
+      const journal = this.data.v1ApplyJournals.find((candidate) => candidate.operationId === recoveryId);
+      const journalRecovery = journal?.path === conflict?.path && journal.expectedLocal.kind === "present" ? journal : undefined;
+      const retainedRecovery = recovery?.logicalPath === conflict?.path && recovery.cleanupState !== "cleaned" ? recovery : undefined;
+      if (!state || !conflict || (!retainedRecovery && !journalRecovery)) {
+        throw new DiagnosticError(
+          "CONFLICT_RECOVERY_NOT_FOUND",
+          "local-path",
+          "the retained local conflict recovery is unavailable",
+        );
+      }
+      const relativeRef = normalizeRepositoryStateReference(
+        retainedRecovery?.contentRef ?? `recovery/${journalRecovery!.operationId}`,
+        ["recovery"],
+      );
+      const sourcePath = `${localStateRoot(state.configDir, state.repositoryId)}/${relativeRef}`;
+      let bytes: Uint8Array;
+      try {
+        bytes = new Uint8Array(await this.app.vault.adapter.readBinary(sourcePath));
+      } catch (cause) {
+        throw new DiagnosticError(
+          "CONFLICT_RECOVERY_READ_FAILED",
+          "local-path",
+          "the retained local conflict recovery could not be read",
+          cause,
+        );
+      }
+      let expected: { hash: string; size: number };
+      if (retainedRecovery) {
+        expected = { hash: retainedRecovery.lastStableHash, size: retainedRecovery.lastStableSize };
+      } else if (journalRecovery?.expectedLocal.kind === "present") {
+        expected = { hash: journalRecovery.expectedLocal.hash, size: journalRecovery.expectedLocal.size };
+      } else {
+        throw new DiagnosticError(
+          "CONFLICT_RECOVERY_NOT_FOUND",
+          "local-path",
+          "the retained local conflict recovery has no verifiable before-image",
+        );
+      }
+      if (!conflictCopyContentMatches(bytes, expected)) {
+        throw new DiagnosticError(
+          "CONFLICT_RECOVERY_CONTENT_MISMATCH",
+          "integrity",
+          "the retained local conflict recovery no longer matches its durable record",
+        );
+      }
+      const copyPath = conflictVersionCopyPath(conflict.id, `local-recovery:${recoveryId}`, conflict.path);
+      await this.writeConflictCopy(copyPath, bytes, expected);
+      await this.openFile(copyPath);
+    } finally {
+      this.endRepositoryOperation("vault");
+    }
+  }
+
+  async loadConflictTextComparison(conflictIdValue: string, candidateVersionId: string): Promise<ConflictTextComparison> {
+    this.beginRepositoryOperation("vault");
+    try {
+      const state = this.data.v1;
+      const conflict = this.data.conflicts[conflictIdValue];
+      if (!state || !conflict || conflict.resolved) {
+        throw new DiagnosticError(
+          "CONFLICT_NOT_FOUND",
+          "conflict",
+          "the selected conflict no longer exists",
+        );
+      }
+      const candidate = conflict.remoteCandidates.find((item) => item.versionId === candidateVersionId);
+      if (!candidate) {
+        throw new DiagnosticError(
+          "CONFLICT_COPY_CANDIDATE_UNAVAILABLE",
+          "conflict",
+          "the selected conflict candidate is unavailable",
+        );
+      }
+      const local = await this.loadLocalConflictPreview(conflict);
+      if (candidate.kind === "delete") return { local, remote: missingConflictPreview() };
+      if (!mayLoadConflictPreview(candidate.size)) {
+        return { local, remote: oversizedConflictPreview(candidate.size) };
+      }
+      await this.assertV1RepositoryBinding(state);
+      const service = this.createRepositoryService(this.settings, state.locator.normalizedPrefix);
+      let remoteBytes: Uint8Array;
+      try {
+        remoteBytes = await service.downloadVaultBlob(state.repositoryId, candidate);
+      } catch (cause) {
+        throw diagnosticFromCause(
+          "CONFLICT_PREVIEW_REMOTE_DOWNLOAD_FAILED",
+          "integrity",
+          "remote conflict candidate could not be downloaded for preview",
+          cause,
+        );
+      }
+      return { local, remote: previewConflictBytes(remoteBytes) };
+    } finally {
+      this.endRepositoryOperation("vault");
+    }
+  }
+
+  async getLocalCopyCleanupSummary(): Promise<LocalCopyCleanupSummary> {
+    const selection = selectCleanableRecoveryRecords({
+      records: Object.values(this.data.v1RecoveryRecords),
+      applyJournals: this.data.v1ApplyJournals,
+      conflicts: Object.values(this.data.conflicts),
+    });
+    return {
+      recoveryFiles: selection.eligible.length,
+      recoveryBytes: selection.eligible.reduce((total, record) => total + record.lastStableSize, 0),
+      conflictFolders: (await this.listResolvedConflictCopyFolders()).length,
+      protectedFiles: selection.protected.length,
+    };
+  }
+
+  async cleanupResolvedLocalCopies(): Promise<LocalCopyCleanupResult> {
+    this.beginRepositoryOperation("vault");
+    try {
+      return await this.runSerializedCausalMutation(() => this.cleanupResolvedLocalCopiesLocked());
+    } finally {
+      this.endRepositoryOperation("vault");
+    }
+  }
+
+  private async cleanupResolvedLocalCopiesLocked(): Promise<LocalCopyCleanupResult> {
+    const state = this.data.v1;
+      if (!state) {
+        throw new DiagnosticError(
+          "LOCAL_COPY_CLEANUP_REPOSITORY_NOT_CONNECTED",
+          "repository-identity",
+          "local copy cleanup requires a connected repository",
+        );
+      }
+      const selection = selectCleanableRecoveryRecords({
+        records: Object.values(this.data.v1RecoveryRecords),
+        applyJournals: this.data.v1ApplyJournals,
+        conflicts: Object.values(this.data.conflicts),
+      });
+      const stateRoot = localStateRoot(state.configDir, state.repositoryId);
+      const targets: Array<{ record: RecoveryRecord; path: string; present: boolean }> = [];
+      let modifiedFilesPreserved = 0;
+
+      for (const current of selection.eligible) {
+        const relativeRef = normalizeRepositoryStateReference(current.contentRef, ["recovery"]);
+        const path = `${stateRoot}/${relativeRef}`;
+        const present = await this.app.vault.adapter.exists(path);
+        if (present) {
+          let bytes: Uint8Array;
+          try {
+            bytes = new Uint8Array(await this.app.vault.adapter.readBinary(path));
+          } catch (cause) {
+            throw new DiagnosticError(
+              "LOCAL_COPY_CLEANUP_READ_FAILED",
+              "local-path",
+              "a retained recovery file could not be read before cleanup",
+              cause,
+            );
+          }
+          const hash = sha256Hex(bytes);
+          if (hash !== current.lastStableHash || bytes.byteLength !== current.lastStableSize) {
+            const observed = observeRecoveryContent(current, {
+              kind: "present",
+              hash,
+              size: bytes.byteLength,
+            });
+            await this.persistRecoveryCleanupRecord(state, observed);
+            modifiedFilesPreserved += 1;
+            continue;
+          }
+        }
+        const requested = requestRecoveryCleanup(current, {
+          explicit: true,
+          reviewedHash: current.lastStableHash,
+          reviewedSize: current.lastStableSize,
+        });
+        await this.persistRecoveryCleanupRecord(state, requested);
+        targets.push({ record: requested, path, present });
+      }
+
+      let recoveryBytes = 0;
+      for (const target of targets) {
+        if (await this.app.vault.adapter.exists(target.path)) {
+          try {
+            await this.app.vault.adapter.remove(target.path);
+          } catch (cause) {
+            throw new DiagnosticError(
+              "LOCAL_COPY_CLEANUP_DELETE_FAILED",
+              "local-path",
+              "an explicitly selected recovery file could not be deleted",
+              cause,
+            );
+          }
+        }
+        if (await this.app.vault.adapter.exists(target.path)) {
+          throw new DiagnosticError(
+            "LOCAL_COPY_CLEANUP_DELETE_NOT_DURABLE",
+            "local-path",
+            "a recovery file remained present after explicit cleanup",
+          );
+        }
+        if (target.present) recoveryBytes += target.record.lastStableSize;
+        await this.persistRecoveryCleanupRecord(state, markRecoveryCleaned(target.record, true));
+      }
+
+      const conflictFolders = await this.listResolvedConflictCopyFolders();
+      let removedConflictFolders = 0;
+      for (const folder of conflictFolders) {
+        try {
+          const entry = this.app.vault.getAbstractFileByPath(folder);
+          if (entry) await this.app.vault.delete(entry, true);
+          else if (await this.app.vault.adapter.exists(folder)) await this.app.vault.adapter.rmdir(folder, true);
+        } catch (cause) {
+          throw new DiagnosticError(
+            "LOCAL_COPY_CLEANUP_CONFLICT_FOLDER_DELETE_FAILED",
+            "local-path",
+            "a resolved conflict copy folder could not be deleted",
+            cause,
+          );
+        }
+        if (await this.app.vault.adapter.exists(folder)) {
+          throw new DiagnosticError(
+            "LOCAL_COPY_CLEANUP_CONFLICT_FOLDER_REMAINS",
+            "local-path",
+            "a resolved conflict copy folder remained present after explicit cleanup",
+          );
+        }
+        removedConflictFolders += 1;
+      }
+      this.updateStatus();
+      return {
+        recoveryFiles: targets.length,
+        recoveryBytes,
+        conflictFolders: removedConflictFolders,
+        protectedFiles: selection.protected.length + modifiedFilesPreserved,
+        modifiedFilesPreserved,
+      };
+  }
+
+  private runSerializedCausalMutation<T>(action: () => Promise<T>): Promise<T> {
+    const pending = this.causalStatePersistence.then(action);
+    this.causalStatePersistence = pending.then(() => undefined, () => undefined);
+    return pending;
+  }
+
+  private async persistRecoveryCleanupRecord(
+    state: NonNullable<S3SyncData["v1"]>,
+    record: RecoveryRecord,
+  ): Promise<void> {
+    try {
+      await persistRecoveryRecordTransaction(await this.v1DurableStore(state), record);
+    } catch (cause) {
+      throw new DiagnosticError(
+        "LOCAL_COPY_CLEANUP_STATE_PERSIST_FAILED",
+        "local-path",
+        "local recovery cleanup state could not be persisted durably",
+        cause,
+      );
+    }
+    this.data.v1RecoveryRecords[record.id] = structuredClone(record);
+  }
+
+  private async listResolvedConflictCopyFolders(): Promise<string[]> {
+    const adapter = this.app.vault.adapter;
+    if (!(await adapter.exists(VAULT_CONFLICT_ROOT))) return [];
+    let folders: string[];
+    try {
+      folders = (await adapter.list(VAULT_CONFLICT_ROOT)).folders;
+    } catch (cause) {
+      if (!(await adapter.exists(VAULT_CONFLICT_ROOT))) return [];
+      throw new DiagnosticError(
+        "LOCAL_COPY_CLEANUP_CONFLICT_FOLDER_LIST_FAILED",
+        "local-path",
+        "the local conflict copy directory could not be inspected",
+        cause,
+      );
+    }
+    const prefix = `${VAULT_CONFLICT_ROOT}/`;
+    const unresolvedIds = new Set(Object.values(this.data.conflicts)
+      .filter((conflict) => !conflict.resolved)
+      .map((conflict) => conflict.id));
+    return folders
+      .map((folder) => normalizePath(folder))
+      .filter((folder) => {
+        if (!folder.startsWith(prefix)) return false;
+        const id = folder.slice(prefix.length);
+        return /^[0-9a-f]{64}$/.test(id) && !unresolvedIds.has(id);
+      })
+      .sort(compareUtf8);
+  }
+
+  private async loadLocalConflictPreview(conflict: S3SyncData["conflicts"][string]): Promise<ConflictPreviewSide> {
+    const entry = this.app.vault.getAbstractFileByPath(conflict.path);
+    if (conflict.localHash === null) {
+      if (entry !== null) {
+        throw new DiagnosticError(
+          "CONFLICT_PREVIEW_LOCAL_CHANGED",
+          "conflict",
+          "local conflict path changed after conflict detection",
+        );
+      }
+      return missingConflictPreview();
+    }
+    if (!(entry instanceof TFile)) {
+      throw new DiagnosticError(
+        "CONFLICT_PREVIEW_LOCAL_CHANGED",
+        "conflict",
+        "local conflict file is no longer available",
+      );
+    }
+    if (!mayLoadConflictPreview(entry.stat.size)) return oversizedConflictPreview(entry.stat.size);
+    let bytes: Uint8Array;
+    try {
+      bytes = new Uint8Array(await this.app.vault.readBinary(entry));
+    } catch (cause) {
+      throw diagnosticFromCause(
+        "CONFLICT_PREVIEW_LOCAL_READ_FAILED",
+        "local-path",
+        "local conflict file could not be read for preview",
+        cause,
+      );
+    }
+    if (sha256Hex(bytes) !== conflict.localHash) {
+      throw new DiagnosticError(
+        "CONFLICT_PREVIEW_LOCAL_CHANGED",
+        "conflict",
+        "local conflict bytes changed after conflict detection",
+      );
+    }
+    return previewConflictBytes(bytes, defaultConflictPreviewLimits);
+  }
+
   async openFile(path: string): Promise<void> {
     const file = getTFile(this.app.vault, path);
     if (!file) {
@@ -366,7 +729,7 @@ export default class S3SyncPlugin extends Plugin {
         code: "vault-apply",
         source: "vault-apply-journal",
         disposition: "manual",
-        message: "存在未完成的 Vault 安全应用；原文件前像已保留。",
+        message: "存在未完成的 Vault 安全应用；同步会先恢复远端确认，再打开冲突窗口继续选择。",
       });
     }
     if (this.data.v1ConfigSync.status === "recovery-required") recoveryBlockers.push({
@@ -405,7 +768,9 @@ export default class S3SyncPlugin extends Plugin {
   }
 
   canAttemptV1Sync(): boolean {
-    return !!this.data.v1 && syncPreflightBlocker(this.v1SyncPreflightEvidence()) === undefined;
+    if (!this.data.v1) return false;
+    const blocker = syncPreflightBlocker(this.v1SyncPreflightEvidence());
+    return blocker === undefined || blocker === "apply-journal-recovery";
   }
 
   private v1SyncPreflightEvidence(): SyncPreflightEvidence {
@@ -2019,6 +2384,7 @@ export default class S3SyncPlugin extends Plugin {
     for (const event of this.data.v1VaultEvents) candidates.add(event.path);
     for (const path of Object.keys(this.data.v1LocalConcurrentRecords)) candidates.add(path);
     for (const path of Object.keys(this.data.v1PendingApply)) candidates.add(path);
+    for (const journal of this.data.v1ApplyJournals) candidates.add(journal.path);
     for (const conflict of Object.values(this.data.conflicts)) if (!conflict.resolved) candidates.add(conflict.path);
     for (const reconcile of this.data.v1PublishedReconciles) {
       if (reconcile.registerKey.startsWith("vault:")) candidates.add(reconcile.registerKey.slice("vault:".length));
@@ -2059,8 +2425,14 @@ export default class S3SyncPlugin extends Plugin {
         localIntent = "delete";
       }
 
-      if (!ignored && (localConcurrentRecordBlocksAutomaticWork(this.data.v1LocalConcurrentRecords[path]) || conflictPaths.has(path))) {
-        decisions.push({ path, decision: "conflict", reason: "本地并发记录或未解决 Vault 冲突阻止自动选择" });
+      const interruptedApply = this.data.v1ApplyJournals.some((journal) => journal.path === path);
+      if (!ignored && (localConcurrentRecordBlocksAutomaticWork(this.data.v1LocalConcurrentRecords[path])
+        || conflictPaths.has(path) || interruptedApply)) {
+        decisions.push({
+          path,
+          decision: "conflict",
+          reason: interruptedApply ? "上次文件安全应用尚未完成，需要在冲突窗口继续" : "本地并发记录或未解决 Vault 冲突阻止自动选择",
+        });
         continue;
       }
       if (!ignored && publishedReconcileBlocksAutomaticApply(this.data.v1PublishedReconciles, `vault:${path}`)) {
@@ -2480,8 +2852,6 @@ export default class S3SyncPlugin extends Plugin {
       const service = this.createRepositoryService(this.settings, state.locator.normalizedPrefix);
       let inspected = await this.inspectAndMaterializeVaultV1(state, service);
 
-      syncStage = "preflight";
-      this.assertV1SyncPreflight();
       const hadOutbox = this.data.v1DurableOutbox.some((entry) => entry.state !== "published")
         || this.data.v1PublishedReconciles.some((entry) => entry.state === "pending");
       syncStage = "outbox-replay";
@@ -2489,6 +2859,10 @@ export default class S3SyncPlugin extends Plugin {
       if (hadOutbox) {
         inspected = await this.inspectAndMaterializeVaultV1(this.data.v1!, service);
       }
+      const recoveryConflict = await this.routeInterruptedApplyRecovery(inspected.decisions);
+      if (recoveryConflict) return recoveryConflict;
+      syncStage = "preflight";
+      this.assertV1SyncPreflight();
 
       this.updateOperationalStatus({ lastError: undefined });
       state = inspected.state;
@@ -2553,7 +2927,7 @@ export default class S3SyncPlugin extends Plugin {
         try {
           binary = await service.downloadVaultBlob(state.repositoryId, remote);
         } catch (cause) {
-          throw localApplyDiagnostic(
+          throw diagnosticFromCause(
             "VAULT_PULL_DOWNLOAD_FAILED",
             "integrity",
             "remote Vault content could not be downloaded and verified",
@@ -2564,7 +2938,7 @@ export default class S3SyncPlugin extends Plugin {
         try {
           staged = await this.repositoryContentStaging(state).stage(oneChunk(binary), remote.size);
         } catch (cause) {
-          throw localApplyDiagnostic(
+          throw diagnosticFromCause(
             "VAULT_PULL_STAGING_FAILED",
             cause instanceof ContentStagingIntegrityError ? "integrity" : "local-path",
             "downloaded Vault content could not be stored in local staging",
@@ -2588,7 +2962,7 @@ export default class S3SyncPlugin extends Plugin {
         try {
           result = await this.createVaultApplicator(state, { heads: remote.heads, candidate }).apply(plan);
         } catch (cause) {
-          throw localApplyDiagnostic(
+          throw diagnosticFromCause(
             "VAULT_PULL_WRITE_FAILED",
             "local-path",
             "verified remote Vault content could not be applied locally",
@@ -2647,7 +3021,7 @@ export default class S3SyncPlugin extends Plugin {
         try {
           result = await this.createVaultApplicator(state, { heads: remote.heads, candidate }).apply(plan);
         } catch (cause) {
-          throw localApplyDiagnostic(
+          throw diagnosticFromCause(
             "VAULT_PULL_DELETE_FAILED",
             "local-path",
             "verified remote deletion could not be applied locally",
@@ -2930,6 +3304,21 @@ export default class S3SyncPlugin extends Plugin {
     return blocked.conflicts > 0 || blocked.pending > 0
       ? { status: "blocked", conflicts: blocked.conflicts, pending: blocked.pending }
       : { status: "success" };
+  }
+
+  private async routeInterruptedApplyRecovery(
+    decisions: readonly PathDecisionRecord[],
+  ): Promise<Extract<V1OperationResult, { status: "blocked" }> | undefined> {
+    if (this.data.v1ApplyJournals.length === 0) return undefined;
+    const conflictPaths = new Set(Object.values(this.data.conflicts)
+      .filter((conflict) => !conflict.resolved)
+      .map((conflict) => conflict.path));
+    if (!this.data.v1ApplyJournals.every((journal) => conflictPaths.has(journal.path))) return undefined;
+    const blocked = this.v1PullBlockSummary(decisions);
+    this.updateOperationalStatus({ phase: "idle", decisions: [...decisions], lastError: undefined });
+    await this.saveSyncData();
+    new ConflictModal(this).open();
+    return { status: "blocked", conflicts: Math.max(blocked.conflicts, conflictPaths.size), pending: blocked.pending };
   }
 
   async runDesktopRuntimeContract(): Promise<void> {
@@ -3554,25 +3943,6 @@ export default class S3SyncPlugin extends Plugin {
           "a verified remote conflict candidate must be selected",
         );
       }
-      const local = this.app.vault.getAbstractFileByPath(conflict.path);
-      if (local !== null && !(local instanceof TFile)) {
-        throw new DiagnosticError(
-          "CONFLICT_LOCAL_PATH_OCCUPIED",
-          "local-path",
-          "local conflict path is occupied by a non-file entry",
-        );
-      }
-      const localCapture = local instanceof TFile ? await this.captureVaultFileHash(conflict.path) : undefined;
-      if (local instanceof TFile && !localCapture) {
-        throw new DiagnosticError(
-          "CONFLICT_LOCAL_CAPTURE_CHANGED",
-          "local-path",
-          "local conflict content changed during before-image capture",
-        );
-      }
-      const expectedLocal: BoundApplyPlan["expectedLocal"] = localCapture
-        ? { kind: "present", hash: localCapture.hash, size: localCapture.size }
-        : { kind: "absent" };
       const eventGeneration = latestVaultEvent(this.data.v1VaultEvents, conflict.path)?.generation ?? 0;
       const dirtyGeneration = this.data.v1DirtyIntents[conflict.path]?.generation ?? 0;
       const captureGeneration = Math.max(
@@ -3580,26 +3950,62 @@ export default class S3SyncPlugin extends Plugin {
         eventGeneration,
         this.data.v1VaultGenerations[conflict.path] ?? 0,
       );
-      let target: BoundApplyPlan["target"];
-      if (candidate.kind === "delete") {
-        target = { kind: "delete" };
+      const target = await this.stageConflictCandidateTarget(state, service, candidate);
+      const interrupted = this.interruptedConflictApplyJournal(state, conflict.path);
+      let applyResult: Awaited<ReturnType<SafeLocalApplicator["apply"]>>;
+      if (interrupted) {
+        const targetChanged = candidate.kind === "delete"
+          ? interrupted.target.kind !== "delete"
+          : interrupted.target.kind !== "put" || interrupted.target.hash !== candidate.hash || interrupted.target.size !== candidate.size;
+        if (targetChanged && !["prepared", "recovery-moved"].includes(interrupted.state)) {
+          throw new DiagnosticError(
+            "CONFLICT_INTERRUPTED_APPLY_REVIEW_REQUIRED",
+            "conflict",
+            "the previous apply installed another target and must be reviewed before changing the selection",
+          );
+        }
+        const rebound = rebindSafeApplyJournal(interrupted, {
+          repositoryFingerprint: state.repositoryFingerprint,
+          targetHeads: [...remote.heads],
+          projectedHeads: [...(this.data.v1ProjectedHeads[conflict.path] ?? [])],
+          target,
+          projectionGeneration: this.data.v1VaultGenerations[conflict.path] ?? 0,
+          dirtyGeneration: captureGeneration,
+        });
+        applyResult = await this.createVaultApplicator(
+          state,
+          { heads: remote.heads, candidate },
+          conflict.path,
+          rebound.expectedLocal,
+        ).resume(rebound);
       } else {
-        const bytes = await service.downloadVaultBlob(state.repositoryId, candidate);
-        const staged = await this.repositoryContentStaging(state).stage(oneChunk(bytes), candidate.size);
-        target = {
-          kind: "put",
-          hash: candidate.hash,
-          size: candidate.size,
-          stagedRef: `${localStateRoot(state.configDir, state.repositoryId)}/${staged.ref}`,
-        };
+        const local = this.app.vault.getAbstractFileByPath(conflict.path);
+        if (local !== null && !(local instanceof TFile)) {
+          throw new DiagnosticError(
+            "CONFLICT_LOCAL_PATH_OCCUPIED",
+            "local-path",
+            "local conflict path is occupied by a non-file entry",
+          );
+        }
+        const localCapture = local instanceof TFile ? await this.captureVaultFileHash(conflict.path) : undefined;
+        if (local instanceof TFile && !localCapture) {
+          throw new DiagnosticError(
+            "CONFLICT_LOCAL_CAPTURE_CHANGED",
+            "local-path",
+            "local conflict content changed during before-image capture",
+          );
+        }
+        const expectedLocal: BoundApplyPlan["expectedLocal"] = localCapture
+          ? { kind: "present", hash: localCapture.hash, size: localCapture.size }
+          : { kind: "absent" };
+        const plan = this.buildVaultApplyPlan(state, conflict.path, remote.heads, target, expectedLocal);
+        applyResult = await this.createVaultApplicator(
+          state,
+          { heads: remote.heads, candidate },
+          conflict.path,
+          expectedLocal,
+        ).apply(plan);
       }
-      const plan = this.buildVaultApplyPlan(state, conflict.path, remote.heads, target, expectedLocal);
-      const applyResult = await this.createVaultApplicator(
-        state,
-        { heads: remote.heads, candidate },
-        conflict.path,
-        expectedLocal,
-      ).apply(plan);
       if (applyResult.status !== "accounted" && applyResult.status !== "adopted-without-write") {
         throw new DiagnosticError(
           `CONFLICT_APPLY_${applyResult.status.toUpperCase().replace(/-/g, "_")}`,
@@ -3692,6 +4098,66 @@ export default class S3SyncPlugin extends Plugin {
     await this.saveSyncData();
   }
 
+  private interruptedConflictApplyJournal(
+    state: NonNullable<S3SyncData["v1"]>,
+    path: string,
+  ): SafeApplyJournal | undefined {
+    const interrupted = this.data.v1ApplyJournals.filter((journal) => journal.path === path);
+    if (interrupted.length === 0) return undefined;
+    if (interrupted.length !== 1) {
+      throw new DiagnosticError(
+        "CONFLICT_MULTIPLE_INTERRUPTED_APPLIES",
+        "local-path",
+        "multiple interrupted applies exist for the same conflict path",
+      );
+    }
+    const journal = interrupted[0];
+    if (journal.repositoryFingerprint !== state.repositoryFingerprint || journal.groupId !== undefined) {
+      throw new DiagnosticError(
+        "CONFLICT_INTERRUPTED_APPLY_INVALID",
+        "local-path",
+        "the interrupted conflict apply does not belong to the active repository or is not a single-file apply",
+      );
+    }
+    return journal;
+  }
+
+  private async stageConflictCandidateTarget(
+    state: NonNullable<S3SyncData["v1"]>,
+    service: V1RepositoryService,
+    candidate: RemoteVaultConflictCandidate,
+  ): Promise<BoundApplyPlan["target"]> {
+    if (candidate.kind === "delete") return { kind: "delete" };
+    let bytes: Uint8Array;
+    try {
+      bytes = await service.downloadVaultBlob(state.repositoryId, candidate);
+    } catch (cause) {
+      throw diagnosticFromCause(
+        "CONFLICT_SELECTED_REMOTE_DOWNLOAD_FAILED",
+        "integrity",
+        "the selected remote conflict candidate could not be downloaded and verified",
+        cause,
+      );
+    }
+    let staged;
+    try {
+      staged = await this.repositoryContentStaging(state).stage(oneChunk(bytes), candidate.size);
+    } catch (cause) {
+      throw diagnosticFromCause(
+        "CONFLICT_SELECTED_REMOTE_STAGING_FAILED",
+        "local-path",
+        "the selected remote conflict candidate could not be staged locally",
+        cause,
+      );
+    }
+    return {
+      kind: "put",
+      hash: candidate.hash,
+      size: candidate.size,
+      stagedRef: `${localStateRoot(state.configDir, state.repositoryId)}/${staged.ref}`,
+    };
+  }
+
   private configWorkspaceRuntime(state: NonNullable<S3SyncData["v1"]>): ConfigWorkspaceRuntime {
     const adapter = this.app.vault.adapter;
     if (!(adapter instanceof FileSystemAdapter)) {
@@ -3763,6 +4229,7 @@ export default class S3SyncPlugin extends Plugin {
         };
       },
       persistJournal: async (journal) => {
+        this.recentV1ApplyEvents.delete(journal.path);
         const existing = this.data.v1ApplyJournals.findIndex((candidate) => candidate.operationId === journal.operationId);
         if (existing >= 0) this.data.v1ApplyJournals[existing] = structuredClone(journal);
         else this.data.v1ApplyJournals.push(structuredClone(journal));
@@ -3802,6 +4269,7 @@ export default class S3SyncPlugin extends Plugin {
         }
         this.data.v1ProjectedHeads[plan.path] = [...plan.targetHeads];
         delete this.data.v1PendingApply[plan.path];
+        this.rememberRecentV1ApplyEvent(plan.path, after.kind === "present" ? after.hash : undefined);
         this.data.v1ApplyJournals = this.data.v1ApplyJournals.filter((journal) => journal.operationId !== plan.operationId);
         if (this.v1ApplyOperations.get(plan.path) === plan.operationId) this.v1ApplyOperations.delete(plan.path);
         await this.savePluginData();
@@ -3809,6 +4277,7 @@ export default class S3SyncPlugin extends Plugin {
     }, {
       now: () => Date.now(),
       recoveryRef: (plan) => `${stateRoot}/recovery/${plan.operationId}`,
+      recoveryContentRef: (plan) => `recovery/${plan.operationId}`,
       conservativeCandidateRef: (plan) => `${stateRoot}/conflict-drafts/${plan.operationId}`,
       verifyStaged: async (target) => {
         const prefix = `${stateRoot}/`;
@@ -3822,6 +4291,24 @@ export default class S3SyncPlugin extends Plugin {
         await staging.verify(target.stagedRef.slice(prefix.length), { hash: target.hash, size: target.size });
       },
     });
+  }
+
+  private rememberRecentV1ApplyEvent(path: string, targetHash: string | undefined): void {
+    const now = Date.now();
+    for (const [candidate, event] of this.recentV1ApplyEvents) {
+      if (event.expiresAt <= now) this.recentV1ApplyEvents.delete(candidate);
+    }
+    this.recentV1ApplyEvents.set(path, { targetHash, expiresAt: now + RECENT_APPLY_EVENT_WINDOW_MS });
+  }
+
+  private isRecentV1ApplyEvent(path: string, actualHash: string | undefined): boolean {
+    const event = this.recentV1ApplyEvents.get(path);
+    if (!event) return false;
+    if (event.expiresAt <= Date.now() || event.targetHash !== actualHash) {
+      this.recentV1ApplyEvents.delete(path);
+      return false;
+    }
+    return true;
   }
 
   private buildVaultApplyPlan(
@@ -3892,7 +4379,7 @@ export default class S3SyncPlugin extends Plugin {
   }
 }
 
-function localApplyDiagnostic(
+function diagnosticFromCause(
   code: string,
   fallbackCategory: SyncDiagnosticCategory,
   message: string,

@@ -20,11 +20,24 @@ export function advanceWriterFrontiers(
   commits: readonly CommitFrontierAnchor[],
 ): WriterFrontiers {
   const byWriter = new Map<string, Map<string, CommitFrontierAnchor>>();
-  for (const anchor of [...Object.values(frontiers).flat(), ...commits]) {
+  const byHash = new Map<string, CommitFrontierAnchor>();
+  const trustedTips = new Set<string>();
+  const addAnchor = (anchor: CommitFrontierAnchor, trusted: boolean): void => {
+    const existing = byHash.get(anchor.hash);
+    if (existing && !sameAnchor(existing, anchor)) throw new Error("writer frontier hash identity changed");
+    byHash.set(anchor.hash, { ...anchor });
     const writer = byWriter.get(anchor.writerId) ?? new Map<string, CommitFrontierAnchor>();
     writer.set(anchor.hash, { ...anchor });
     byWriter.set(anchor.writerId, writer);
+    if (trusted) trustedTips.add(anchor.hash);
+  };
+  for (const [writerId, anchors] of Object.entries(frontiers)) {
+    for (const anchor of anchors) {
+      if (anchor.writerId !== writerId) throw new Error("writer frontier binding is invalid");
+      addAnchor(anchor, true);
+    }
   }
+  for (const anchor of commits) addAnchor(anchor, false);
   const result: WriterFrontiers = {};
   for (const [writerId, writer] of [...byWriter].sort(([left], [right]) => compareUtf8(left, right))) {
     const referenced = new Set<string>();
@@ -34,7 +47,11 @@ export function advanceWriterFrontiers(
         continue;
       }
       const parent = writer.get(anchor.previousCommitHash);
-      if (!parent || BigInt(anchor.sequence) !== BigInt(parent.sequence) + 1n) {
+      if (!parent) {
+        if (!trustedTips.has(anchor.hash)) throw new Error("writer frontier is not continuous");
+        continue;
+      }
+      if (BigInt(anchor.sequence) !== BigInt(parent.sequence) + 1n) {
         throw new Error("writer frontier is not continuous");
       }
       referenced.add(anchor.previousCommitHash);
@@ -44,6 +61,11 @@ export function advanceWriterFrontiers(
       .sort((left, right) => compareUtf8(left.sequence, right.sequence) || compareUtf8(left.hash, right.hash));
   }
   return result;
+}
+
+function sameAnchor(left: CommitFrontierAnchor, right: CommitFrontierAnchor): boolean {
+  return left.key === right.key && left.writerId === right.writerId && left.sequence === right.sequence
+    && left.hash === right.hash && left.previousCommitHash === right.previousCommitHash;
 }
 
 export async function verifyWriterFrontiers(

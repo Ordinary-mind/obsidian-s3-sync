@@ -2,6 +2,7 @@ import { buildBlobObject } from "./blob";
 import { buildVaultChangeEnvelope } from "./commit-builder";
 import type { PublishEnvelope } from "./remote-publish";
 import type { StableCapture } from "./stable-capture";
+import type { CommitKind } from "./types";
 import { blobKey } from "../protocol/keys";
 
 export interface VaultPutControlEnvelope {
@@ -23,7 +24,7 @@ export function buildVaultDeleteControlEnvelope(input: {
 }): PublishEnvelope {
   const envelope = buildVaultChangeEnvelope({
     ...input,
-    kind: input.previousCommitHash === null ? "bootstrap" : "change",
+    kind: vaultCommitKind(input.parents),
     mutations: [{ path: input.path, kind: "delete", parents: [...input.parents] }],
   });
   return { blobs: [], configTrees: [], chunks: [envelope.chunk], commit: envelope.commit };
@@ -69,11 +70,16 @@ export function buildVaultPutControlEnvelope(input: {
   };
   const envelope = buildVaultChangeEnvelope({
     ...input,
-    kind: input.previousCommitHash === null ? "bootstrap" : "change",
+    kind: vaultCommitKind(input.parents),
     mutations: [{ path: input.path, kind: "put", blob: { hash: blob.hash, size: blob.size }, parents: [...input.parents] }],
   });
   return {
     blob,
     envelope: { blobs: [], configTrees: [], chunks: [envelope.chunk], commit: envelope.commit },
   };
+}
+
+function vaultCommitKind(parents: readonly string[]): CommitKind {
+  if (parents.length === 0) return "bootstrap";
+  return parents.length === 1 ? "change" : "conflict-resolution";
 }

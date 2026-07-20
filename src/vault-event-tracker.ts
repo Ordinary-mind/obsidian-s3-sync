@@ -1,4 +1,4 @@
-import { isOwnApplyEvent } from "../core/apply-operation";
+import { isOwnApplyEditorEvent, isOwnApplyEvent } from "../core/apply-operation";
 import { captureEditorChange, observeEditorDisk } from "../core/editor-latch";
 import { latestVaultEvent, recordVaultEvent, recordVaultRename } from "../core/vault-event";
 import type { S3SyncData } from "./types";
@@ -8,6 +8,7 @@ export interface VaultEventTrackerHost {
   isManagedPath(path: string): boolean;
   capturePathHash(path: string): Promise<{ hash: string } | undefined>;
   currentApplyOperation(path: string): string | undefined;
+  isRecentApplyEvent(path: string, actualHash: string | undefined): boolean;
   persistSoon(): void;
   notifyChange(): void;
 }
@@ -18,6 +19,10 @@ export class VaultEventTracker {
   recordEditorChange(path: string, editorContentHash: string): void {
     const data = this.host.getData();
     if (!data.v1 || !this.host.isManagedPath(path)) return;
+    const operationId = this.host.currentApplyOperation(path);
+    if (isOwnApplyEditorEvent(data.v1ApplyJournals, operationId, path, editorContentHash)
+      || this.host.isRecentApplyEvent(path, editorContentHash)) return;
+    if (!data.v1DirtyIntents[path] && data.files[path]?.hash === editorContentHash) return;
     data.v1DirtyIntents[path] = captureEditorChange({
       path,
       projectedHeads: data.v1ProjectedHeads[path] ?? [],
@@ -32,15 +37,13 @@ export class VaultEventTracker {
     const data = this.host.getData();
     if (!data.v1 || !this.host.isManagedPath(path)) return;
     const applyJournals = data.v1ApplyJournals.map((journal) => ({ ...journal }));
+    const operationId = this.host.currentApplyOperation(path);
     const capture = await this.host.capturePathHash(path);
-    if (capture && isOwnApplyEvent(
-      applyJournals,
-      this.host.currentApplyOperation(path),
-      path,
-      capture.hash,
-    )) return;
-    this.appendEvent("upsert", path);
+    if (capture && (isOwnApplyEvent(applyJournals, operationId, path, capture.hash)
+      || this.host.isRecentApplyEvent(path, capture.hash))) return;
     const intent = data.v1DirtyIntents[path];
+    if (capture && !intent && data.files[path]?.hash === capture.hash) return;
+    this.appendEvent("upsert", path);
     if (capture && intent) {
       data.v1DirtyIntents[path] = observeEditorDisk(intent, { kind: "put", hash: capture.hash }, false).intent;
     }
@@ -50,7 +53,8 @@ export class VaultEventTracker {
   handleDelete(path: string): void {
     const data = this.host.getData();
     if (!data.v1 || !this.host.isManagedPath(path)) return;
-    if (isOwnApplyEvent(data.v1ApplyJournals, this.host.currentApplyOperation(path), path, undefined)) return;
+    if (isOwnApplyEvent(data.v1ApplyJournals, this.host.currentApplyOperation(path), path, undefined)
+      || this.host.isRecentApplyEvent(path, undefined)) return;
     this.appendEvent("delete", path);
     const intent = data.v1DirtyIntents[path];
     if (intent) data.v1DirtyIntents[path] = observeEditorDisk(intent, { kind: "delete" }, false).intent;

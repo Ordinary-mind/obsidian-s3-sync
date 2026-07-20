@@ -4,6 +4,7 @@ import { createPersistedRepositoryBinding } from "../../core/repository-binding"
 import { createRepositoryLocator } from "../../core/locator";
 import { createDefaultData } from "../../src/defaults";
 import { RepositoryStateRuntime } from "../../src/repository-state-runtime";
+import { createRecoveryRecord } from "../../core/recovery-record";
 
 class MemoryPaths implements LocalStatePathAdapter {
   readonly entries = new Map<string, { type: "file" | "folder"; source?: string }>([[".obsidian", { type: "folder" }]]);
@@ -143,6 +144,46 @@ describe("repository state runtime", () => {
     expect(restored.v1SparseSeenCommits).toEqual(first.v1SparseSeenCommits);
     expect(restored.v1ObservedRegisters).toEqual(first.v1ObservedRegisters);
     expect(restored.v1PendingApply).toEqual(first.v1PendingApply);
+  });
+
+  it("persists a physical apply recovery path with a repository-relative recovery record", async () => {
+    const paths = new MemoryPaths();
+    const first = boundData();
+    const operationId = "conflict-apply";
+    const hash = "b".repeat(64);
+    const root = `.obsidian/.obsidian-s3-sync-local/${repositoryId}`;
+    const recovery = createRecoveryRecord({
+      id: operationId,
+      contentRef: `recovery/${operationId}`,
+      logicalPath: "a.md",
+      source: "apply-before-image",
+      hash,
+      size: 1,
+      capturedAt: 1,
+    });
+    first.v1RecoveryRecords[operationId] = recovery;
+    first.v1ApplyJournals.push({
+      operationId,
+      path: "a.md",
+      repositoryFingerprint: first.v1!.repositoryFingerprint,
+      targetHeads: [],
+      projectedHeads: [],
+      target: { kind: "delete" },
+      expectedLocal: { kind: "present", hash, size: 1 },
+      projectionGeneration: 0,
+      dirtyGeneration: 0,
+      state: "recovery-moved",
+      writeMode: "destructive",
+      recoveryRef: `${root}/recovery/${operationId}`,
+      recoveryRecord: recovery,
+    });
+
+    await new RepositoryStateRuntime(paths, ".obsidian").persist(first);
+    const restored = boundData();
+    await new RepositoryStateRuntime(paths, ".obsidian").restore(restored);
+
+    expect(restored.v1RecoveryRecords[operationId]?.contentRef).toBe(`recovery/${operationId}`);
+    expect(restored.v1ApplyJournals[0]?.recoveryRef).toBe(`${root}/recovery/${operationId}`);
   });
 
   it("archives invalid state copies and preserves staging before initializing a new writer state", async () => {
