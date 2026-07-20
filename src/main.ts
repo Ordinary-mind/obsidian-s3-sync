@@ -1728,6 +1728,7 @@ export default class S3SyncPlugin extends Plugin {
   private async drainDurableOutbox(
     initialState: NonNullable<S3SyncData["v1"]>,
     staging: ImmutableContentStaging,
+    sharedService?: V1RepositoryService,
   ): Promise<void> {
     if (this.data.v1?.repositoryFingerprint !== initialState.repositoryFingerprint) {
       throw new DiagnosticError(
@@ -1736,7 +1737,7 @@ export default class S3SyncPlugin extends Plugin {
         "repository binding changed before durable Outbox replay",
       );
     }
-    const service = this.createRepositoryService(this.settings, initialState.locator.normalizedPrefix);
+    const service = sharedService ?? this.createRepositoryService(this.settings, initialState.locator.normalizedPrefix);
     while (true) {
       const state = this.data.v1;
       if (!state) {
@@ -1881,11 +1882,14 @@ export default class S3SyncPlugin extends Plugin {
     this.updateOperationalStatus({ lastSuccessfulPublish: Date.now() });
   }
 
-  private async drainDurableOutboxIfPresent(state: NonNullable<S3SyncData["v1"]>): Promise<void> {
+  private async drainDurableOutboxIfPresent(
+    state: NonNullable<S3SyncData["v1"]>,
+    sharedService?: V1RepositoryService,
+  ): Promise<void> {
     const staging = this.repositoryContentStaging(state);
     const replayed = this.data.v1DurableOutbox.some((entry) => entry.state !== "published");
     if (replayed) {
-      await this.drainDurableOutbox(state, staging);
+      await this.drainDurableOutbox(state, staging, sharedService);
     }
     try {
       await this.reconcilePendingPublishedVaultMutations(this.data.v1 ?? state);
@@ -1900,7 +1904,7 @@ export default class S3SyncPlugin extends Plugin {
     parents: string[];
     capture: Extract<StableStreamCaptureResult, { status: "captured" }>;
     captureGeneration: number;
-  }): Promise<{ commitHash: string; versionId: string }> {
+  }, sharedService?: V1RepositoryService): Promise<{ commitHash: string; versionId: string }> {
     let syncStage: SyncFlowStage = "outbox-freeze";
     try {
       const reservation = reserveWriterCommit(input.state);
@@ -1957,7 +1961,7 @@ export default class S3SyncPlugin extends Plugin {
       this.applyDurableOutboxSnapshot(captured.payload, false);
       syncStage = "publication";
       this.updateOperationalStatus({ phase: "publishing" });
-      await this.drainDurableOutbox(this.data.v1!, this.repositoryContentStaging(this.data.v1!));
+      await this.drainDurableOutbox(this.data.v1!, this.repositoryContentStaging(this.data.v1!), sharedService);
       syncStage = "publication-verification";
       this.updateOperationalStatus({ phase: "verifying-publication" });
       await this.causalStatePersistence;
@@ -1981,7 +1985,7 @@ export default class S3SyncPlugin extends Plugin {
     path: string;
     parents: string[];
     captureGeneration: number;
-  }): Promise<{ commitHash: string; versionId: string }> {
+  }, sharedService?: V1RepositoryService): Promise<{ commitHash: string; versionId: string }> {
     let syncStage: SyncFlowStage = "outbox-freeze";
     try {
       const reservation = reserveWriterCommit(input.state);
@@ -2029,7 +2033,7 @@ export default class S3SyncPlugin extends Plugin {
       this.applyDurableOutboxSnapshot(captured.payload, false);
       syncStage = "publication";
       this.updateOperationalStatus({ phase: "publishing" });
-      await this.drainDurableOutbox(this.data.v1!, this.repositoryContentStaging(this.data.v1!));
+      await this.drainDurableOutbox(this.data.v1!, this.repositoryContentStaging(this.data.v1!), sharedService);
       syncStage = "publication-verification";
       this.updateOperationalStatus({ phase: "verifying-publication" });
       await this.causalStatePersistence;
@@ -2299,7 +2303,8 @@ export default class S3SyncPlugin extends Plugin {
     this.repositoryOperation.acquire("vault");
     this.updateOperationalStatus({ retryAt: undefined });
     try {
-      const pull = await this.pullMissingFilesV1(false);
+      const service = this.createRepositoryService(this.settings, state.locator.normalizedPrefix);
+      const pull = await this.pullMissingFilesV1(false, service);
       if (pull.status === "failed") throw pull.error;
       if (pull.status === "blocked") {
         this.cancelV1Retry(true);
@@ -2313,7 +2318,7 @@ export default class S3SyncPlugin extends Plugin {
       this.repositoryOperation.throwIfAborted("vault");
       this.updateOperationalStatus({ phase: "scanning" });
 
-      const published = await this.publishPendingPathsV1();
+      const published = await this.publishPendingPathsV1(service);
 
       this.cancelV1Retry(true);
       this.updateOperationalStatus({ phase: "idle", lastError: undefined });
@@ -2611,7 +2616,7 @@ export default class S3SyncPlugin extends Plugin {
     }), null, 2);
   }
 
-  private async publishPendingPathsV1(): Promise<number> {
+  private async publishPendingPathsV1(service: V1RepositoryService): Promise<number> {
     this.repositoryOperation.assertHeldBy("vault");
     const orderedPaths: string[] = [];
     const seen = new Set<string>();
@@ -2637,14 +2642,14 @@ export default class S3SyncPlugin extends Plugin {
         else if (local === null && this.data.files[path] && decision === "tombstone") this.vaultEvents.recordEvent("delete", path);
         else continue;
       }
-      const result = await this.publishPathV1(path);
+      const result = await this.publishPathV1(path, service);
       if (result.status === "failed") throw result.error;
       if (result.status === "success") published += 1;
     }
     return published;
   }
 
-  private async publishPathV1(path: string): Promise<V1OperationResult> {
+  private async publishPathV1(path: string, service: V1RepositoryService): Promise<V1OperationResult> {
     this.repositoryOperation.assertHeldBy("vault");
     let syncStage: SyncFlowStage = "preflight";
     try {
@@ -2660,10 +2665,10 @@ export default class S3SyncPlugin extends Plugin {
       }
       syncStage = "repository-verification";
       this.updateOperationalStatus({ phase: "verifying-repository" });
-      await this.assertV1RepositoryBinding(state);
+      await this.assertV1RepositoryBinding(state, service);
       this.recoverVerifiedRepositoryIdentityLock();
       syncStage = "outbox-replay";
-      await this.drainDurableOutboxIfPresent(state);
+      await this.drainDurableOutboxIfPresent(state, service);
       syncStage = "preflight";
       this.assertV1SyncPreflight();
       this.updateOperationalStatus({ lastError: undefined });
@@ -2717,7 +2722,6 @@ export default class S3SyncPlugin extends Plugin {
         }
       }
       syncStage = "remote-refresh";
-      const service = this.createRepositoryService(this.settings, state.locator.normalizedPrefix);
       this.updateOperationalStatus({ phase: "repulling" });
       const pulled = await service.inspectVaultRegisterWithAnchors(state.repositoryId, state.descriptorHash, path);
       syncStage = "remote-state-persistence";
@@ -2788,7 +2792,7 @@ export default class S3SyncPlugin extends Plugin {
       );
       let published: { commitHash: string; versionId: string };
       if (deleting) {
-        published = await this.freezePublishAndReconcileVaultDelete({ state, path, parents, captureGeneration });
+        published = await this.freezePublishAndReconcileVaultDelete({ state, path, parents, captureGeneration }, service);
         delete this.data.files[path];
       } else {
         const capture = await this.captureVaultFileToStaging(state, path);
@@ -2804,7 +2808,7 @@ export default class S3SyncPlugin extends Plugin {
           || latestVaultEvent(this.data.v1VaultEvents, path)?.generation !== vaultEvent?.generation) {
           throw new DiagnosticError("VAULT_CHANGED_BEFORE_FREEZE", "local-path", "local bytes or causal generation changed before Outbox freeze");
         }
-        published = await this.freezePublishAndReconcileVaultPut({ state, path, parents, capture, captureGeneration });
+        published = await this.freezePublishAndReconcileVaultPut({ state, path, parents, capture, captureGeneration }, service);
         this.data.files[path] = { hash: capture.hash, size: capture.size, updatedAt: new Date().toISOString() };
         if (dirtyIntent?.localCandidates.length) {
           this.data.v1RecoveryCandidates[path] = dirtyIntent.localCandidates.map((candidate) => ({ ...candidate }));
@@ -2825,7 +2829,7 @@ export default class S3SyncPlugin extends Plugin {
     }
   }
 
-  private async pullMissingFilesV1(notify = true): Promise<V1OperationResult> {
+  private async pullMissingFilesV1(notify = true, sharedService?: V1RepositoryService): Promise<V1OperationResult> {
     if (notify && !this.repositoryOperation.tryAcquire("vault")) {
       const error = new DiagnosticError("REPOSITORY_OPERATION_BUSY", "internal", "another repository operation is running");
       this.recordOperationalError(withSyncFlowStage("pull", "preflight", error));
@@ -2847,15 +2851,15 @@ export default class S3SyncPlugin extends Plugin {
       }
       syncStage = "repository-verification";
       this.updateOperationalStatus({ phase: "verifying-repository" });
-      await this.assertV1RepositoryBinding(state);
+      const service = sharedService ?? this.createRepositoryService(this.settings, state.locator.normalizedPrefix);
+      await this.assertV1RepositoryBinding(state, service);
       this.recoverVerifiedRepositoryIdentityLock();
-      const service = this.createRepositoryService(this.settings, state.locator.normalizedPrefix);
       let inspected = await this.inspectAndMaterializeVaultV1(state, service);
 
       const hadOutbox = this.data.v1DurableOutbox.some((entry) => entry.state !== "published")
         || this.data.v1PublishedReconciles.some((entry) => entry.state === "pending");
       syncStage = "outbox-replay";
-      await this.drainDurableOutboxIfPresent(inspected.state);
+      await this.drainDurableOutboxIfPresent(inspected.state, service);
       if (hadOutbox) {
         inspected = await this.inspectAndMaterializeVaultV1(this.data.v1!, service);
       }
@@ -3399,9 +3403,13 @@ export default class S3SyncPlugin extends Plugin {
     showCopyableNotice(message, safeGenericErrorReport(error, "durable-state-restore"));
   }
 
-  private async assertV1RepositoryBinding(state: NonNullable<S3SyncData["v1"]>): Promise<void> {
+  private async assertV1RepositoryBinding(
+    state: NonNullable<S3SyncData["v1"]>,
+    sharedService?: V1RepositoryService,
+  ): Promise<void> {
     assertPersistedRepositoryBinding(state, this.currentV1Locator(this.getEffectivePrefix()), this.app.vault.configDir, state.historicalConfigDirs);
-    await this.createRepositoryService(this.settings, state.locator.normalizedPrefix).assertDescriptorBinding(state.repositoryId, state.descriptorHash, state);
+    await (sharedService ?? this.createRepositoryService(this.settings, state.locator.normalizedPrefix))
+      .assertDescriptorBinding(state.repositoryId, state.descriptorHash, state);
   }
 
   private async persistObservedRemoteState(

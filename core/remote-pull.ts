@@ -8,6 +8,7 @@ import { sha256Hex } from "../protocol/hash";
 import type { CommitFrontierAnchor } from "./commit-frontier";
 import { createDiskChunkStagingArea, type ChunkStagingArea } from "./chunk-staging";
 import { registerVersionsFromEnvelope } from "./ingest";
+import { BoundedExecutor } from "./bounded-executor";
 
 export async function pullCommitIntoRepository(store: ObjectStore, repository: InMemoryRepositoryCore, prefix: string, repositoryId: string, descriptorHash: string, commitKey: string, configTreeBinding?: ConfigTreeBinding, createStaging: () => Promise<ChunkStagingArea> = createDiskChunkStagingArea): Promise<string[]> {
   return (await pullCommitWithAnchor(store, repository, prefix, repositoryId, descriptorHash, commitKey, configTreeBinding, createStaging)).versionIds;
@@ -64,17 +65,31 @@ export async function pullCommitSetIntoRepository(
   descriptorHash: string,
   commitKeys: readonly string[],
   configTreeBinding: ConfigTreeBinding,
+  options: { concurrency?: number } = {},
 ): Promise<{ repository: InMemoryRepositoryCore; blockedCommitKeys: Array<{ key: string; reason: unknown }>; acceptedCommits: CommitFrontierAnchor[] }> {
   const repository = new InMemoryRepositoryCore();
   const blockedCommitKeys: Array<{ key: string; reason: unknown }> = [];
   const acceptedCommits: CommitFrontierAnchor[] = [];
-  for (const key of [...new Set(commitKeys)].sort()) {
+  const concurrency = options.concurrency ?? 1;
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) throw new Error("Commit pull concurrency is invalid");
+  const keys = [...new Set(commitKeys)].sort();
+  const executor = new BoundedExecutor(concurrency);
+  const results = await Promise.all(keys.map((key) => executor.run(async () => {
+    const isolated = new InMemoryRepositoryCore();
     try {
-      const pulled = await pullCommitWithAnchor(store, repository, prefix, repositoryId, descriptorHash, key, configTreeBinding);
-      acceptedCommits.push(pulled.anchor);
+      const pulled = await pullCommitWithAnchor(store, isolated, prefix, repositoryId, descriptorHash, key, configTreeBinding);
+      return { key, pulled, versions: isolated.snapshotVersions() } as const;
     } catch (reason) {
-      blockedCommitKeys.push({ key, reason });
+      return { key, reason } as const;
     }
+  })));
+  for (const result of results) {
+    if ("reason" in result) {
+      blockedCommitKeys.push({ key: result.key, reason: result.reason });
+      continue;
+    }
+    for (const version of result.versions) repository.ingest(version);
+    acceptedCommits.push(result.pulled.anchor);
   }
   return { repository, blockedCommitKeys, acceptedCommits };
 }

@@ -176,6 +176,48 @@ describe("durable Outbox", () => {
       .rejects.toThrow("another repository binding");
   });
 
+  it("replays immutable dependencies concurrently but never publishes the Commit early", async () => {
+    const stager = new MemoryStager();
+    const firstBlob = object("blob-a", "a");
+    const secondBlob = object("blob-b", "b");
+    const chunk = object("chunk", "h");
+    const commit = object("commit", "c");
+    const queued = await freezeDurableOutbox({
+      envelope: { blobs: [firstBlob, secondBlob], configTrees: [], chunks: [chunk], commit },
+      repositoryFingerprint: "f".repeat(64),
+      writerId: "writer",
+      sequence: "00000000000000000001",
+      previousCommitHash: null,
+      captureGeneration: 1,
+      mutations: [{ registerKey: "vault:a.md", versionId: `${commit.hash}:0:0`, kind: "put", parents: [], valueHash: firstBlob.hash }],
+    }, stager);
+    const publishing = transitionDurableOutbox(queued, "publishing");
+    const started: string[] = [];
+    const completed = new Set<string>();
+    let active = 0;
+    let peakActive = 0;
+
+    await replayFrozenDurableOutbox(publishing, stager, {
+      repositoryFingerprint: publishing.repositoryFingerprint,
+      isRemoteVerified: async () => false,
+      putImmutable: async (item) => {
+        if (item.kind === "commit" && completed.size !== publishing.objects.length - 1) {
+          throw new Error("Commit started before its dependencies completed");
+        }
+        started.push(item.key);
+        active += 1;
+        peakActive = Math.max(peakActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        active -= 1;
+      },
+      verifyRemote: async (item) => { completed.add(item.key); },
+    }, { dependencyConcurrency: 2 });
+
+    expect(peakActive).toBe(2);
+    expect(started.at(-1)).toBe("commit");
+    expect(completed.size).toBe(publishing.objects.length);
+  });
+
   it("finishes a replay from verified remote objects when local staged content is gone", async () => {
     const stager = new MemoryStager();
     const queued = await entry(1, stager);

@@ -8,6 +8,39 @@ import { InMemoryRepositoryCore } from "../../core/repository";
 import { objectBodyFromBytes } from "../../core/object-store";
 
 describe("remote Commit pull", () => {
+  it("pulls independent Commits with bounded concurrency and keeps deterministic results", async () => {
+    const repositoryId = "123e4567-e89b-42d3-a456-426614174000";
+    const keys = ["commit-c.json", "commit-a.json", "commit-b.json"];
+    let active = 0;
+    let peakActive = 0;
+    const store = {
+      getStream: async () => {
+        active += 1;
+        peakActive = Math.max(peakActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        active -= 1;
+        throw new Error("missing test Commit");
+      },
+      head: async () => ({ size: 0 }),
+      list: async () => ({ keys: [] }),
+      putImmutable: async () => undefined,
+    };
+
+    const pulled = await pullCommitSetIntoRepository(
+      store,
+      "",
+      repositoryId,
+      "a".repeat(64),
+      keys,
+      { configDir: ".obsidian", historicalConfigDirs: [] },
+      { concurrency: 2 },
+    );
+
+    expect(peakActive).toBe(2);
+    expect(pulled.acceptedCommits).toEqual([]);
+    expect(pulled.blockedCommitKeys.map((entry) => entry.key)).toEqual([...keys].sort());
+  });
+
   it("fetches every referenced Chunk before admitting a Commit into the core", async () => {
     const vector = JSON.parse(readFileSync(new URL("../../protocol/vectors/vault-bootstrap-multi-chunk.json", import.meta.url), "utf8"));
     const objects = new Map<string, Uint8Array>();

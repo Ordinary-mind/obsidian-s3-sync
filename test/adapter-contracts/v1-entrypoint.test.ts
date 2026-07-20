@@ -132,9 +132,9 @@ describe("v1 plugin entrypoint contract", () => {
     const start = main.indexOf("private async runV1SyncRound");
     const end = main.indexOf("private async buildV1PathDecisions", start);
     const syncRound = main.slice(start, end);
-    const pullIndex = syncRound.indexOf("await this.pullMissingFilesV1(false)");
+    const pullIndex = syncRound.indexOf("await this.pullMissingFilesV1(false, service)");
     const blockedIndex = syncRound.indexOf('if (pull.status === "blocked")');
-    const pushIndex = syncRound.indexOf("await this.publishPendingPathsV1()");
+    const pushIndex = syncRound.indexOf("await this.publishPendingPathsV1(service)");
 
     expect(pullIndex).toBeGreaterThanOrEqual(0);
     expect(blockedIndex).toBeGreaterThan(pullIndex);
@@ -147,7 +147,7 @@ describe("v1 plugin entrypoint contract", () => {
     const publishEnd = main.indexOf("private async publishPathV1", publishStart);
     const publishPending = main.slice(publishStart, publishEnd);
     expect(publishPending).toContain("for (const path of orderedPaths)");
-    expect(publishPending).toContain("await this.publishPathV1(path)");
+    expect(publishPending).toContain("await this.publishPathV1(path, service)");
 
     const pullStart = main.indexOf("private async pullMissingFilesV1");
     const pullEnd = main.indexOf("async runDesktopRuntimeContract", pullStart);
@@ -177,7 +177,7 @@ describe("v1 plugin entrypoint contract", () => {
     const pullStart = main.indexOf("private async pullMissingFilesV1");
     const pullEnd = main.indexOf("async runDesktopRuntimeContract", pullStart);
     const pull = main.slice(pullStart, pullEnd);
-    const verification = pull.indexOf("await this.assertV1RepositoryBinding(state)");
+    const verification = pull.indexOf("await this.assertV1RepositoryBinding(state, service)");
     const recovery = pull.indexOf("this.recoverVerifiedRepositoryIdentityLock()");
     const remoteList = pull.indexOf("inspectAndMaterializeVaultV1");
     const syncRound = main.slice(main.indexOf("private async runV1SyncRound"), main.indexOf("private async buildV1PathDecisions"));

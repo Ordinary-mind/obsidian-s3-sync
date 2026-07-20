@@ -69,11 +69,20 @@ export interface V1ConfigInspection {
   observations: RemoteRegisterObservation[];
 }
 
+interface RepositoryPullCache {
+  listedKeys: Set<string>;
+  repository: InMemoryRepositoryCore;
+  acceptedByKey: Map<string, CommitFrontierAnchor>;
+  blockedByKey: Map<string, unknown>;
+}
+
 export class V1RepositoryService {
   private readonly locator: Readonly<RepositoryLocator>;
   private readonly prefix: string;
   private readonly objectStore: S3ObjectStore;
   private readonly blobExistenceCache = new Map<string, BlobExistenceCacheEntry>();
+  private readonly descriptorCache = new Map<string, Promise<{ configDir: string; historicalConfigDirs: string[] }>>();
+  private readonly repositoryPullCache = new Map<string, RepositoryPullCache>();
 
   constructor(private readonly settings: S3SyncSettings, prefix = settings.prefix, signal?: AbortSignal) {
     this.locator = createRepositoryLocator(
@@ -398,7 +407,7 @@ export class V1RepositoryService {
       verifyRemote: async (object) => {
         await verifyObjectStream(store, object.key, { hash: object.hash, size: object.size });
       },
-    });
+    }, { dependencyConcurrency: REPOSITORY_TRANSFER_CONCURRENCY });
     const commit = input.entry.objects.at(-1)!;
     return {
       key: commit.key,
@@ -453,7 +462,7 @@ export class V1RepositoryService {
       verifyRemote: async (object) => {
         await verifyObjectStream(store, object.key, { hash: object.hash, size: object.size });
       },
-    });
+    }, { dependencyConcurrency: REPOSITORY_TRANSFER_CONCURRENCY });
     for (const object of input.entry.objects) {
       try {
         await verifyObjectStream(store, object.key, { hash: object.hash, size: object.size });
@@ -514,7 +523,51 @@ export class V1RepositoryService {
     acceptedCommits: CommitFrontierAnchor[];
   }> {
     const descriptor = await this.requireDescriptor(repositoryId, descriptorHash);
-    return pullCommitSetIntoRepository(this.store(), this.prefix, repositoryId, descriptorHash, await this.listCommitKeys(repositoryId), descriptor);
+    const commitKeys = await this.listCommitKeys(repositoryId);
+    const listedKeys = new Set(commitKeys);
+    const cacheKey = `${repositoryId}:${descriptorHash}`;
+    let cached = this.repositoryPullCache.get(cacheKey);
+    if (cached && [...cached.listedKeys].some((key) => !listedKeys.has(key))) {
+      this.repositoryPullCache.delete(cacheKey);
+      cached = undefined;
+    }
+    if (!cached) {
+      cached = {
+        listedKeys: new Set<string>(),
+        repository: new InMemoryRepositoryCore(),
+        acceptedByKey: new Map<string, CommitFrontierAnchor>(),
+        blockedByKey: new Map<string, unknown>(),
+      };
+      this.repositoryPullCache.set(cacheKey, cached);
+    }
+    const pullCache = cached;
+    const pendingKeys = commitKeys.filter((key) => !pullCache.acceptedByKey.has(key));
+    if (pendingKeys.length > 0) {
+      const pulled = await pullCommitSetIntoRepository(
+        this.store(),
+        this.prefix,
+        repositoryId,
+        descriptorHash,
+        pendingKeys,
+        descriptor,
+        { concurrency: REPOSITORY_TRANSFER_CONCURRENCY },
+      );
+      for (const version of pulled.repository.snapshotVersions()) pullCache.repository.ingest(version);
+      for (const key of pendingKeys) pullCache.blockedByKey.delete(key);
+      for (const anchor of pulled.acceptedCommits) pullCache.acceptedByKey.set(anchor.key, anchor);
+      for (const blocked of pulled.blockedCommitKeys) pullCache.blockedByKey.set(blocked.key, blocked.reason);
+    }
+    pullCache.listedKeys = listedKeys;
+    return {
+      repository: pullCache.repository,
+      blockedCommitKeys: commitKeys.flatMap((key) => pullCache.blockedByKey.has(key)
+        ? [{ key, reason: pullCache.blockedByKey.get(key) }]
+        : []),
+      acceptedCommits: commitKeys.flatMap((key) => {
+        const anchor = pullCache.acceptedByKey.get(key);
+        return anchor ? [anchor] : [];
+      }),
+    };
   }
   private async pullAllCommitsWithAnchors(repositoryId: string, descriptorHash: string): Promise<{
     repository: InMemoryRepositoryCore;
@@ -578,7 +631,17 @@ export class V1RepositoryService {
     return this.objectStore;
   }
   private async requireDescriptor(repositoryId: string, descriptorHash: string): Promise<{ configDir: string; historicalConfigDirs: string[] }> {
-    return readRepositoryDescriptorAnchor(this.store(), this.prefix, repositoryId, descriptorHash);
+    const cacheKey = `${repositoryId}:${descriptorHash}`;
+    const cached = this.descriptorCache.get(cacheKey);
+    if (cached) return cached;
+    const pending = readRepositoryDescriptorAnchor(this.store(), this.prefix, repositoryId, descriptorHash);
+    this.descriptorCache.set(cacheKey, pending);
+    try {
+      return await pending;
+    } catch (error) {
+      if (this.descriptorCache.get(cacheKey) === pending) this.descriptorCache.delete(cacheKey);
+      throw error;
+    }
   }
 }
 

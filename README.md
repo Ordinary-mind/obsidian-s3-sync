@@ -2,7 +2,7 @@
 
 面向桌面版 Obsidian 的 S3 多设备同步插件。它按原始字节 SHA-256 判断变化，使用不可变对象、提交日志和持久 Outbox，避免按 `mtime` 猜测新旧或用共享 manifest 相互覆盖。
 
-当前版本是 `0.1.9` 预发布构建，只支持桌面端。请先在可丢弃 Vault 和专用测试 Prefix 中完成[人工验收](docs/manual-acceptance.md)，不要直接拿唯一一份真实资料试用。
+当前版本是 `0.1.10` 预发布构建，只支持桌面端。请先在可丢弃 Vault 和专用测试 Prefix 中完成[人工验收](docs/manual-acceptance.md)，不要直接拿唯一一份真实资料试用。
 
 ## 用户操作
 

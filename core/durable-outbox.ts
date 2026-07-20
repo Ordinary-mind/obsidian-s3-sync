@@ -2,6 +2,7 @@ import type { ImmutableObject } from "./immutable-object";
 import type { StagedContent } from "./content-staging";
 import type { PublishEnvelope } from "./remote-publish";
 import { parseVersionId } from "./version-id";
+import { BoundedExecutor } from "./bounded-executor";
 
 export type DurableOutboxState =
   | "queued"
@@ -272,34 +273,58 @@ export async function replayFrozenDurableOutbox(
   entry: DurableOutboxEntry,
   source: DurableOutboxReplaySource,
   target: DurableOutboxReplayTarget,
+  options: { dependencyConcurrency?: number } = {},
 ): Promise<void> {
   if (entry.state !== "publishing" && entry.state !== "integrity-error" && entry.state !== "recovery-required") {
     throw new Error("durable Outbox must be publishing or in terminal recovery before replay");
   }
   if (entry.repositoryFingerprint !== target.repositoryFingerprint) throw new Error("durable Outbox belongs to another repository binding");
   assertDurableOutboxQueue([entry]);
-  for (const object of entry.objects) {
+  const dependencyConcurrency = options.dependencyConcurrency ?? 1;
+  if (!Number.isSafeInteger(dependencyConcurrency) || dependencyConcurrency < 1) {
+    throw new Error("durable Outbox dependency concurrency is invalid");
+  }
+  const commit = entry.objects.at(-1)!;
+  const dependencies = entry.objects.slice(0, -1);
+  const executor = new BoundedExecutor(dependencyConcurrency);
+  const outcomes = await Promise.all(dependencies.map((object) => executor.run(async () => {
     try {
-      await source.verify(object.contentRef, { hash: object.hash, size: object.size });
-    } catch (stagedError) {
-      try {
-        // 远端对象若已完整落盘，可直接完成崩溃后的本地确认，不再依赖丢失的暂存副本。
-        if (await target.isRemoteVerified(object)) continue;
-      } catch (remoteError) {
-        throw withDurableOutboxReplayStage("remote-recovery-check", remoteError);
-      }
-      throw withDurableOutboxReplayStage("staged-verify", stagedError);
-    }
-    try {
-      await target.putImmutable(object, () => source.read(object.contentRef));
+      await replayDurableOutboxObject(object, source, target);
+      return { status: "success" as const };
     } catch (error) {
-      throw withDurableOutboxReplayStage("put", error);
+      return { status: "failed" as const, error };
     }
+  })));
+  const firstFailure = outcomes.find((outcome) => outcome.status === "failed");
+  if (firstFailure) throw firstFailure.error;
+  await replayDurableOutboxObject(commit, source, target);
+}
+
+async function replayDurableOutboxObject(
+  object: DurableOutboxObject,
+  source: DurableOutboxReplaySource,
+  target: DurableOutboxReplayTarget,
+): Promise<void> {
+  try {
+    await source.verify(object.contentRef, { hash: object.hash, size: object.size });
+  } catch (stagedError) {
     try {
-      await target.verifyRemote(object);
-    } catch (error) {
-      throw withDurableOutboxReplayStage("remote-verify", error);
+      // 远端对象若已完整落盘，可直接完成崩溃后的本地确认，不再依赖丢失的暂存副本。
+      if (await target.isRemoteVerified(object)) return;
+    } catch (remoteError) {
+      throw withDurableOutboxReplayStage("remote-recovery-check", remoteError);
     }
+    throw withDurableOutboxReplayStage("staged-verify", stagedError);
+  }
+  try {
+    await target.putImmutable(object, () => source.read(object.contentRef));
+  } catch (error) {
+    throw withDurableOutboxReplayStage("put", error);
+  }
+  try {
+    await target.verifyRemote(object);
+  } catch (error) {
+    throw withDurableOutboxReplayStage("remote-verify", error);
   }
 }
 
